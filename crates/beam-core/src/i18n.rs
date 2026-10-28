@@ -51,16 +51,95 @@ pub fn system_language() -> Language {
         .unwrap_or(Language::En)
 }
 
-/// Persistent application configuration (stores language preference).
+fn default_true() -> bool {
+    true
+}
+
+fn default_filmstrip_height() -> Option<f32> {
+    Some(110.0)
+}
+
+/// Configurable keyboard shortcut profile
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum ShortcutProfile {
+    #[default]
+    Default,
+    Lightroom,
+}
+
+impl ShortcutProfile {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Default => "beaM. Default",
+            Self::Lightroom => "Lightroom Style",
+        }
+    }
+}
+
+/// Persistent keyboard shortcut configuration
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShortcutConfig {
+    #[serde(default)]
+    pub profile: ShortcutProfile,
+    #[serde(default = "default_true")]
+    pub number_keys_rate: bool,
+    #[serde(default = "default_true")]
+    pub arrow_keys_navigate: bool,
+    #[serde(default = "default_true")]
+    pub f_fullscreen: bool,
+    #[serde(default = "default_true")]
+    pub z_zoom: bool,
+    #[serde(default = "default_true")]
+    pub j_clipping: bool,
+}
+
+impl Default for ShortcutConfig {
+    fn default() -> Self {
+        Self {
+            profile: ShortcutProfile::Default,
+            number_keys_rate: true,
+            arrow_keys_navigate: true,
+            f_fullscreen: true,
+            z_zoom: true,
+            j_clipping: true,
+        }
+    }
+}
+
+/// Persistent application configuration (stores language, preferences, layout, and shortcuts).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub language: Language,
+    #[serde(default)]
+    pub last_opened_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub left_panel_width: Option<f32>,
+    #[serde(default)]
+    pub right_panel_width: Option<f32>,
+    #[serde(default = "default_true")]
+    pub filmstrip_visible: bool,
+    #[serde(default = "default_filmstrip_height")]
+    pub filmstrip_height: Option<f32>,
+    #[serde(default = "default_true")]
+    pub show_history_panel: bool,
+    #[serde(default = "default_true")]
+    pub show_develop_panel: bool,
+    #[serde(default)]
+    pub shortcuts: ShortcutConfig,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             language: system_language(),
+            last_opened_folder: None,
+            left_panel_width: None,
+            right_panel_width: None,
+            filmstrip_visible: true,
+            filmstrip_height: Some(110.0),
+            show_history_panel: true,
+            show_develop_panel: true,
+            shortcuts: ShortcutConfig::default(),
         }
     }
 }
@@ -322,6 +401,10 @@ mod tests {
 
         let cfg = AppConfig {
             language: Language::Tr,
+            last_opened_folder: Some(PathBuf::from("/photos/trip")),
+            left_panel_width: Some(260.0),
+            filmstrip_visible: false,
+            ..Default::default()
         };
         let s = ron::ser::to_string_pretty(&cfg, ron::ser::PrettyConfig::new()).unwrap();
         std::fs::write(&cfg_path, &s).unwrap();
@@ -329,7 +412,29 @@ mod tests {
         let loaded: AppConfig =
             ron::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
         assert_eq!(loaded.language, Language::Tr);
+        assert_eq!(
+            loaded.last_opened_folder,
+            Some(PathBuf::from("/photos/trip"))
+        );
+        assert_eq!(loaded.left_panel_width, Some(260.0));
+        assert!(!loaded.filmstrip_visible);
+        assert!(loaded.shortcuts.arrow_keys_navigate);
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_app_config_backward_compatibility() {
+        // Old config containing only language field
+        let old_ron = r#"(
+            language: En,
+        )"#;
+        let cfg: AppConfig = ron::from_str(old_ron).expect("Should parse legacy config.ron");
+        assert_eq!(cfg.language, Language::En);
+        assert_eq!(cfg.last_opened_folder, None);
+        assert!(cfg.filmstrip_visible);
+        assert_eq!(cfg.filmstrip_height, Some(110.0));
+        assert!(cfg.show_develop_panel);
+        assert_eq!(cfg.shortcuts.profile, ShortcutProfile::Default);
     }
 }

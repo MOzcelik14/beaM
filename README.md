@@ -168,6 +168,15 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Multi-photo settings synchronization in Library view: apply adjustments from active photo across all selected targets with sidecar and thumbnail persistence.
   - Full English and Turkish localization across all preset names, dialogs, and actions.
 
+- [x] **Milestone 13 – Workflow polish**:
+  - Full keyboard shortcut suite: ratings (0–5), color labels (6: Red, 7: Yellow, 8: Green, 9: Blue), image navigation (Left/Right arrows, PageUp/PageDown), fullscreen (F11/F), zoom to 100% / Fit (Z), and clipping warnings toggle (J).
+  - Configurable shortcut profiles in Settings modal (`Lightroom` vs `Standard` vs custom toggles).
+  - Smooth mouse-wheel zoom and middle/drag pan with 1:1 view automatically switching to full-resolution RAW rendering.
+  - Interactive Filmstrip bottom panel in Develop view for swift photo switching with thumbnail caching and hide/show toggle.
+  - Highlight and shadow clipping warning overlays in WGSL display shader stage (blown highlights in pure red, crushed shadows in pure blue) toggled from histogram buttons (`◺`, `◸`) or `J` key.
+  - Session layout persistence: window size, panel dimensions, filmstrip state, shortcuts profile, and last-opened folder preserved across application restarts in `config.ron`.
+  - Full bilingual localization in English and Turkish.
+
 ---
 
 ## Adding a New Language

@@ -28,8 +28,8 @@ struct DisplayGeometryUniforms {
     flip_v: u32,
     straighten_rad: f32,
     crop_enabled: u32,
-    _pad0: u32,
-    _pad1: u32,
+    show_shadow_clipping: u32,
+    show_highlight_clipping: u32,
     _pad2: u32,
 };
 
@@ -123,6 +123,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Convert wide-gamut linear Rec.2020 to linear sRGB
     let linear_srgb = M_REC2020_TO_SRGB * color.rgb;
+
+    // Highlight clipping overlay (red) for blown out highlights
+    if (u_geo.show_highlight_clipping != 0u) {
+        if (linear_srgb.r >= 1.0 || linear_srgb.g >= 1.0 || linear_srgb.b >= 1.0) {
+            return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+        }
+    }
+
+    // Shadow clipping overlay (blue) for crushed blacks
+    if (u_geo.show_shadow_clipping != 0u) {
+        if (linear_srgb.r <= 0.0005 && linear_srgb.g <= 0.0005 && linear_srgb.b <= 0.0005) {
+            return vec4<f32>(0.0, 0.25, 1.0, 1.0);
+        }
+    }
     
     // Clamp to valid gamut range [0.0, 1.0] for SDR display
     let clamped = clamp(linear_srgb, vec3<f32>(0.0), vec3<f32>(1.0));

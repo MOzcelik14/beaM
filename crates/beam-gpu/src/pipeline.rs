@@ -317,8 +317,8 @@ pub struct DisplayGeometryUniforms {
     pub flip_v: u32,
     pub straighten_rad: f32,
     pub crop_enabled: u32,
-    pub _pad0: u32,
-    pub _pad1: u32,
+    pub show_shadow_clipping: u32,
+    pub show_highlight_clipping: u32,
     pub _pad2: u32,
 }
 
@@ -334,8 +334,8 @@ impl Default for DisplayGeometryUniforms {
             flip_v: 0,
             straighten_rad: 0.0,
             crop_enabled: 0,
-            _pad0: 0,
-            _pad1: 0,
+            show_shadow_clipping: 0,
+            show_highlight_clipping: 0,
             _pad2: 0,
         }
     }
@@ -999,6 +999,31 @@ impl EditPipeline {
         edit_stack: &EditStack,
         crop_mode_active: bool,
     ) {
+        self.render_with_options(
+            device,
+            queue,
+            input,
+            target_view,
+            edit_stack,
+            crop_mode_active,
+            false,
+            false,
+        );
+    }
+
+    /// Execute the full edit stack, optionally keeping uncropped view and showing clipping warnings.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_options(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        target_view: &wgpu::TextureView,
+        edit_stack: &EditStack,
+        crop_mode_active: bool,
+        show_shadow_clipping: bool,
+        show_highlight_clipping: bool,
+    ) {
         self.ensure_intermediate_textures(device, input.width, input.height);
         self.update_uniforms(queue, edit_stack);
         self.render_intermediate_stages(device, queue, input);
@@ -1020,8 +1045,8 @@ impl EditPipeline {
             } else {
                 0
             },
-            _pad0: 0,
-            _pad1: 0,
+            show_shadow_clipping: if show_shadow_clipping { 1 } else { 0 },
+            show_highlight_clipping: if show_highlight_clipping { 1 } else { 0 },
             _pad2: 0,
         };
 

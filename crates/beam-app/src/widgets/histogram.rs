@@ -1,4 +1,5 @@
-use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Vec2};
+use beam_core::t;
+use eframe::egui::{self, Color32, Pos2, RichText, Sense, Stroke, Vec2};
 use eframe::epaint::PathShape;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,15 +93,62 @@ impl HistogramData {
 }
 
 /// Renders the histogram into the given egui UI.
+#[allow(dead_code)]
 pub fn show_histogram(ui: &mut egui::Ui, data: &HistogramData, mode: &mut HistogramMode) {
+    let mut shadow_dummy = false;
+    let mut highlight_dummy = false;
+    show_histogram_with_clipping(ui, data, mode, &mut shadow_dummy, &mut highlight_dummy);
+}
+
+/// Renders the histogram with interactive highlight/shadow clipping warning toggles.
+/// Returns true if either clipping toggle was switched.
+pub fn show_histogram_with_clipping(
+    ui: &mut egui::Ui,
+    data: &HistogramData,
+    mode: &mut HistogramMode,
+    show_shadow_clipping: &mut bool,
+    show_highlight_clipping: &mut bool,
+) -> bool {
+    let mut changed = false;
+
     ui.vertical(|ui| {
-        // Channel selector buttons
+        // Channel selector and clipping toggles
         ui.horizontal(|ui| {
+            // Shadow clipping toggle on left
+            let shadow_color = if *show_shadow_clipping {
+                Color32::from_rgb(50, 150, 255)
+            } else {
+                Color32::from_gray(120)
+            };
+            if ui
+                .button(RichText::new("◺").color(shadow_color).strong())
+                .on_hover_text(t!("histogram_shadow_clipping"))
+                .clicked()
+            {
+                *show_shadow_clipping = !*show_shadow_clipping;
+                changed = true;
+            }
+
             ui.selectable_value(mode, HistogramMode::Rgb, "RGB");
             ui.selectable_value(mode, HistogramMode::Luminance, "Lum");
             ui.selectable_value(mode, HistogramMode::Red, "R");
             ui.selectable_value(mode, HistogramMode::Green, "G");
             ui.selectable_value(mode, HistogramMode::Blue, "B");
+
+            // Highlight clipping toggle on right
+            let highlight_color = if *show_highlight_clipping {
+                Color32::from_rgb(255, 70, 70)
+            } else {
+                Color32::from_gray(120)
+            };
+            if ui
+                .button(RichText::new("◸").color(highlight_color).strong())
+                .on_hover_text(t!("histogram_highlight_clipping"))
+                .clicked()
+            {
+                *show_highlight_clipping = !*show_highlight_clipping;
+                changed = true;
+            }
         });
 
         ui.add_space(2.0);
@@ -209,4 +257,6 @@ pub fn show_histogram(ui: &mut egui::Ui, data: &HistogramData, mode: &mut Histog
             }
         }
     });
+
+    changed
 }

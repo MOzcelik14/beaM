@@ -368,3 +368,23 @@ sync_dialog_target_count = Target: {$count} photos selected
 sync_dialog_sync_btn = Synchronize
 sync_dialog_success = Synchronized settings to {$count} photos
 sync_dialog_cancel = Cancel
+
+# Workflow Polish (Milestone 13)
+histogram_shadow_clipping = Shadow clipping (crushed blacks) [J]
+histogram_highlight_clipping = Highlight clipping (blown out) [J]
+develop_zoom_fit = Fit
+develop_zoom_100 = 1:1 (100%)
+develop_zoom_pct = Zoom: {$zoom}%
+develop_filmstrip = Filmstrip
+develop_filmstrip_empty = No photos in filmstrip
+settings_tab_general = General
+settings_tab_shortcuts = Shortcuts
+settings_shortcuts_heading = Keyboard Shortcuts
+settings_shortcut_profile = Shortcut Profile:
+settings_shortcut_ratings = Ratings (0–5)
+settings_shortcut_labels = Color Labels (6: Red, 7: Yellow, 8: Green, 9: Blue)
+settings_shortcut_nav = Next / Previous Image (Left / Right Arrow)
+settings_shortcut_fullscreen = Fullscreen Mode (F11 / F)
+settings_shortcut_zoom = Zoom to 100% / Fit (Z)
+settings_shortcut_clipping = Clipping Overlays Toggle (J)
+

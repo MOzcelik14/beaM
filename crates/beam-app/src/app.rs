@@ -3,12 +3,14 @@ use crate::views::library::{
 };
 use crate::widgets::crop::show_crop_overlay;
 use crate::widgets::curve::show_tone_curve;
-use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
+use crate::widgets::histogram::{show_histogram_with_clipping, HistogramData, HistogramMode};
 use beam_core::geometry::{calculate_effective_aspect_ratio, create_centered_crop_rect};
-use beam_core::sidecar::{CropAspectPreset, EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS};
+use beam_core::sidecar::{
+    ColorLabel, CropAspectPreset, EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS,
+};
 use beam_core::{
     built_in_presets, default_presets_dir, delete_user_preset, load_user_presets, save_user_preset,
-    set_language, t, AppConfig, Language, Preset, PresetGroupMask, APP_NAME,
+    set_language, t, AppConfig, Language, Preset, PresetGroupMask, ShortcutProfile, APP_NAME,
 };
 use beam_gpu::{EditPipeline, GpuImage};
 use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
@@ -42,6 +44,13 @@ pub enum BeforeAfterMode {
     Toggle,
     SplitView,
     SideBySide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Shortcuts,
 }
 
 enum BackgroundMsg {
@@ -120,6 +129,26 @@ pub struct BeamApp {
     slider_drag_start_stack: Option<EditStack>,
     slider_drag_action_name: Option<String>,
     app_config: AppConfig,
+
+    // Zoom, Pan & Full-Resolution Inspection
+    zoom_level: f32,
+    is_one_to_one: bool,
+    pan_offset: Vec2,
+    gpu_full_image: Option<GpuImage>,
+    gpu_full_texture: Option<wgpu::Texture>,
+    egui_full_texture_id: Option<egui::TextureId>,
+
+    // Clipping overlays
+    show_shadow_clipping: bool,
+    show_highlight_clipping: bool,
+
+    // Filmstrip & Fullscreen
+    filmstrip_visible: bool,
+    filmstrip_height: f32,
+    is_fullscreen: bool,
+
+    // Settings modal tab
+    settings_tab: SettingsTab,
 
     // Presets & Settings Sync
     left_panel_tab: LeftPanelTab,
@@ -322,8 +351,20 @@ impl BeamApp {
             error_message: None,
             show_about: false,
             show_settings: false,
-            show_develop_panel: true,
-            show_history_panel: true,
+            show_develop_panel: app_config.show_develop_panel,
+            show_history_panel: app_config.show_history_panel,
+            zoom_level: 1.0,
+            is_one_to_one: false,
+            pan_offset: Vec2::ZERO,
+            gpu_full_image: None,
+            gpu_full_texture: None,
+            egui_full_texture_id: None,
+            show_shadow_clipping: false,
+            show_highlight_clipping: false,
+            filmstrip_visible: app_config.filmstrip_visible,
+            filmstrip_height: app_config.filmstrip_height.unwrap_or(110.0),
+            is_fullscreen: false,
+            settings_tab: SettingsTab::General,
             left_panel_tab: LeftPanelTab::Presets,
             user_presets,
             preset_dir,
@@ -682,6 +723,12 @@ impl BeamApp {
         self.gpu_before_texture = Some(before_texture);
         self.gpu_proxy_image = Some(gpu_proxy);
         self.current_image = Some(Box::new(decoded));
+        self.gpu_full_image = None;
+        self.gpu_full_texture = None;
+        self.egui_full_texture_id = None;
+        self.zoom_level = 1.0;
+        self.pan_offset = Vec2::ZERO;
+        self.is_one_to_one = false;
 
         // Automatically register photo in library database
         if let Some(path) = &self.current_path {
@@ -689,6 +736,88 @@ impl BeamApp {
                 self.library_state.selected_photo_id = Some(record.id);
             }
             self.library_state.needs_refresh = true;
+        }
+    }
+
+    /// Ensure full resolution texture is uploaded and rendered with current edit stack
+    fn ensure_full_res_rendered(&mut self, frame: &mut eframe::Frame) {
+        let (Some(render_state), Some(pipeline), Some(decoded)) = (
+            frame.wgpu_render_state(),
+            &mut self.edit_pipeline,
+            &self.current_image,
+        ) else {
+            return;
+        };
+
+        let device = &render_state.device;
+        let queue = &render_state.queue;
+
+        if self.gpu_full_image.is_none() {
+            let gpu_full = match GpuImage::from_rgba32f(
+                device,
+                queue,
+                decoded.width,
+                decoded.height,
+                &decoded.data,
+            ) {
+                Ok(img) => img,
+                Err(e) => {
+                    log::warn!("Failed to upload full resolution image to GPU: {e}");
+                    return;
+                }
+            };
+            self.gpu_full_image = Some(gpu_full);
+        }
+
+        if self.gpu_full_texture.is_none() {
+            let full_texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("beam_full_display_target_texture"),
+                size: wgpu::Extent3d {
+                    width: decoded.width,
+                    height: decoded.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            self.gpu_full_texture = Some(full_texture);
+        }
+
+        let Some(gpu_full) = &self.gpu_full_image else {
+            return;
+        };
+        let Some(full_texture) = &self.gpu_full_texture else {
+            return;
+        };
+        let full_view = full_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        pipeline.render_with_options(
+            device,
+            queue,
+            gpu_full,
+            &full_view,
+            &self.edit_stack,
+            self.crop_mode_active,
+            self.show_shadow_clipping,
+            self.show_highlight_clipping,
+        );
+
+        let mut renderer = render_state.renderer.write();
+        if let Some(existing_id) = self.egui_full_texture_id {
+            renderer.update_egui_texture_from_wgpu_texture(
+                device,
+                &full_view,
+                wgpu::FilterMode::Linear,
+                existing_id,
+            );
+        } else {
+            let id = renderer.register_native_texture(device, &full_view, wgpu::FilterMode::Linear);
+            self.egui_full_texture_id = Some(id);
         }
     }
 
@@ -723,14 +852,20 @@ impl BeamApp {
         let queue = &render_state.queue;
         let display_view = display_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        pipeline.render_with_crop_mode(
+        pipeline.render_with_options(
             device,
             queue,
             gpu_proxy,
             &display_view,
             &self.edit_stack,
             self.crop_mode_active,
+            self.show_shadow_clipping,
+            self.show_highlight_clipping,
         );
+
+        if self.is_one_to_one {
+            self.ensure_full_res_rendered(frame);
+        }
 
         // Save sidecar automatically
         self.save_sidecar();
@@ -900,6 +1035,10 @@ impl BeamApp {
 }
 
 impl eframe::App for BeamApp {
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        self.save_session_state();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.check_background_messages(&ctx, frame);
@@ -1130,6 +1269,106 @@ impl eframe::App for BeamApp {
             self.show_settings = true;
         }
 
+        // Milestone 13: Ratings (0-5)
+        if self.app_config.shortcuts.number_keys_rate
+            && !ctx.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt)
+        {
+            if ctx.input(|i| i.key_pressed(egui::Key::Num0)) {
+                self.set_active_photo_rating(0);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num1)) {
+                self.set_active_photo_rating(1);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
+                self.set_active_photo_rating(2);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num3)) {
+                self.set_active_photo_rating(3);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num4)) {
+                self.set_active_photo_rating(4);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num5)) {
+                self.set_active_photo_rating(5);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num6)) {
+                self.set_active_photo_color_label(ColorLabel::Red);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num7)) {
+                self.set_active_photo_color_label(ColorLabel::Yellow);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num8)) {
+                self.set_active_photo_color_label(ColorLabel::Green);
+                ctx.request_repaint();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Num9)) {
+                self.set_active_photo_color_label(ColorLabel::Blue);
+                ctx.request_repaint();
+            }
+        }
+
+        // Milestone 13: Navigation (Left/Right Arrows, PageUp/PageDown)
+        if self.app_config.shortcuts.arrow_keys_navigate
+            && !ctx.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt)
+        {
+            if ctx
+                .input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::PageUp))
+            {
+                self.navigate_photo(false);
+                ctx.request_repaint();
+            } else if ctx.input(|i| {
+                i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::PageDown)
+            }) {
+                self.navigate_photo(true);
+                ctx.request_repaint();
+            }
+        }
+
+        // Milestone 13: Fullscreen (F11 or F)
+        if self.app_config.shortcuts.f_fullscreen
+            && ctx.input(|i| {
+                (i.key_pressed(egui::Key::F11) || i.key_pressed(egui::Key::F))
+                    && !i.modifiers.command
+                    && !i.modifiers.ctrl
+            })
+        {
+            self.is_fullscreen = !self.is_fullscreen;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.is_fullscreen));
+            ctx.request_repaint();
+        }
+
+        // Milestone 13: Zoom to 100% / Fit (Z)
+        if self.app_config.shortcuts.z_zoom
+            && self.current_view == AppView::Develop
+            && ctx.input(|i| {
+                i.key_pressed(egui::Key::Z)
+                    && !i.modifiers.command
+                    && !i.modifiers.ctrl
+                    && !i.modifiers.shift
+            })
+        {
+            self.is_one_to_one = !self.is_one_to_one;
+            if self.is_one_to_one {
+                self.ensure_full_res_rendered(frame);
+            } else {
+                self.zoom_level = 1.0;
+                self.pan_offset = Vec2::ZERO;
+            }
+            ctx.request_repaint();
+        }
+
+        // Milestone 13: Clipping Warnings toggle (J)
+        if self.app_config.shortcuts.j_clipping
+            && self.current_view == AppView::Develop
+            && ctx
+                .input(|i| i.key_pressed(egui::Key::J) && !i.modifiers.command && !i.modifiers.ctrl)
+        {
+            let next_clipping = !(self.show_highlight_clipping || self.show_shadow_clipping);
+            self.show_highlight_clipping = next_clipping;
+            self.show_shadow_clipping = next_clipping;
+            self.re_render_edits(frame);
+            ctx.request_repaint();
+        }
+
         // Bottom status bar
         Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1165,6 +1404,22 @@ impl eframe::App for BeamApp {
                             ui.label(t!("develop_decoding_with_name", "name" => fname));
                         } else {
                             ui.label(t!("develop_decoding"));
+                        }
+                    });
+                } else if self.current_view == AppView::Develop {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let filmstrip_text = if self.filmstrip_visible {
+                            format!("🎞 {}", t!("develop_filmstrip"))
+                        } else {
+                            format!("🎞 {} (▲)", t!("develop_filmstrip"))
+                        };
+                        if ui
+                            .selectable_label(self.filmstrip_visible, filmstrip_text)
+                            .clicked()
+                        {
+                            self.filmstrip_visible = !self.filmstrip_visible;
+                            self.app_config.filmstrip_visible = self.filmstrip_visible;
+                            let _ = self.app_config.save();
                         }
                     });
                 }
@@ -1558,11 +1813,24 @@ impl eframe::App for BeamApp {
                                     ui.separator();
 
                                     // 1. Histogram Widget
+                                    let mut clipping_changed = false;
                                     if let Some(hist_data) = &self.histogram_data {
                                         ui.group(|ui| {
-                                            show_histogram(ui, hist_data, &mut self.histogram_mode);
+                                            if show_histogram_with_clipping(
+                                                ui,
+                                                hist_data,
+                                                &mut self.histogram_mode,
+                                                &mut self.show_shadow_clipping,
+                                                &mut self.show_highlight_clipping,
+                                            ) {
+                                                clipping_changed = true;
+                                            }
                                         });
                                         ui.add_space(4.0);
+                                    }
+                                    if clipping_changed {
+                                        self.re_render_edits(frame);
+                                        ctx.request_repaint();
                                     }
 
                                     // 2. Crop & Straighten Section
@@ -2473,6 +2741,18 @@ impl eframe::App for BeamApp {
                     self.slider_drag_action_name = None;
                 }
 
+                // Filmstrip at bottom of Develop view
+                if self.filmstrip_visible && self.current_image.is_some() {
+                    Panel::bottom("develop_filmstrip")
+                        .resizable(true)
+                        .default_size(self.filmstrip_height)
+                        .min_size(70.0)
+                        .max_size(200.0)
+                        .show(ui, |ui| {
+                            self.show_develop_filmstrip(ui);
+                        });
+                }
+
                 // Central viewport panel
                 egui::CentralPanel::default().show(ui, |ui| {
                     let mut clear_error = false;
@@ -2498,7 +2778,7 @@ impl eframe::App for BeamApp {
                     let available_size = ui.available_size();
 
                     if let Some(texture_id) = self.egui_texture_id {
-                        // Before / After mode toolbar
+                        // Before / After mode and Zoom toolbar
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(t!("develop_before_after")).strong());
                             if ui
@@ -2552,6 +2832,27 @@ impl eframe::App for BeamApp {
                                 }
                                 self.before_after_mode = BeforeAfterMode::SideBySide;
                             }
+
+                            ui.separator();
+                            let is_fit =
+                                !self.is_one_to_one && (self.zoom_level - 1.0).abs() < 0.01;
+                            if ui
+                                .selectable_label(is_fit, t!("develop_zoom_fit"))
+                                .clicked()
+                            {
+                                self.is_one_to_one = false;
+                                self.zoom_level = 1.0;
+                                self.pan_offset = Vec2::ZERO;
+                            }
+                            if ui
+                                .selectable_label(self.is_one_to_one, t!("develop_zoom_100"))
+                                .clicked()
+                            {
+                                self.is_one_to_one = true;
+                                self.ensure_full_res_rendered(frame);
+                            }
+                            let current_zoom_pct = (self.zoom_level * 100.0).round() as i32;
+                            ui.label(t!("develop_zoom_pct", "zoom" => current_zoom_pct));
                         });
                         ui.separator();
 
@@ -2560,7 +2861,7 @@ impl eframe::App for BeamApp {
                         match self.before_after_mode {
                             BeforeAfterMode::Normal => {
                                 let available_aspect = available_size.x / available_size.y.max(1.0);
-                                let display_size = if available_aspect > self.texture_aspect_ratio {
+                                let fit_size = if available_aspect > self.texture_aspect_ratio {
                                     Vec2::new(
                                         available_size.y * self.texture_aspect_ratio,
                                         available_size.y,
@@ -2572,51 +2873,110 @@ impl eframe::App for BeamApp {
                                     )
                                 };
 
-                                ui.centered_and_justified(|ui| {
-                                    let img_resp = ui.image(egui::load::SizedTexture::new(
-                                        texture_id,
-                                        display_size,
-                                    ));
-                                    if self.crop_mode_active {
-                                        if let Some(img) = &self.current_image {
-                                            let orig_aspect = if self.edit_stack.crop.rotation == 90
-                                                || self.edit_stack.crop.rotation == 270
-                                            {
-                                                img.height as f32 / img.width as f32
-                                            } else {
-                                                img.width as f32 / img.height as f32
-                                            };
-                                            if show_crop_overlay(
-                                                ui,
-                                                img_resp.rect,
-                                                &mut self.edit_stack.crop,
-                                                orig_aspect,
-                                            ) {
-                                                if self.slider_drag_start_stack.is_none() {
-                                                    let baseline = if self.history_index
-                                                        < self.history.len()
-                                                    {
-                                                        self.history[self.history_index]
-                                                            .stack
-                                                            .clone()
-                                                    } else {
-                                                        self.edit_stack.clone()
-                                                    };
-                                                    self.slider_drag_start_stack = Some(baseline);
-                                                }
-                                                self.slider_drag_action_name = Some(t!(
-                                                    "history_crop",
-                                                    "preset" => format!(
-                                                        "{:?}",
-                                                        self.edit_stack.crop.preset
-                                                    )
-                                                ));
-                                                self.re_render_edits(frame);
-                                                ctx.request_repaint();
+                                let (display_size, active_tex_id) = if self.is_one_to_one {
+                                    let (w, h) = if let Some(img) = &self.current_image {
+                                        (img.width as f32, img.height as f32)
+                                    } else {
+                                        (fit_size.x, fit_size.y)
+                                    };
+                                    (
+                                        Vec2::new(w, h) * self.zoom_level,
+                                        self.egui_full_texture_id.unwrap_or(texture_id),
+                                    )
+                                } else {
+                                    (fit_size * self.zoom_level, texture_id)
+                                };
+
+                                let (viewport_rect, viewport_resp) = ui.allocate_exact_size(
+                                    available_size,
+                                    egui::Sense::click_and_drag(),
+                                );
+
+                                // Mouse-wheel zoom
+                                if viewport_resp.hovered() {
+                                    let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
+                                    if scroll_y.abs() > 0.01 {
+                                        let zoom_mult =
+                                            if scroll_y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+                                        let new_zoom =
+                                            (self.zoom_level * zoom_mult).clamp(0.2, 10.0);
+                                        self.zoom_level = new_zoom;
+                                        if self.zoom_level >= 1.0 && !self.is_one_to_one {
+                                            self.is_one_to_one = true;
+                                            self.ensure_full_res_rendered(frame);
+                                        } else if self.zoom_level < 0.95 && self.is_one_to_one {
+                                            self.is_one_to_one = false;
+                                        }
+                                        ctx.request_repaint();
+                                    }
+                                }
+
+                                // Drag-panning
+                                if viewport_resp.dragged() && !self.crop_mode_active {
+                                    self.pan_offset += viewport_resp.drag_delta();
+                                    ctx.request_repaint();
+                                }
+
+                                // Double-click toggle 1:1 / Fit
+                                if viewport_resp.double_clicked() && !self.crop_mode_active {
+                                    self.is_one_to_one = !self.is_one_to_one;
+                                    if self.is_one_to_one {
+                                        self.ensure_full_res_rendered(frame);
+                                    } else {
+                                        self.zoom_level = 1.0;
+                                        self.pan_offset = Vec2::ZERO;
+                                    }
+                                    ctx.request_repaint();
+                                }
+
+                                let image_center = viewport_rect.center() + self.pan_offset;
+                                let image_rect = Rect::from_center_size(image_center, display_size);
+
+                                let painter = ui.painter_at(viewport_rect);
+                                painter.image(
+                                    active_tex_id,
+                                    image_rect,
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+
+                                if self.crop_mode_active {
+                                    if let Some(img) = &self.current_image {
+                                        let orig_aspect = if self.edit_stack.crop.rotation == 90
+                                            || self.edit_stack.crop.rotation == 270
+                                        {
+                                            img.height as f32 / img.width as f32
+                                        } else {
+                                            img.width as f32 / img.height as f32
+                                        };
+                                        if show_crop_overlay(
+                                            ui,
+                                            image_rect,
+                                            &mut self.edit_stack.crop,
+                                            orig_aspect,
+                                        ) {
+                                            if self.slider_drag_start_stack.is_none() {
+                                                let baseline = if self.history_index
+                                                    < self.history.len()
+                                                {
+                                                    self.history[self.history_index].stack.clone()
+                                                } else {
+                                                    self.edit_stack.clone()
+                                                };
+                                                self.slider_drag_start_stack = Some(baseline);
                                             }
+                                            self.slider_drag_action_name = Some(t!(
+                                                "history_crop",
+                                                "preset" => format!(
+                                                    "{:?}",
+                                                    self.edit_stack.crop.preset
+                                                )
+                                            ));
+                                            self.re_render_edits(frame);
+                                            ctx.request_repaint();
                                         }
                                     }
-                                });
+                                }
                             }
                             BeforeAfterMode::Toggle => {
                                 let available_aspect = available_size.x / available_size.y.max(1.0);
@@ -3437,7 +3797,7 @@ impl BeamApp {
         }
     }
 
-    /// Render settings modal with language switcher and catalog storage info
+    /// Render settings modal with language switcher, catalog storage info, and keyboard shortcuts
     fn show_settings_dialog_window(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             return;
@@ -3450,59 +3810,168 @@ impl BeamApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(380.0);
+                ui.set_min_width(420.0);
                 ui.vertical(|ui| {
-                    ui.heading(t!("settings_general"));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(
+                            &mut self.settings_tab,
+                            SettingsTab::General,
+                            t!("settings_tab_general"),
+                        );
+                        ui.selectable_value(
+                            &mut self.settings_tab,
+                            SettingsTab::Shortcuts,
+                            t!("settings_tab_shortcuts"),
+                        );
+                    });
                     ui.separator();
                     ui.add_space(4.0);
 
-                    ui.horizontal(|ui| {
-                        ui.label(t!("settings_language"));
-                        let mut current_lang = self.app_config.language;
-                        let prev_lang = current_lang;
-                        egui::ComboBox::from_id_salt("settings_lang_combo")
-                            .selected_text(current_lang.display_name())
-                            .show_ui(ui, |ui| {
-                                for lang in [Language::En, Language::Tr] {
-                                    ui.selectable_value(
-                                        &mut current_lang,
-                                        lang,
-                                        lang.display_name(),
-                                    );
+                    match self.settings_tab {
+                        SettingsTab::General => {
+                            ui.heading(t!("settings_general"));
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            ui.horizontal(|ui| {
+                                ui.label(t!("settings_language"));
+                                let mut current_lang = self.app_config.language;
+                                let prev_lang = current_lang;
+                                egui::ComboBox::from_id_salt("settings_lang_combo")
+                                    .selected_text(current_lang.display_name())
+                                    .show_ui(ui, |ui| {
+                                        for lang in [Language::En, Language::Tr] {
+                                            ui.selectable_value(
+                                                &mut current_lang,
+                                                lang,
+                                                lang.display_name(),
+                                            );
+                                        }
+                                    });
+
+                                if current_lang != prev_lang {
+                                    self.app_config.language = current_lang;
+                                    beam_core::set_language(current_lang);
+                                    if let Err(e) = self.app_config.save() {
+                                        log::warn!("Failed to save app config: {e}");
+                                    }
+                                    ctx.request_repaint();
                                 }
                             });
 
-                        if current_lang != prev_lang {
-                            self.app_config.language = current_lang;
-                            beam_core::set_language(current_lang);
-                            if let Err(e) = self.app_config.save() {
-                                log::warn!("Failed to save app config: {e}");
-                            }
-                            ctx.request_repaint();
+                            ui.add_space(12.0);
+                            ui.heading(t!("settings_storage"));
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            ui.label(RichText::new(t!("settings_catalog_path")).strong());
+                            let mut db_path = default_catalog_path().display().to_string();
+                            ui.add(
+                                egui::TextEdit::singleline(&mut db_path)
+                                    .desired_width(380.0)
+                                    .interactive(false),
+                            );
+
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(t!("settings_cache_path")).strong());
+                            let mut cache_path = self.thumbnail_cache_dir.display().to_string();
+                            ui.add(
+                                egui::TextEdit::singleline(&mut cache_path)
+                                    .desired_width(380.0)
+                                    .interactive(false),
+                            );
                         }
-                    });
+                        SettingsTab::Shortcuts => {
+                            ui.heading(t!("settings_shortcuts_heading"));
+                            ui.separator();
+                            ui.add_space(4.0);
 
-                    ui.add_space(12.0);
-                    ui.heading(t!("settings_storage"));
-                    ui.separator();
-                    ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(t!("settings_shortcut_profile"));
+                                let prev_prof = self.app_config.shortcuts.profile;
+                                let mut curr_prof = prev_prof;
+                                egui::ComboBox::from_id_salt("shortcut_profile_combo")
+                                    .selected_text(curr_prof.display_name())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut curr_prof,
+                                            ShortcutProfile::Default,
+                                            ShortcutProfile::Default.display_name(),
+                                        );
+                                        ui.selectable_value(
+                                            &mut curr_prof,
+                                            ShortcutProfile::Lightroom,
+                                            ShortcutProfile::Lightroom.display_name(),
+                                        );
+                                    });
+                                if curr_prof != prev_prof {
+                                    self.app_config.shortcuts.profile = curr_prof;
+                                    let _ = self.app_config.save();
+                                }
+                            });
 
-                    ui.label(RichText::new(t!("settings_catalog_path")).strong());
-                    let mut db_path = default_catalog_path().display().to_string();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut db_path)
-                            .desired_width(360.0)
-                            .interactive(false),
-                    );
+                            ui.add_space(8.0);
+                            let mut shortcuts_changed = false;
+                            if ui
+                                .checkbox(
+                                    &mut self.app_config.shortcuts.number_keys_rate,
+                                    t!("settings_shortcut_ratings"),
+                                )
+                                .changed()
+                            {
+                                shortcuts_changed = true;
+                            }
+                            if ui
+                                .checkbox(
+                                    &mut self.app_config.shortcuts.number_keys_rate,
+                                    t!("settings_shortcut_labels"),
+                                )
+                                .changed()
+                            {
+                                shortcuts_changed = true;
+                            }
+                            if ui
+                                .checkbox(
+                                    &mut self.app_config.shortcuts.arrow_keys_navigate,
+                                    t!("settings_shortcut_nav"),
+                                )
+                                .changed()
+                            {
+                                shortcuts_changed = true;
+                            }
+                            if ui
+                                .checkbox(
+                                    &mut self.app_config.shortcuts.f_fullscreen,
+                                    t!("settings_shortcut_fullscreen"),
+                                )
+                                .changed()
+                            {
+                                shortcuts_changed = true;
+                            }
+                            if ui
+                                .checkbox(
+                                    &mut self.app_config.shortcuts.z_zoom,
+                                    t!("settings_shortcut_zoom"),
+                                )
+                                .changed()
+                            {
+                                shortcuts_changed = true;
+                            }
+                            if ui
+                                .checkbox(
+                                    &mut self.app_config.shortcuts.j_clipping,
+                                    t!("settings_shortcut_clipping"),
+                                )
+                                .changed()
+                            {
+                                shortcuts_changed = true;
+                            }
 
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(t!("settings_cache_path")).strong());
-                    let mut cache_path = self.thumbnail_cache_dir.display().to_string();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut cache_path)
-                            .desired_width(360.0)
-                            .interactive(false),
-                    );
+                            if shortcuts_changed {
+                                let _ = self.app_config.save();
+                            }
+                        }
+                    }
 
                     ui.add_space(16.0);
                     ui.separator();
@@ -3813,6 +4282,195 @@ impl BeamApp {
 
         if close_dialog {
             self.show_sync_dialog = false;
+        }
+    }
+
+    /// Save current window layout and panel dimensions to AppConfig
+    pub fn save_session_state(&mut self) {
+        self.app_config.filmstrip_visible = self.filmstrip_visible;
+        self.app_config.filmstrip_height = Some(self.filmstrip_height);
+        self.app_config.show_history_panel = self.show_history_panel;
+        self.app_config.show_develop_panel = self.show_develop_panel;
+        let _ = self.app_config.save();
+    }
+
+    /// Update star rating for active photo
+    pub fn set_active_photo_rating(&mut self, rating: u8) {
+        if let Some(path) = &self.current_path {
+            let sidecar_p = Sidecar::path_for(path);
+            let mut sidecar = Sidecar::load_from_file(&sidecar_p).unwrap_or_else(|_| {
+                let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+                Sidecar::new(fname)
+            });
+            sidecar.set_rating(rating);
+            let _ = sidecar.save_to_file(&sidecar_p);
+
+            let path_str = path.to_string_lossy().to_string();
+            if let Some(photo) = self
+                .library_state
+                .photos
+                .iter_mut()
+                .find(|p| p.file_path == path_str)
+            {
+                photo.rating = rating;
+                let _ = self.library_db.update_rating(photo.id, rating);
+            }
+            self.sidecar_status = format!("Rating: {rating}★");
+        }
+    }
+
+    /// Update color label for active photo
+    pub fn set_active_photo_color_label(&mut self, label: ColorLabel) {
+        if let Some(path) = &self.current_path {
+            let sidecar_p = Sidecar::path_for(path);
+            let mut sidecar = Sidecar::load_from_file(&sidecar_p).unwrap_or_else(|_| {
+                let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+                Sidecar::new(fname)
+            });
+            sidecar.set_color_label(label);
+            let _ = sidecar.save_to_file(&sidecar_p);
+
+            let path_str = path.to_string_lossy().to_string();
+            if let Some(photo) = self
+                .library_state
+                .photos
+                .iter_mut()
+                .find(|p| p.file_path == path_str)
+            {
+                photo.color_label = label;
+                let _ = self.library_db.update_color_label(photo.id, label);
+            }
+            self.sidecar_status = format!("Label: {:?}", label);
+        }
+    }
+
+    /// Navigate to next or previous photo in the active library / filmstrip list
+    pub fn navigate_photo(&mut self, forward: bool) {
+        if self.library_state.photos.is_empty() {
+            return;
+        }
+        let current_pos = self.current_path.as_ref().and_then(|path| {
+            let p_str = path.to_string_lossy();
+            self.library_state
+                .photos
+                .iter()
+                .position(|p| p.file_path == p_str)
+        });
+
+        let next_idx = match current_pos {
+            Some(idx) => {
+                if forward {
+                    (idx + 1) % self.library_state.photos.len()
+                } else if idx == 0 {
+                    self.library_state.photos.len() - 1
+                } else {
+                    idx - 1
+                }
+            }
+            None => 0,
+        };
+
+        let target_path = PathBuf::from(&self.library_state.photos[next_idx].file_path);
+        self.load_file_path(target_path);
+    }
+
+    /// Render horizontal filmstrip thumbnail carousel at bottom of Develop view
+    fn show_develop_filmstrip(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(t!("develop_filmstrip")).strong().size(12.0));
+            if ui
+                .small_button("▼")
+                .on_hover_text("Hide Filmstrip")
+                .clicked()
+            {
+                self.filmstrip_visible = false;
+                self.app_config.filmstrip_visible = false;
+                let _ = self.app_config.save();
+            }
+        });
+
+        ui.add_space(2.0);
+
+        if self.library_state.photos.is_empty() {
+            ui.label(t!("develop_filmstrip_empty"));
+            return;
+        }
+
+        let mut clicked_photo = None;
+
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for photo in &self.library_state.photos {
+                        let is_active = self
+                            .current_path
+                            .as_ref()
+                            .map(|p| p.to_string_lossy() == photo.file_path)
+                            .unwrap_or(false);
+
+                        let file_path = PathBuf::from(&photo.file_path);
+                        let file_name = file_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("image");
+
+                        ui.vertical(|ui| {
+                            let thumb_size = egui::vec2(60.0, 60.0);
+                            let status = self.library_state.thumbnail_status.get(&photo.id);
+
+                            let frame_stroke = if is_active {
+                                Stroke::new(2.0, Color32::from_rgb(60, 140, 255))
+                            } else {
+                                Stroke::new(1.0, Color32::from_rgb(50, 50, 55))
+                            };
+
+                            let resp = egui::Frame::canvas(ui.style())
+                                .stroke(frame_stroke)
+                                .inner_margin(2.0)
+                                .show(ui, |ui| match status {
+                                    Some(ThumbnailStatus::Ready(tex_id)) => ui.image(
+                                        egui::load::SizedTexture::new(tex_id.id(), thumb_size),
+                                    ),
+                                    _ => {
+                                        let (rect, resp) = ui
+                                            .allocate_exact_size(thumb_size, egui::Sense::click());
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            2.0,
+                                            Color32::from_rgb(30, 30, 35),
+                                        );
+                                        ui.painter().text(
+                                            rect.center(),
+                                            Align2::CENTER_CENTER,
+                                            "📷",
+                                            FontId::proportional(16.0),
+                                            Color32::GRAY,
+                                        );
+                                        resp
+                                    }
+                                })
+                                .response;
+
+                            // Truncated filename
+                            let truncated_name = if file_name.len() > 10 {
+                                format!("{}...", &file_name[..8])
+                            } else {
+                                file_name.to_string()
+                            };
+                            let label_resp = ui.small(truncated_name);
+
+                            if resp.clicked() || label_resp.clicked() {
+                                clicked_photo = Some(photo.file_path.clone());
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+                });
+            });
+
+        if let Some(target_path) = clicked_photo {
+            self.load_file_path(PathBuf::from(target_path));
         }
     }
 }

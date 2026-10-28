@@ -368,3 +368,23 @@ sync_dialog_target_count = Hedef: {$count} fotoğraf seçildi
 sync_dialog_sync_btn = Eşitle
 sync_dialog_success = Ayarlar {$count} fotoğrafa eşitlendi
 sync_dialog_cancel = İptal
+
+# İş Akışı İyileştirmeleri (Milestone 13)
+histogram_shadow_clipping = Gölge kırpılması (kayıp siyahlar) [J]
+histogram_highlight_clipping = Işık kırpılması (patlayan beyazlar) [J]
+develop_zoom_fit = Sığdır
+develop_zoom_100 = 1:1 (%100)
+develop_zoom_pct = Yakınlaştırma: %{$zoom}
+develop_filmstrip = Film Şeridi
+develop_filmstrip_empty = Film şeridinde fotoğraf yok
+settings_tab_general = Genel
+settings_tab_shortcuts = Kısayollar
+settings_shortcuts_heading = Klavye Kısayolları
+settings_shortcut_profile = Kısayol Profili:
+settings_shortcut_ratings = Puanlama (0–5)
+settings_shortcut_labels = Renk Etiketleri (6: Kırmızı, 7: Sarı, 8: Yeşil, 9: Mavi)
+settings_shortcut_nav = Sonraki / Önceki Fotoğraf (Sol / Sağ Ok)
+settings_shortcut_fullscreen = Tam Ekran Modu (F11 / F)
+settings_shortcut_zoom = %100 / Sığdır Yakınlaştırma (Z)
+settings_shortcut_clipping = Kırpılma Uyarıları (J)
+
