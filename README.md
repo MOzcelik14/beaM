@@ -158,6 +158,16 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Full export pipeline and thumbnail generation integration: applies orientation, flips, straighten, and crop box before resizing and sharpening.
   - Complete English and Turkish localization across all UI elements, presets, and history records.
 
+- [x] **Milestone 12 – Presets and settings sync**:
+  - Save current adjustments as a named preset, with granular group selection masks (White Balance, Exposure, Highlights/Shadows, Contrast, Tone Curve, HSL, Crop).
+  - Presets stored as human-readable, versioned RON files (`.beam.preset.ron`) in user configuration directory (`~/.config/beam/presets` on Linux, `%APPDATA%\beam\presets` on Windows).
+  - Left dock Preset panel with tab selector (`[ 🎨 Presets ]  [ 📜 History ]`), live hover preview with instant original restoration on pointer leave, and 1-click apply with history commit.
+  - Built-in presets (Neutral, Vivid, Matte, Black & White, Warm Film, Cool Cinematic, Punchy Contrast, Moody Landscape) with full bilingual localization.
+  - Preset file import and export dialogs (`.ron`).
+  - Copy & paste settings (`Ctrl+C`, `Ctrl+V`, Edit menu) with selective group mask dialog.
+  - Multi-photo settings synchronization in Library view: apply adjustments from active photo across all selected targets with sidecar and thumbnail persistence.
+  - Full English and Turkish localization across all preset names, dialogs, and actions.
+
 ---
 
 ## Adding a New Language

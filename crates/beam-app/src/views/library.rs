@@ -37,6 +37,7 @@ pub enum LibraryAction {
     ImportFolder,
     ExportPhotos(Vec<PathBuf>),
     RebuildThumbnails,
+    SyncSettings,
 }
 
 pub struct LibraryViewState {
@@ -188,6 +189,21 @@ pub fn show_library_view(
                             .collect()
                     };
                     action = LibraryAction::ExportPhotos(paths);
+                }
+
+                if selected_count > 1 {
+                    ui.add_space(4.0);
+                    if ui
+                        .button(
+                            RichText::new(format!("⚙ {}", t!("library_sync_settings")))
+                                .size(13.0)
+                                .strong(),
+                        )
+                        .on_hover_text(t!("sync_dialog_title"))
+                        .clicked()
+                    {
+                        action = LibraryAction::SyncSettings;
+                    }
                 }
 
                 ui.add_space(4.0);

@@ -306,3 +306,65 @@ status_save_error = Kaydetme hatası: {$error}
 status_error = Hata: {$msg}
 status_no_image_hint = Görüntü yüklenmedi. Bir görüntü açmak için Dosya -> RAW Fotoğraf Aç... (Ctrl+O) seçeneğini kullanın.
 status_sidecar = Ayar dosyası: {$status}
+
+# Presets & Settings Sync
+develop_presets = Hazır Ayarlar
+preset_builtin_category = Yerleşik Hazır Ayarlar
+preset_user_category = Kullanıcı Hazır Ayarları
+preset_empty_user = Henüz kaydedilmiş kullanıcı ayarı yok
+preset_save_btn = Hazır Ayar Kaydet...
+preset_import_btn = İçe Aktar...
+preset_export_btn = Dışa Aktar...
+preset_delete_btn = Sil
+preset_delete_confirm = '{$name}' hazır ayarını silmek istiyor musunuz?
+preset_hover_preview = Önizlemek için üzerine gelin • Uygulamak için tıklayın
+
+# Built-in Preset Names & Descriptions
+preset_name_neutral = Nötr
+preset_desc_neutral = Ayarları standart başlangıç durumuna sıfırla
+preset_name_vivid = Canlı
+preset_desc_vivid = Yüksek doygunluk ve belirgin kontrastlı canlı renkler
+preset_name_matte = Mat
+preset_desc_matte = Yükseltilmiş siyahlar ve yumuşak ışık geçişleri
+preset_name_bw = Siyah & Beyaz
+preset_desc_bw = İncelikli ton eğrisiyle yüksek kontrastlı monokrom
+preset_name_warm_film = Sıcak Film
+preset_desc_warm_film = Altın sıcaklık ve yükseltilmiş nostaljik gölge tonları
+preset_name_cool_cinematic = Soğuk Sinematik
+preset_desc_cool_cinematic = Camgöbeği gölgeler, serin atmosfer ve sinematik kontrast
+preset_name_punchy_contrast = Vurucu Kontrast
+preset_desc_punchy_contrast = Derin dinamik aralıklı agresif ton eğrisi
+preset_name_moody_landscape = Kasvetli Manzara
+preset_desc_moody_landscape = Koyu yeşiller, dramatik maviler ve zengin gökyüzü
+
+# Preset Dialog
+preset_dialog_title = Yeni Hazır Ayar
+preset_dialog_name = Hazır Ayar Adı:
+preset_dialog_include_groups = Dahil Edilecek Ayarlar:
+preset_dialog_group_wb = Beyaz Dengesi
+preset_dialog_group_exposure = Pozlama ve Kontrast
+preset_dialog_group_highlights_shadows = Işıklar ve Gölgeler
+preset_dialog_group_tone_curve = Ton Eğrisi
+preset_dialog_group_hsl = HSL / Renk
+preset_dialog_group_crop = Kırpma ve Yönelim
+preset_dialog_check_all = Tümünü Seç
+preset_dialog_check_none = Hiçbirini Seçme
+preset_dialog_save = Kaydet
+preset_dialog_cancel = İptal
+
+# Copy / Paste Settings
+menu_copy_settings = Ayarları Kopyala...
+menu_paste_settings = Ayarları Yapıştır
+copy_dialog_title = Ayarları Kopyala
+copy_dialog_copy_btn = Kopyala
+history_paste_settings = Ayarları Yapıştır
+history_apply_preset = Hazır Ayar Uygula: {$name}
+
+# Library Multi-Photo Sync
+library_sync_settings = Ayarları Eşitle...
+sync_dialog_title = Ayarları Eşitle
+sync_dialog_source = Kaynak: {$name}
+sync_dialog_target_count = Hedef: {$count} fotoğraf seçildi
+sync_dialog_sync_btn = Eşitle
+sync_dialog_success = Ayarlar {$count} fotoğrafa eşitlendi
+sync_dialog_cancel = İptal

@@ -6,7 +6,10 @@ use crate::widgets::curve::show_tone_curve;
 use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
 use beam_core::geometry::{calculate_effective_aspect_ratio, create_centered_crop_rect};
 use beam_core::sidecar::{CropAspectPreset, EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS};
-use beam_core::{set_language, t, AppConfig, Language, APP_NAME};
+use beam_core::{
+    built_in_presets, default_presets_dir, delete_user_preset, load_user_presets, save_user_preset,
+    set_language, t, AppConfig, Language, Preset, PresetGroupMask, APP_NAME,
+};
 use beam_gpu::{EditPipeline, GpuImage};
 use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
 use beam_media::{decode_image, DecodedImage, ImageMetadata};
@@ -23,6 +26,13 @@ use std::thread;
 pub enum AppView {
     Library,
     Develop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeftPanelTab {
+    #[default]
+    Presets,
+    History,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -110,6 +120,22 @@ pub struct BeamApp {
     slider_drag_start_stack: Option<EditStack>,
     slider_drag_action_name: Option<String>,
     app_config: AppConfig,
+
+    // Presets & Settings Sync
+    left_panel_tab: LeftPanelTab,
+    user_presets: Vec<Preset>,
+    preset_dir: PathBuf,
+    hovered_preset: Option<Preset>,
+    stack_before_hover: Option<EditStack>,
+    show_new_preset_dialog: bool,
+    new_preset_name: String,
+    new_preset_mask: PresetGroupMask,
+    copied_settings: Option<(EditStack, PresetGroupMask)>,
+    show_copy_dialog: bool,
+    copy_dialog_mask: PresetGroupMask,
+    show_sync_dialog: bool,
+    sync_dialog_mask: PresetGroupMask,
+    sync_dialog_source_photo: Option<(i64, String, EditStack)>,
 
     // Export dialog & process state
     show_export_dialog: bool,
@@ -261,6 +287,9 @@ impl BeamApp {
             }
         });
 
+        let preset_dir = default_presets_dir();
+        let user_presets = load_user_presets(&preset_dir);
+
         Self {
             current_view: AppView::Library,
             library_db,
@@ -295,6 +324,20 @@ impl BeamApp {
             show_settings: false,
             show_develop_panel: true,
             show_history_panel: true,
+            left_panel_tab: LeftPanelTab::Presets,
+            user_presets,
+            preset_dir,
+            hovered_preset: None,
+            stack_before_hover: None,
+            show_new_preset_dialog: false,
+            new_preset_name: String::new(),
+            new_preset_mask: PresetGroupMask::default(),
+            copied_settings: None,
+            show_copy_dialog: false,
+            copy_dialog_mask: PresetGroupMask::default(),
+            show_sync_dialog: false,
+            sync_dialog_mask: PresetGroupMask::default(),
+            sync_dialog_source_photo: None,
             history: vec![HistoryStep::new("Initial", EditStack::default())],
             history_index: 0,
             slider_drag_start_stack: None,
@@ -745,6 +788,31 @@ impl BeamApp {
         }
     }
 
+    /// Paste settings from clipboard to current image
+    pub fn paste_settings(&mut self, frame: &mut eframe::Frame) {
+        if let Some((src_stack, mask)) = &self.copied_settings {
+            let preset = Preset::from_stack("clipboard", "Clipboard", src_stack, *mask);
+            preset.apply_to(&mut self.edit_stack);
+            self.push_history_step(t!("history_paste_settings"));
+            self.re_render_edits(frame);
+        }
+    }
+
+    /// Import preset file via file picker
+    pub fn import_preset_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("beaM Preset", &["ron"])
+            .pick_file()
+        {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(preset) = Preset::from_ron_str(&content) {
+                    let _ = save_user_preset(&preset, &self.preset_dir);
+                    self.user_presets = load_user_presets(&self.preset_dir);
+                }
+            }
+        }
+    }
+
     /// Toggle Before/After view
     pub fn toggle_before_after(&mut self) {
         self.before_after_mode = match self.before_after_mode {
@@ -902,6 +970,30 @@ impl eframe::App for BeamApp {
                         ui.close();
                     }
                     ui.separator();
+                    let can_copy = self.current_image.is_some();
+                    if ui
+                        .add_enabled(
+                            can_copy,
+                            egui::Button::new(format!("{} (Ctrl+C)", t!("menu_copy_settings"))),
+                        )
+                        .clicked()
+                    {
+                        self.show_copy_dialog = true;
+                        self.copy_dialog_mask = PresetGroupMask::default();
+                        ui.close();
+                    }
+                    let can_paste = self.copied_settings.is_some() && self.current_image.is_some();
+                    if ui
+                        .add_enabled(
+                            can_paste,
+                            egui::Button::new(format!("{} (Ctrl+V)", t!("menu_paste_settings"))),
+                        )
+                        .clicked()
+                    {
+                        self.paste_settings(frame);
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button(t!("menu_settings")).clicked() {
                         self.show_settings = true;
                         ui.close();
@@ -975,7 +1067,25 @@ impl eframe::App for BeamApp {
         }
 
         if self.current_view == AppView::Develop {
-            if ctx
+            if ctx.input(|i| {
+                (i.modifiers.command || i.modifiers.ctrl)
+                    && !i.modifiers.shift
+                    && i.key_pressed(egui::Key::C)
+            }) {
+                if self.current_image.is_some() {
+                    self.show_copy_dialog = true;
+                    self.copy_dialog_mask = PresetGroupMask::default();
+                }
+            } else if ctx.input(|i| {
+                (i.modifiers.command || i.modifiers.ctrl)
+                    && !i.modifiers.shift
+                    && i.key_pressed(egui::Key::V)
+            }) {
+                if self.current_image.is_some() {
+                    self.paste_settings(frame);
+                    ctx.request_repaint();
+                }
+            } else if ctx
                 .input(|i| i.key_pressed(egui::Key::C) && !i.modifiers.command && !i.modifiers.ctrl)
             {
                 self.crop_mode_active = !self.crop_mode_active;
@@ -1081,6 +1191,28 @@ impl eframe::App for BeamApp {
                     LibraryAction::RebuildThumbnails => {
                         self.rebuild_thumbnails();
                     }
+                    LibraryAction::SyncSettings => {
+                        if let Some(source_id) = self.library_state.selected_photo_id {
+                            if let Ok(Some(photo)) = self.library_db.get_photo(source_id) {
+                                let path = PathBuf::from(&photo.file_path);
+                                let sidecar_p = Sidecar::path_for(&path);
+                                let stack = if let Ok(sidecar) = Sidecar::load_from_file(&sidecar_p)
+                                {
+                                    sidecar.edit_stack
+                                } else {
+                                    EditStack::default()
+                                };
+                                let fname = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("image")
+                                    .to_string();
+                                self.sync_dialog_source_photo = Some((source_id, fname, stack));
+                                self.sync_dialog_mask = PresetGroupMask::default();
+                                self.show_sync_dialog = true;
+                            }
+                        }
+                    }
                     LibraryAction::None => {}
                 }
             }
@@ -1092,75 +1224,318 @@ impl eframe::App for BeamApp {
                         .default_size(240.0)
                         .min_size(180.0)
                         .show(ui, |ui| {
-                            ui.heading(t!("develop_history"));
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(
+                                    &mut self.left_panel_tab,
+                                    LeftPanelTab::Presets,
+                                    format!("🎨 {}", t!("develop_presets")),
+                                );
+                                ui.selectable_value(
+                                    &mut self.left_panel_tab,
+                                    LeftPanelTab::History,
+                                    format!("📜 {}", t!("develop_history")),
+                                );
+                            });
                             ui.separator();
 
-                            ui.horizontal(|ui| {
-                                let can_undo = self.history_index > 0 && !self.history.is_empty();
-                                if ui
-                                    .add_enabled(
-                                        can_undo,
-                                        egui::Button::new(t!("develop_undo_btn")),
-                                    )
-                                    .clicked()
-                                {
-                                    self.undo(frame);
-                                }
-                                let can_redo = self.history_index + 1 < self.history.len();
-                                if ui
-                                    .add_enabled(
-                                        can_redo,
-                                        egui::Button::new(t!("develop_redo_btn")),
-                                    )
-                                    .clicked()
-                                {
-                                    self.redo(frame);
-                                }
-                            });
-                            ui.add_space(4.0);
+                            match self.left_panel_tab {
+                                LeftPanelTab::Presets => {
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button(format!("➕ {}", t!("preset_save_btn")))
+                                            .clicked()
+                                        {
+                                            self.show_new_preset_dialog = true;
+                                            self.new_preset_name = String::new();
+                                            self.new_preset_mask = PresetGroupMask::default();
+                                        }
+                                        if ui
+                                            .button(format!("📥 {}", t!("preset_import_btn")))
+                                            .clicked()
+                                        {
+                                            self.import_preset_dialog();
+                                        }
+                                    });
+                                    ui.add_space(4.0);
 
-                            let mut jump_target = None;
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| {
-                                    if self.history.is_empty() {
-                                        ui.label(t!("develop_history_empty"));
-                                    } else {
-                                        for (idx, step) in self.history.iter().enumerate() {
-                                            let is_current = idx == self.history_index;
-                                            let is_past = idx <= self.history_index;
+                                    let mut apply_preset = None;
+                                    let mut delete_preset_id = None;
+                                    let mut export_preset = None;
+                                    let mut current_hovered_preset = None;
 
-                                            let label_text = if idx == 0 {
-                                                format!("0. {}", t!("develop_history_initial"))
+                                    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(
+                                        ui,
+                                        |ui| {
+                                            // 1. Built-in Category
+                                            ui.strong(t!("preset_builtin_category"));
+                                            ui.add_space(2.0);
+                                            for preset in &built_in_presets() {
+                                                let localized_name = match preset.name.as_str() {
+                                                    "preset_name_neutral" => {
+                                                        t!("preset_name_neutral")
+                                                    }
+                                                    "preset_name_vivid" => t!("preset_name_vivid"),
+                                                    "preset_name_matte" => t!("preset_name_matte"),
+                                                    "preset_name_bw" => t!("preset_name_bw"),
+                                                    "preset_name_warm_film" => {
+                                                        t!("preset_name_warm_film")
+                                                    }
+                                                    "preset_name_cool_cinematic" => {
+                                                        t!("preset_name_cool_cinematic")
+                                                    }
+                                                    "preset_name_punchy_contrast" => {
+                                                        t!("preset_name_punchy_contrast")
+                                                    }
+                                                    "preset_name_moody_landscape" => {
+                                                        t!("preset_name_moody_landscape")
+                                                    }
+                                                    _ => preset.name.clone(),
+                                                };
+                                                let desc = preset
+                                                    .description
+                                                    .as_deref()
+                                                    .map(|d| match d {
+                                                        "preset_desc_neutral" => {
+                                                            t!("preset_desc_neutral")
+                                                        }
+                                                        "preset_desc_vivid" => {
+                                                            t!("preset_desc_vivid")
+                                                        }
+                                                        "preset_desc_matte" => {
+                                                            t!("preset_desc_matte")
+                                                        }
+                                                        "preset_desc_bw" => t!("preset_desc_bw"),
+                                                        "preset_desc_warm_film" => {
+                                                            t!("preset_desc_warm_film")
+                                                        }
+                                                        "preset_desc_cool_cinematic" => {
+                                                            t!("preset_desc_cool_cinematic")
+                                                        }
+                                                        "preset_desc_punchy_contrast" => {
+                                                            t!("preset_desc_punchy_contrast")
+                                                        }
+                                                        "preset_desc_moody_landscape" => {
+                                                            t!("preset_desc_moody_landscape")
+                                                        }
+                                                        _ => d.to_string(),
+                                                    })
+                                                    .unwrap_or_default();
+
+                                                let resp = ui
+                                                    .selectable_label(false, &localized_name)
+                                                    .on_hover_text(format!(
+                                                        "{}\n\n{}",
+                                                        desc,
+                                                        t!("preset_hover_preview")
+                                                    ));
+                                                if resp.hovered() {
+                                                    current_hovered_preset = Some(preset.clone());
+                                                }
+                                                if resp.clicked() {
+                                                    apply_preset =
+                                                        Some((localized_name, preset.clone()));
+                                                }
+                                            }
+
+                                            ui.add_space(8.0);
+                                            ui.separator();
+
+                                            // 2. User Presets Category
+                                            ui.strong(t!("preset_user_category"));
+                                            ui.add_space(2.0);
+                                            if self.user_presets.is_empty() {
+                                                ui.label(
+                                                    RichText::new(t!("preset_empty_user"))
+                                                        .weak()
+                                                        .small(),
+                                                );
                                             } else {
-                                                format!("{}. {}", idx, step.name)
-                                            };
+                                                for preset in &self.user_presets {
+                                                    ui.horizontal(|ui| {
+                                                        let resp = ui
+                                                            .selectable_label(false, &preset.name)
+                                                            .on_hover_text(t!(
+                                                                "preset_hover_preview"
+                                                            ));
+                                                        if resp.hovered() {
+                                                            current_hovered_preset =
+                                                                Some(preset.clone());
+                                                        }
+                                                        if resp.clicked() {
+                                                            apply_preset = Some((
+                                                                preset.name.clone(),
+                                                                preset.clone(),
+                                                            ));
+                                                        }
 
-                                            let text_color = if is_current {
-                                                Color32::from_rgb(100, 200, 255)
-                                            } else if is_past {
-                                                Color32::WHITE
-                                            } else {
-                                                Color32::GRAY
-                                            };
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                if ui
+                                                                    .small_button("🗑")
+                                                                    .on_hover_text(t!(
+                                                                        "preset_delete_btn"
+                                                                    ))
+                                                                    .clicked()
+                                                                {
+                                                                    delete_preset_id =
+                                                                        Some(preset.id.clone());
+                                                                }
+                                                                if ui
+                                                                    .small_button("📤")
+                                                                    .on_hover_text(t!(
+                                                                        "preset_export_btn"
+                                                                    ))
+                                                                    .clicked()
+                                                                {
+                                                                    export_preset =
+                                                                        Some(preset.clone());
+                                                                }
+                                                            },
+                                                        );
+                                                    });
+                                                }
+                                            }
+                                        },
+                                    );
 
-                                            let text = RichText::new(label_text).color(text_color);
-                                            let response = if is_current {
-                                                ui.selectable_label(true, text.strong())
-                                            } else {
-                                                ui.selectable_label(false, text)
-                                            };
+                                    // Handle hover preview
+                                    if current_hovered_preset != self.hovered_preset {
+                                        if let Some(p) = &current_hovered_preset {
+                                            if self.stack_before_hover.is_none() {
+                                                self.stack_before_hover =
+                                                    Some(self.edit_stack.clone());
+                                            }
+                                            let mut preview_stack =
+                                                self.stack_before_hover.as_ref().unwrap().clone();
+                                            p.apply_to(&mut preview_stack);
+                                            self.edit_stack = preview_stack;
+                                            self.re_render_edits(frame);
+                                        } else if let Some(orig) = self.stack_before_hover.take() {
+                                            self.edit_stack = orig;
+                                            self.re_render_edits(frame);
+                                        }
+                                        self.hovered_preset = current_hovered_preset;
+                                        ctx.request_repaint();
+                                    }
 
-                                            if response.clicked() {
-                                                jump_target = Some(idx);
+                                    // Handle apply preset click
+                                    if let Some((name, preset)) = apply_preset {
+                                        if let Some(orig) = self.stack_before_hover.take() {
+                                            self.edit_stack = orig;
+                                        }
+                                        self.hovered_preset = None;
+                                        preset.apply_to(&mut self.edit_stack);
+                                        self.push_history_step(
+                                            t!("history_apply_preset", "name" => name),
+                                        );
+                                        self.re_render_edits(frame);
+                                        ctx.request_repaint();
+                                    }
+
+                                    // Handle delete preset
+                                    if let Some(id) = delete_preset_id {
+                                        let _ = delete_user_preset(&id, &self.preset_dir);
+                                        self.user_presets = load_user_presets(&self.preset_dir);
+                                    }
+
+                                    // Handle export preset
+                                    if let Some(preset) = export_preset {
+                                        if let Some(dest) = rfd::FileDialog::new()
+                                            .set_file_name(format!("{}.beam.preset.ron", preset.id))
+                                            .add_filter("beaM Preset", &["ron"])
+                                            .save_file()
+                                        {
+                                            if let Ok(s) = preset.to_ron_string() {
+                                                let _ = std::fs::write(dest, s);
                                             }
                                         }
                                     }
-                                });
+                                }
+                                LeftPanelTab::History => {
+                                    // If hover was active when switching tabs, restore
+                                    if let Some(orig) = self.stack_before_hover.take() {
+                                        self.edit_stack = orig;
+                                        self.re_render_edits(frame);
+                                        self.hovered_preset = None;
+                                    }
 
-                            if let Some(target) = jump_target {
-                                self.jump_to_history_step(frame, target);
-                                ctx.request_repaint();
+                                    ui.horizontal(|ui| {
+                                        let can_undo =
+                                            self.history_index > 0 && !self.history.is_empty();
+                                        if ui
+                                            .add_enabled(
+                                                can_undo,
+                                                egui::Button::new(t!("develop_undo_btn")),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.undo(frame);
+                                        }
+                                        let can_redo = self.history_index + 1 < self.history.len();
+                                        if ui
+                                            .add_enabled(
+                                                can_redo,
+                                                egui::Button::new(t!("develop_redo_btn")),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.redo(frame);
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+
+                                    let mut jump_target = None;
+                                    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(
+                                        ui,
+                                        |ui| {
+                                            if self.history.is_empty() {
+                                                ui.label(t!("develop_history_empty"));
+                                            } else {
+                                                for (idx, step) in self.history.iter().enumerate() {
+                                                    let is_current = idx == self.history_index;
+                                                    let is_past = idx <= self.history_index;
+
+                                                    let label_text = if idx == 0 {
+                                                        format!(
+                                                            "0. {}",
+                                                            t!("develop_history_initial")
+                                                        )
+                                                    } else {
+                                                        format!("{}. {}", idx, step.name)
+                                                    };
+
+                                                    let text_color = if is_current {
+                                                        Color32::from_rgb(100, 200, 255)
+                                                    } else if is_past {
+                                                        Color32::WHITE
+                                                    } else {
+                                                        Color32::GRAY
+                                                    };
+
+                                                    let text =
+                                                        RichText::new(label_text).color(text_color);
+                                                    let response = if is_current {
+                                                        ui.selectable_label(true, text.strong())
+                                                    } else {
+                                                        ui.selectable_label(false, text)
+                                                    };
+
+                                                    if response.clicked() {
+                                                        jump_target = Some(idx);
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    );
+
+                                    if let Some(target) = jump_target {
+                                        self.jump_to_history_step(frame, target);
+                                        ctx.request_repaint();
+                                    }
+                                }
                             }
                         });
                 }
@@ -2547,6 +2922,11 @@ impl eframe::App for BeamApp {
         // Settings dialog
         self.show_settings_dialog_window(&ctx);
 
+        // Presets & Sync dialogs
+        self.show_new_preset_dialog_window(&ctx);
+        self.show_copy_dialog_window(&ctx);
+        self.show_sync_dialog_window(&ctx);
+
         // Export dialogs
         self.show_export_dialog_window(&ctx);
         self.show_export_progress_window(&ctx);
@@ -3140,6 +3520,299 @@ impl BeamApp {
 
         if close_requested {
             self.show_settings = false;
+        }
+    }
+
+    /// Render Save New Preset dialog window
+    fn show_new_preset_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.show_new_preset_dialog {
+            return;
+        }
+
+        let mut close_dialog = false;
+        egui::Window::new(t!("preset_dialog_title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t!("preset_dialog_name"));
+                    ui.text_edit_singleline(&mut self.new_preset_name);
+                });
+                ui.separator();
+                ui.strong(t!("preset_dialog_include_groups"));
+
+                ui.horizontal(|ui| {
+                    if ui.small_button(t!("preset_dialog_check_all")).clicked() {
+                        self.new_preset_mask = PresetGroupMask::all();
+                    }
+                    if ui.small_button(t!("preset_dialog_check_none")).clicked() {
+                        self.new_preset_mask = PresetGroupMask::none();
+                    }
+                });
+                ui.add_space(4.0);
+
+                ui.checkbox(
+                    &mut self.new_preset_mask.white_balance,
+                    t!("preset_dialog_group_wb"),
+                );
+                ui.checkbox(
+                    &mut self.new_preset_mask.exposure,
+                    t!("preset_dialog_group_exposure"),
+                );
+                ui.checkbox(
+                    &mut self.new_preset_mask.highlights_shadows,
+                    t!("preset_dialog_group_highlights_shadows"),
+                );
+                ui.checkbox(&mut self.new_preset_mask.contrast, t!("develop_contrast"));
+                ui.checkbox(
+                    &mut self.new_preset_mask.tone_curve,
+                    t!("preset_dialog_group_tone_curve"),
+                );
+                ui.checkbox(&mut self.new_preset_mask.hsl, t!("preset_dialog_group_hsl"));
+                ui.checkbox(
+                    &mut self.new_preset_mask.crop,
+                    t!("preset_dialog_group_crop"),
+                );
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let can_save =
+                        !self.new_preset_name.trim().is_empty() && self.new_preset_mask.has_any();
+                    if ui
+                        .add_enabled(
+                            can_save,
+                            egui::Button::new(RichText::new(t!("preset_dialog_save")).strong()),
+                        )
+                        .clicked()
+                    {
+                        let name = self.new_preset_name.trim().to_string();
+                        let id = name.to_lowercase().replace(' ', "_");
+                        let preset =
+                            Preset::from_stack(id, name, &self.edit_stack, self.new_preset_mask);
+                        let _ = save_user_preset(&preset, &self.preset_dir);
+                        self.user_presets = load_user_presets(&self.preset_dir);
+                        close_dialog = true;
+                    }
+                    if ui.button(t!("preset_dialog_cancel")).clicked() {
+                        close_dialog = true;
+                    }
+                });
+            });
+
+        if close_dialog {
+            self.show_new_preset_dialog = false;
+        }
+    }
+
+    /// Render Copy Settings dialog window
+    fn show_copy_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.show_copy_dialog {
+            return;
+        }
+
+        let mut close_dialog = false;
+        egui::Window::new(t!("copy_dialog_title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.strong(t!("preset_dialog_include_groups"));
+
+                ui.horizontal(|ui| {
+                    if ui.small_button(t!("preset_dialog_check_all")).clicked() {
+                        self.copy_dialog_mask = PresetGroupMask::all();
+                    }
+                    if ui.small_button(t!("preset_dialog_check_none")).clicked() {
+                        self.copy_dialog_mask = PresetGroupMask::none();
+                    }
+                });
+                ui.add_space(4.0);
+
+                ui.checkbox(
+                    &mut self.copy_dialog_mask.white_balance,
+                    t!("preset_dialog_group_wb"),
+                );
+                ui.checkbox(
+                    &mut self.copy_dialog_mask.exposure,
+                    t!("preset_dialog_group_exposure"),
+                );
+                ui.checkbox(
+                    &mut self.copy_dialog_mask.highlights_shadows,
+                    t!("preset_dialog_group_highlights_shadows"),
+                );
+                ui.checkbox(&mut self.copy_dialog_mask.contrast, t!("develop_contrast"));
+                ui.checkbox(
+                    &mut self.copy_dialog_mask.tone_curve,
+                    t!("preset_dialog_group_tone_curve"),
+                );
+                ui.checkbox(
+                    &mut self.copy_dialog_mask.hsl,
+                    t!("preset_dialog_group_hsl"),
+                );
+                ui.checkbox(
+                    &mut self.copy_dialog_mask.crop,
+                    t!("preset_dialog_group_crop"),
+                );
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let can_copy = self.copy_dialog_mask.has_any();
+                    if ui
+                        .add_enabled(
+                            can_copy,
+                            egui::Button::new(RichText::new(t!("copy_dialog_copy_btn")).strong()),
+                        )
+                        .clicked()
+                    {
+                        self.copied_settings =
+                            Some((self.edit_stack.clone(), self.copy_dialog_mask));
+                        close_dialog = true;
+                    }
+                    if ui.button(t!("preset_dialog_cancel")).clicked() {
+                        close_dialog = true;
+                    }
+                });
+            });
+
+        if close_dialog {
+            self.show_copy_dialog = false;
+        }
+    }
+
+    /// Render Multi-Photo Settings Synchronization dialog window
+    fn show_sync_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.show_sync_dialog {
+            return;
+        }
+
+        let mut close_dialog = false;
+        let mut do_sync = false;
+
+        let Some((source_id, source_name, source_stack)) = self.sync_dialog_source_photo.clone()
+        else {
+            self.show_sync_dialog = false;
+            return;
+        };
+
+        let target_count = self
+            .library_state
+            .selected_photo_ids
+            .iter()
+            .filter(|&&id| id != source_id)
+            .count();
+
+        egui::Window::new(t!("sync_dialog_title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(t!("sync_dialog_source", "name" => &source_name));
+                ui.label(t!("sync_dialog_target_count", "count" => target_count));
+                ui.separator();
+                ui.strong(t!("preset_dialog_include_groups"));
+
+                ui.horizontal(|ui| {
+                    if ui.small_button(t!("preset_dialog_check_all")).clicked() {
+                        self.sync_dialog_mask = PresetGroupMask::all();
+                    }
+                    if ui.small_button(t!("preset_dialog_check_none")).clicked() {
+                        self.sync_dialog_mask = PresetGroupMask::none();
+                    }
+                });
+                ui.add_space(4.0);
+
+                ui.checkbox(
+                    &mut self.sync_dialog_mask.white_balance,
+                    t!("preset_dialog_group_wb"),
+                );
+                ui.checkbox(
+                    &mut self.sync_dialog_mask.exposure,
+                    t!("preset_dialog_group_exposure"),
+                );
+                ui.checkbox(
+                    &mut self.sync_dialog_mask.highlights_shadows,
+                    t!("preset_dialog_group_highlights_shadows"),
+                );
+                ui.checkbox(&mut self.sync_dialog_mask.contrast, t!("develop_contrast"));
+                ui.checkbox(
+                    &mut self.sync_dialog_mask.tone_curve,
+                    t!("preset_dialog_group_tone_curve"),
+                );
+                ui.checkbox(
+                    &mut self.sync_dialog_mask.hsl,
+                    t!("preset_dialog_group_hsl"),
+                );
+                ui.checkbox(
+                    &mut self.sync_dialog_mask.crop,
+                    t!("preset_dialog_group_crop"),
+                );
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let can_sync = target_count > 0 && self.sync_dialog_mask.has_any();
+                    if ui
+                        .add_enabled(
+                            can_sync,
+                            egui::Button::new(RichText::new(t!("sync_dialog_sync_btn")).strong()),
+                        )
+                        .clicked()
+                    {
+                        do_sync = true;
+                        close_dialog = true;
+                    }
+                    if ui.button(t!("sync_dialog_cancel")).clicked() {
+                        close_dialog = true;
+                    }
+                });
+            });
+
+        if do_sync {
+            let preset = Preset::from_stack(
+                "sync",
+                "Synchronized Settings",
+                &source_stack,
+                self.sync_dialog_mask,
+            );
+            let mut sync_success_count = 0;
+            for &target_id in &self.library_state.selected_photo_ids {
+                if target_id == source_id {
+                    continue;
+                }
+                if let Ok(Some(photo)) = self.library_db.get_photo(target_id) {
+                    let path = PathBuf::from(&photo.file_path);
+                    let sidecar_p = Sidecar::path_for(&path);
+                    let mut sidecar = if let Ok(loaded) = Sidecar::load_from_file(&sidecar_p) {
+                        loaded
+                    } else {
+                        let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+                        Sidecar::new(fname)
+                    };
+
+                    preset.apply_to(&mut sidecar.edit_stack);
+                    sidecar.history.push(HistoryStep::new(
+                        t!("history_paste_settings"),
+                        sidecar.edit_stack.clone(),
+                    ));
+                    sidecar.history_index = sidecar.history.len() - 1;
+
+                    if sidecar.save_to_file(&sidecar_p).is_ok() {
+                        self.library_state.thumbnail_status.remove(&target_id);
+                        let new_thumb_path =
+                            beam_media::thumbnail_cache_path(&path, &self.thumbnail_cache_dir);
+                        let _ = self
+                            .library_db
+                            .update_thumbnail_path(target_id, &new_thumb_path.to_string_lossy());
+                        sync_success_count += 1;
+                    }
+                }
+            }
+            self.sidecar_status = t!("sync_dialog_success", "count" => sync_success_count);
+            self.library_state.needs_refresh = true;
+        }
+
+        if close_dialog {
+            self.show_sync_dialog = false;
         }
     }
 }

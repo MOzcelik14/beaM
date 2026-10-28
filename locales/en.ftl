@@ -306,3 +306,65 @@ status_save_error = Save error: {$error}
 status_error = Error: {$msg}
 status_no_image_hint = No image loaded. Use File -> Open RAW Photo... (Ctrl+O) to open an image.
 status_sidecar = Sidecar: {$status}
+
+# Presets & Settings Sync
+develop_presets = Presets
+preset_builtin_category = Built-in Presets
+preset_user_category = User Presets
+preset_empty_user = No user presets saved yet
+preset_save_btn = Save Preset...
+preset_import_btn = Import...
+preset_export_btn = Export...
+preset_delete_btn = Delete
+preset_delete_confirm = Delete preset '{$name}'?
+preset_hover_preview = Hover to preview • Click to apply
+
+# Built-in Preset Names & Descriptions
+preset_name_neutral = Neutral
+preset_desc_neutral = Reset adjustments to standard baseline
+preset_name_vivid = Vivid
+preset_desc_vivid = Punchy colors with elevated saturation and contrast
+preset_name_matte = Matte
+preset_desc_matte = Lifted blacks with soft highlight rolloff
+preset_name_bw = Black & White
+preset_desc_bw = High-contrast monochrome with refined tonal curve
+preset_name_warm_film = Warm Film
+preset_desc_warm_film = Golden warmth with lifted vintage shadow tones
+preset_name_cool_cinematic = Cool Cinematic
+preset_desc_cool_cinematic = Teal shadows, cool mood, and movie-grade contrast
+preset_name_punchy_contrast = Punchy Contrast
+preset_desc_punchy_contrast = Aggressive tonal curve with deep dynamic range
+preset_name_moody_landscape = Moody Landscape
+preset_desc_moody_landscape = Deep greens, dramatic blues, and rich skies
+
+# Preset Dialog
+preset_dialog_title = New Preset
+preset_dialog_name = Preset Name:
+preset_dialog_include_groups = Include Adjustments:
+preset_dialog_group_wb = White Balance
+preset_dialog_group_exposure = Exposure & Contrast
+preset_dialog_group_highlights_shadows = Highlights & Shadows
+preset_dialog_group_tone_curve = Tone Curve
+preset_dialog_group_hsl = HSL / Color
+preset_dialog_group_crop = Crop & Orientation
+preset_dialog_check_all = Check All
+preset_dialog_check_none = Check None
+preset_dialog_save = Save
+preset_dialog_cancel = Cancel
+
+# Copy / Paste Settings
+menu_copy_settings = Copy Settings...
+menu_paste_settings = Paste Settings
+copy_dialog_title = Copy Settings
+copy_dialog_copy_btn = Copy
+history_paste_settings = Paste Settings
+history_apply_preset = Apply Preset: {$name}
+
+# Library Multi-Photo Sync
+library_sync_settings = Sync Settings...
+sync_dialog_title = Synchronize Settings
+sync_dialog_source = Source: {$name}
+sync_dialog_target_count = Target: {$count} photos selected
+sync_dialog_sync_btn = Synchronize
+sync_dialog_success = Synchronized settings to {$count} photos
+sync_dialog_cancel = Cancel
