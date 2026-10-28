@@ -137,6 +137,17 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Zero-seam tiled GPU processing: automatically divides images exceeding 2048px into discrete tiles, strictly bounding GPU memory (< 70 MB) even for 40+ MP and 100 MP images.
   - Full bilingual localization in English and Turkish.
 
+- [x] **Milestone 10 – Undo/redo, history, before/after**:
+  - Linear undo/redo stack (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`, Edit menu) supporting up to 50 operations.
+  - Intelligent grouping semantics: continuous slider drags and curve point movements group into a single commit on pointer release, while discrete actions (resets, checkboxes, Reset All) commit immediately.
+  - Collapsible History panel on the left side of the Develop view with jump-to-any-step on click, past/future visual indicators, and persistent step numbering.
+  - Sidecar persistence: history stack and active history index are serialized to and restored from `.beam.ron`.
+  - Zero-latency Before/After comparison modes powered by cached original unedited proxy texture:
+    - **Toggle Mode (`\`)**: Rapidly switch between edited image and original with a subtle `BEFORE` badge overlay.
+    - **Split View Mode**: Interactive split screen with draggable divider bar (`↔` handle) and zero-seam UV slicing in the viewport painter.
+    - **Side-by-Side Mode**: Dual-viewport comparison displaying before and after versions simultaneously with aligned aspect ratios and badges.
+  - Complete English and Turkish localization for all history entries, comparison toolbar labels, and tooltips.
+
 ---
 
 ## Adding a New Language

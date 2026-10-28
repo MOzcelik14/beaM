@@ -16,12 +16,15 @@ menu_exit = Çıkış
 menu_quit = Çıkış
 
 menu_edit = Düzenle
+menu_undo = Geri Al (Ctrl+Z)
+menu_redo = Yinele (Ctrl+Shift+Z)
 menu_settings = Ayarlar
 
 menu_view = Görünüm
 menu_view_library = Kütüphane Görünümü (G)
 menu_view_develop = Geliştirme Görünümü (D)
-menu_develop_panel = Geliştirme Paneli
+menu_develop_panel = Ayarlar Paneli
+menu_history_panel = Geçmiş Paneli
 menu_histogram = Histogram
 menu_reset_layout = Yerleşimi Sıfırla
 
@@ -161,6 +164,38 @@ develop_empty_desc = Açık kaynaklı, tahribatsız RAW fotoğraf düzenleyici v
 develop_open_btn = RAW Fotoğraf Aç (Ctrl+O)
 develop_decoding_with_name = {$name} rawler ile çözümleniyor...
 develop_decoding = Çözümleniyor...
+
+# Develop History & Before/After
+develop_history = Geçmiş
+develop_history_empty = Düzenleme geçmişi yok
+develop_history_initial = Başlangıç Durumu
+develop_undo_btn = ↶ Geri Al
+develop_redo_btn = ↷ Yinele
+develop_toggle_history = Geçmiş Panelini Aç/Kapat
+develop_before_after = Öncesi / Sonrası:
+develop_mode_normal = Tekli
+develop_mode_toggle = Öncesi (\)
+develop_mode_split = Bölünmüş Görünüm
+develop_mode_side_by_side = Yan Yana
+develop_before_badge = ÖNCESİ
+develop_after_badge = SONRASI
+develop_before_toggle_tooltip = Orijinal düzenlenmemiş ile düzenlenen fotoğraf arasında geçiş yap (\)
+develop_split_tooltip = Öncesi ve sonrasını etkileşimli bölünmüş ekranda karşılaştır
+develop_side_by_side_tooltip = Öncesi ve sonrasını yan yana karşılaştır
+
+# History Action Names
+history_initial = Başlangıç
+history_exposure = Pozlama: {$val} EV
+history_temperature = Sıcaklık: {$val}
+history_tint = Renk Tonu: {$val}
+history_highlights = Işıklar: {$val}
+history_shadows = Gölgeler: {$val}
+history_contrast = Kontrast: {$val}
+history_tone_curve = Ton Eğrisi
+history_hsl_band = HSL: {$band}
+history_reset_all = Tüm Ayarları Sıfırla
+history_reset_section = {$section} Sıfırla
+history_toggle_section = {$section} Aç/Kapat
 
 # Export Dialog
 export_title = Fotoğrafı Dışa Aktar

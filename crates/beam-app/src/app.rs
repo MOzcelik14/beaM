@@ -3,12 +3,14 @@ use crate::views::library::{
 };
 use crate::widgets::curve::show_tone_curve;
 use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
-use beam_core::sidecar::{EditStack, Sidecar};
+use beam_core::sidecar::{EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS};
 use beam_core::{set_language, t, AppConfig, Language, APP_NAME};
 use beam_gpu::{EditPipeline, GpuImage};
 use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
 use beam_media::{decode_image, DecodedImage, ImageMetadata};
-use eframe::egui::{self, Color32, MenuBar, Panel, RichText, Slider, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, FontId, MenuBar, Panel, Pos2, Rect, RichText, Slider, Stroke, Vec2,
+};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -19,6 +21,15 @@ use std::thread;
 pub enum AppView {
     Library,
     Develop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BeforeAfterMode {
+    #[default]
+    Normal,
+    Toggle,
+    SplitView,
+    SideBySide,
 }
 
 enum BackgroundMsg {
@@ -70,7 +81,11 @@ pub struct BeamApp {
     gpu_proxy_image: Option<GpuImage>,
     gpu_display_texture: Option<wgpu::Texture>,
     egui_texture_id: Option<egui::TextureId>,
+    gpu_before_texture: Option<wgpu::Texture>,
+    egui_before_texture_id: Option<egui::TextureId>,
     texture_aspect_ratio: f32,
+    before_after_mode: BeforeAfterMode,
+    split_view_divider: f32,
 
     // Background decoding
     tx: Sender<BackgroundMsg>,
@@ -86,6 +101,11 @@ pub struct BeamApp {
     show_about: bool,
     show_settings: bool,
     show_develop_panel: bool,
+    show_history_panel: bool,
+    history: Vec<HistoryStep>,
+    history_index: usize,
+    slider_drag_start_stack: Option<EditStack>,
+    slider_drag_action_name: Option<String>,
     app_config: AppConfig,
 
     // Export dialog & process state
@@ -254,7 +274,11 @@ impl BeamApp {
             gpu_proxy_image: None,
             gpu_display_texture: None,
             egui_texture_id: None,
+            gpu_before_texture: None,
+            egui_before_texture_id: None,
             texture_aspect_ratio: 1.0,
+            before_after_mode: BeforeAfterMode::Normal,
+            split_view_divider: 0.5,
             tx,
             rx,
             is_loading: false,
@@ -266,6 +290,11 @@ impl BeamApp {
             show_about: false,
             show_settings: false,
             show_develop_panel: true,
+            show_history_panel: true,
+            history: vec![HistoryStep::new("Initial", EditStack::default())],
+            history_index: 0,
+            slider_drag_start_stack: None,
+            slider_drag_action_name: None,
             app_config,
             show_export_dialog: false,
             show_export_progress: false,
@@ -388,18 +417,32 @@ impl BeamApp {
                         match Sidecar::load_from_file(&sidecar_p) {
                             Ok(sidecar) => {
                                 self.edit_stack = sidecar.edit_stack;
+                                self.history = sidecar.history;
+                                self.history_index = sidecar.history_index;
                                 self.sidecar_status = "Loaded from disk".to_string();
                             }
                             Err(e) => {
                                 log::warn!("Failed to read existing sidecar: {e}");
                                 self.edit_stack = EditStack::default();
+                                self.history = vec![HistoryStep::new(
+                                    t!("history_initial"),
+                                    EditStack::default(),
+                                )];
+                                self.history_index = 0;
                                 self.sidecar_status = "Failed to parse sidecar".to_string();
                             }
                         }
                     } else {
                         self.edit_stack = EditStack::default();
+                        self.history = vec![HistoryStep::new(
+                            t!("history_initial"),
+                            EditStack::default(),
+                        )];
+                        self.history_index = 0;
                         self.sidecar_status = "New sidecar".to_string();
                     }
+                    self.slider_drag_start_stack = None;
+                    self.slider_drag_action_name = None;
                     self.sidecar_path = Some(sidecar_p);
                     ctx.request_repaint();
                 }
@@ -533,7 +576,31 @@ impl BeamApp {
             &self.edit_stack,
         );
 
-        // Register or update egui native texture
+        // Create and render Before (unedited baseline) texture
+        let before_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("beam_before_target_texture"),
+            size: wgpu::Extent3d {
+                width: decoded.proxy_width,
+                height: decoded.proxy_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let before_view = before_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.edit_pipeline.as_mut().unwrap().render(
+            device,
+            queue,
+            &gpu_proxy,
+            &before_view,
+            &EditStack::default(),
+        );
+
+        // Register or update egui native textures
         let mut renderer = render_state.renderer.write();
         if let Some(existing_id) = self.egui_texture_id {
             renderer.update_egui_texture_from_wgpu_texture(
@@ -548,9 +615,23 @@ impl BeamApp {
             self.egui_texture_id = Some(id);
         }
 
+        if let Some(existing_before_id) = self.egui_before_texture_id {
+            renderer.update_egui_texture_from_wgpu_texture(
+                device,
+                &before_view,
+                wgpu::FilterMode::Linear,
+                existing_before_id,
+            );
+        } else {
+            let id =
+                renderer.register_native_texture(device, &before_view, wgpu::FilterMode::Linear);
+            self.egui_before_texture_id = Some(id);
+        }
+
         self.histogram_data = Some(HistogramData::compute_from_rgba32f(&decoded.proxy_data));
         self.texture_aspect_ratio = decoded.width as f32 / decoded.height as f32;
         self.gpu_display_texture = Some(display_texture);
+        self.gpu_before_texture = Some(before_texture);
         self.gpu_proxy_image = Some(gpu_proxy);
         self.current_image = Some(Box::new(decoded));
 
@@ -584,12 +665,76 @@ impl BeamApp {
         self.save_sidecar();
     }
 
-    /// Persist current edit stack to the sidecar file on disk
+    /// Push a new history step onto the history stack.
+    pub fn push_history_step(&mut self, name: impl Into<String>) {
+        let name_str = name.into();
+        if self.history.is_empty() {
+            self.history.push(HistoryStep::new(
+                t!("history_initial"),
+                EditStack::default(),
+            ));
+        }
+
+        if self.history_index + 1 < self.history.len() {
+            self.history.truncate(self.history_index + 1);
+        }
+
+        self.history
+            .push(HistoryStep::new(name_str, self.edit_stack.clone()));
+        self.history_index = self.history.len() - 1;
+
+        if self.history.len() > MAX_HISTORY_STEPS {
+            self.history.remove(1);
+            self.history_index = self.history.len() - 1;
+        }
+        self.save_sidecar();
+    }
+
+    /// Undo to previous history step
+    pub fn undo(&mut self, frame: &mut eframe::Frame) {
+        if self.history_index > 0 && !self.history.is_empty() {
+            self.history_index -= 1;
+            self.edit_stack = self.history[self.history_index].stack.clone();
+            self.re_render_edits(frame);
+        }
+    }
+
+    /// Redo to next history step
+    pub fn redo(&mut self, frame: &mut eframe::Frame) {
+        if self.history_index + 1 < self.history.len() {
+            self.history_index += 1;
+            self.edit_stack = self.history[self.history_index].stack.clone();
+            self.re_render_edits(frame);
+        }
+    }
+
+    /// Jump directly to a step by index
+    pub fn jump_to_history_step(&mut self, frame: &mut eframe::Frame, index: usize) {
+        if index < self.history.len() {
+            self.history_index = index;
+            self.edit_stack = self.history[index].stack.clone();
+            self.re_render_edits(frame);
+        }
+    }
+
+    /// Toggle Before/After view
+    pub fn toggle_before_after(&mut self) {
+        self.before_after_mode = match self.before_after_mode {
+            BeforeAfterMode::Normal => BeforeAfterMode::Toggle,
+            BeforeAfterMode::Toggle => BeforeAfterMode::Normal,
+            BeforeAfterMode::SplitView => BeforeAfterMode::Normal,
+            BeforeAfterMode::SideBySide => BeforeAfterMode::Normal,
+        };
+    }
+
+    /// Persist current edit stack and history to the sidecar file on disk
     fn save_sidecar(&mut self) {
         if let (Some(path), Some(sidecar_path)) = (&self.current_path, &self.sidecar_path) {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             let mut sidecar = Sidecar::new(filename);
             sidecar.edit_stack = self.edit_stack.clone();
+            sidecar.history = self.history.clone();
+            sidecar.history_index = self.history_index;
 
             if let Some(photo_id) = self.library_state.selected_photo_id {
                 if let Ok(Some(photo)) = self.library_db.get_photo(photo_id) {
@@ -712,8 +857,26 @@ impl eframe::App for BeamApp {
                 });
 
                 ui.menu_button(t!("menu_edit"), |ui| {
+                    let can_undo = self.history_index > 0 && !self.history.is_empty();
+                    if ui
+                        .add_enabled(can_undo, egui::Button::new(t!("menu_undo")))
+                        .clicked()
+                    {
+                        self.undo(frame);
+                        ui.close();
+                    }
+                    let can_redo = self.history_index + 1 < self.history.len();
+                    if ui
+                        .add_enabled(can_redo, egui::Button::new(t!("menu_redo")))
+                        .clicked()
+                    {
+                        self.redo(frame);
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button(t!("menu_settings")).clicked() {
                         self.show_settings = true;
+                        ui.close();
                     }
                 });
 
@@ -744,6 +907,7 @@ impl eframe::App for BeamApp {
                     );
                     ui.separator();
                     ui.checkbox(&mut self.show_develop_panel, t!("menu_develop_panel"));
+                    ui.checkbox(&mut self.show_history_panel, t!("menu_history_panel"));
                 });
 
                 ui.menu_button(t!("menu_help"), |ui| {
@@ -755,6 +919,29 @@ impl eframe::App for BeamApp {
         });
 
         // Global Keyboard shortcuts
+        if ctx.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl)
+                && i.modifiers.shift
+                && i.key_pressed(egui::Key::Z)
+        }) || ctx
+            .input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::Y))
+        {
+            self.redo(frame);
+            ctx.request_repaint();
+        } else if ctx
+            .input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(egui::Key::Z))
+        {
+            self.undo(frame);
+            ctx.request_repaint();
+        }
+
+        if ctx.input(|i| {
+            i.key_pressed(egui::Key::Backslash) && !i.modifiers.command && !i.modifiers.ctrl
+        }) {
+            self.toggle_before_after();
+            ctx.request_repaint();
+        }
+
         if ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.command && !i.modifiers.ctrl) {
             self.current_view = AppView::Library;
         }
@@ -839,8 +1026,91 @@ impl eframe::App for BeamApp {
                 }
             }
             AppView::Develop => {
+                // Left-side History Panel
+                if self.show_history_panel && self.current_image.is_some() {
+                    Panel::left("develop_history_panel")
+                        .resizable(true)
+                        .default_size(240.0)
+                        .min_size(180.0)
+                        .show(ui, |ui| {
+                            ui.heading(t!("develop_history"));
+                            ui.separator();
+
+                            ui.horizontal(|ui| {
+                                let can_undo = self.history_index > 0 && !self.history.is_empty();
+                                if ui
+                                    .add_enabled(
+                                        can_undo,
+                                        egui::Button::new(t!("develop_undo_btn")),
+                                    )
+                                    .clicked()
+                                {
+                                    self.undo(frame);
+                                }
+                                let can_redo = self.history_index + 1 < self.history.len();
+                                if ui
+                                    .add_enabled(
+                                        can_redo,
+                                        egui::Button::new(t!("develop_redo_btn")),
+                                    )
+                                    .clicked()
+                                {
+                                    self.redo(frame);
+                                }
+                            });
+                            ui.add_space(4.0);
+
+                            let mut jump_target = None;
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    if self.history.is_empty() {
+                                        ui.label(t!("develop_history_empty"));
+                                    } else {
+                                        for (idx, step) in self.history.iter().enumerate() {
+                                            let is_current = idx == self.history_index;
+                                            let is_past = idx <= self.history_index;
+
+                                            let label_text = if idx == 0 {
+                                                format!("0. {}", t!("develop_history_initial"))
+                                            } else {
+                                                format!("{}. {}", idx, step.name)
+                                            };
+
+                                            let text_color = if is_current {
+                                                Color32::from_rgb(100, 200, 255)
+                                            } else if is_past {
+                                                Color32::WHITE
+                                            } else {
+                                                Color32::GRAY
+                                            };
+
+                                            let text = RichText::new(label_text).color(text_color);
+                                            let response = if is_current {
+                                                ui.selectable_label(true, text.strong())
+                                            } else {
+                                                ui.selectable_label(false, text)
+                                            };
+
+                                            if response.clicked() {
+                                                jump_target = Some(idx);
+                                            }
+                                        }
+                                    }
+                                });
+
+                            if let Some(target) = jump_target {
+                                self.jump_to_history_step(frame, target);
+                                ctx.request_repaint();
+                            }
+                        });
+                }
+
                 // Right-side Develop Adjustment Panel
                 let mut edits_changed = false;
+                let mut action_label: Option<String> = None;
+                let mut immediate_action = false;
+
                 if self.show_develop_panel && self.current_image.is_some() {
                     Panel::right("develop_panel")
                         .resizable(true)
@@ -875,11 +1145,29 @@ impl eframe::App for BeamApp {
                                                     {
                                                         self.edit_stack.reset_white_balance();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_white_balance")
+                                                        ));
                                                     }
-                                                    ui.checkbox(
-                                                        &mut self.edit_stack.white_balance.enabled,
-                                                        "",
-                                                    );
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self
+                                                                .edit_stack
+                                                                .white_balance
+                                                                .enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_white_balance")
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -898,6 +1186,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_temperature",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.white_balance.temperature)
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -906,6 +1198,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 self.edit_stack.white_balance.temperature = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_wb_temp")
+                                                ));
                                             }
                                         });
 
@@ -921,6 +1218,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_tint",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.white_balance.tint)
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -929,6 +1230,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 self.edit_stack.white_balance.tint = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_wb_tint")
+                                                ));
                                             }
                                         });
                                     });
@@ -949,11 +1255,26 @@ impl eframe::App for BeamApp {
                                                     {
                                                         self.edit_stack.reset_exposure();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_exposure")
+                                                        ));
                                                     }
-                                                    ui.checkbox(
-                                                        &mut self.edit_stack.exposure.enabled,
-                                                        "",
-                                                    );
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.exposure.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_exposure")
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -973,6 +1294,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_exposure",
+                                                    "val" => format!("{:+0.2}", self.edit_stack.exposure.ev)
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -981,6 +1306,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 self.edit_stack.exposure.ev = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_exposure")
+                                                ));
                                             }
                                         });
                                     });
@@ -1007,14 +1337,37 @@ impl eframe::App for BeamApp {
                                                     {
                                                         self.edit_stack.reset_highlights_shadows();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => format!(
+                                                                "{} & {}",
+                                                                t!("develop_highlights"),
+                                                                t!("develop_shadows")
+                                                            )
+                                                        ));
                                                     }
-                                                    ui.checkbox(
-                                                        &mut self
-                                                            .edit_stack
-                                                            .highlights_shadows
-                                                            .enabled,
-                                                        "",
-                                                    );
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self
+                                                                .edit_stack
+                                                                .highlights_shadows
+                                                                .enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => format!(
+                                                                "{} & {}",
+                                                                t!("develop_highlights"),
+                                                                t!("develop_shadows")
+                                                            )
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -1036,6 +1389,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_highlights",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.highlights_shadows.highlights)
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -1044,6 +1401,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 self.edit_stack.highlights_shadows.highlights = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_highlights")
+                                                ));
                                             }
                                         });
 
@@ -1059,6 +1421,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_shadows",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.highlights_shadows.shadows)
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -1067,6 +1433,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 self.edit_stack.highlights_shadows.shadows = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_shadows")
+                                                ));
                                             }
                                         });
                                     });
@@ -1087,11 +1458,26 @@ impl eframe::App for BeamApp {
                                                     {
                                                         self.edit_stack.reset_contrast();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_contrast")
+                                                        ));
                                                     }
-                                                    ui.checkbox(
-                                                        &mut self.edit_stack.contrast.enabled,
-                                                        "",
-                                                    );
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.contrast.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_contrast")
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -1110,6 +1496,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_contrast",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.contrast.contrast)
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -1118,6 +1508,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 self.edit_stack.contrast.contrast = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_contrast")
+                                                ));
                                             }
                                         });
                                     });
@@ -1138,11 +1533,26 @@ impl eframe::App for BeamApp {
                                                     {
                                                         self.edit_stack.reset_tone_curve();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_tone_curve")
+                                                        ));
                                                     }
-                                                    ui.checkbox(
-                                                        &mut self.edit_stack.tone_curve.enabled,
-                                                        "",
-                                                    );
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.tone_curve.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_tone_curve")
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -1154,6 +1564,7 @@ impl eframe::App for BeamApp {
                                             &mut self.edit_stack.tone_curve.points,
                                         ) {
                                             edits_changed = true;
+                                            action_label = Some(t!("history_tone_curve"));
                                         }
 
                                         ui.add_space(2.0);
@@ -1180,11 +1591,26 @@ impl eframe::App for BeamApp {
                                                     {
                                                         self.edit_stack.reset_hsl();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_hsl")
+                                                        ));
                                                     }
-                                                    ui.checkbox(
-                                                        &mut self.edit_stack.hsl.enabled,
-                                                        "",
-                                                    );
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.hsl.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_hsl")
+                                                        ));
+                                                    }
                                                 },
                                             );
                                         });
@@ -1255,6 +1681,11 @@ impl eframe::App for BeamApp {
                                                         *band =
                                                             beam_core::sidecar::HslBand::default();
                                                         edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => &localized_band_name
+                                                        ));
                                                     }
                                                 },
                                             );
@@ -1269,6 +1700,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_hsl_band",
+                                                    "band" => &localized_band_name
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -1277,6 +1712,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 band.hue = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_hue"))
+                                                ));
                                             }
                                         });
 
@@ -1289,6 +1729,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_hsl_band",
+                                                    "band" => &localized_band_name
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -1297,6 +1741,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 band.saturation = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_saturation"))
+                                                ));
                                             }
                                         });
 
@@ -1309,6 +1758,10 @@ impl eframe::App for BeamApp {
                                             );
                                             if resp.changed() {
                                                 edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_hsl_band",
+                                                    "band" => &localized_band_name
+                                                ));
                                             }
                                             if ui
                                                 .button("↺")
@@ -1317,6 +1770,11 @@ impl eframe::App for BeamApp {
                                             {
                                                 band.luminance = 0.0;
                                                 edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_luminance"))
+                                                ));
                                             }
                                         });
                                     });
@@ -1338,6 +1796,8 @@ impl eframe::App for BeamApp {
                                         {
                                             self.edit_stack.reset_all();
                                             edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!("history_reset_all"));
                                         }
 
                                         if ui
@@ -1364,10 +1824,53 @@ impl eframe::App for BeamApp {
                         });
                 }
 
+                let pointer_released = ctx.input(|i| i.pointer.any_released());
+                let pointer_down = ctx.input(|i| i.pointer.primary_down());
+
                 // Apply edits if sliders or reset buttons were clicked
                 if edits_changed {
+                    if immediate_action {
+                        let label = action_label.unwrap_or_else(|| t!("history_initial"));
+                        self.push_history_step(label);
+                        self.slider_drag_start_stack = None;
+                        self.slider_drag_action_name = None;
+                    } else {
+                        // Continuous edit (slider drag or tone curve point drag)
+                        if self.slider_drag_start_stack.is_none() {
+                            let baseline = if self.history_index < self.history.len() {
+                                self.history[self.history_index].stack.clone()
+                            } else {
+                                self.edit_stack.clone()
+                            };
+                            self.slider_drag_start_stack = Some(baseline);
+                        }
+                        if let Some(lbl) = action_label {
+                            self.slider_drag_action_name = Some(lbl);
+                        }
+                        // If modified without pointer being held down (e.g. keyboard navigation)
+                        if !pointer_down && !pointer_released {
+                            if let Some(lbl) = self.slider_drag_action_name.take() {
+                                self.push_history_step(lbl);
+                            }
+                            self.slider_drag_start_stack = None;
+                        }
+                    }
+
                     self.re_render_edits(frame);
                     ctx.request_repaint();
+                }
+
+                if pointer_released {
+                    if let Some(start_stack) = self.slider_drag_start_stack.take() {
+                        if start_stack != self.edit_stack {
+                            let label = self
+                                .slider_drag_action_name
+                                .take()
+                                .unwrap_or_else(|| t!("history_initial"));
+                            self.push_history_step(label);
+                        }
+                    }
+                    self.slider_drag_action_name = None;
                 }
 
                 // Central viewport panel
@@ -1395,22 +1898,320 @@ impl eframe::App for BeamApp {
                     let available_size = ui.available_size();
 
                     if let Some(texture_id) = self.egui_texture_id {
-                        let available_aspect = available_size.x / available_size.y.max(1.0);
-                        let display_size = if available_aspect > self.texture_aspect_ratio {
-                            Vec2::new(
-                                available_size.y * self.texture_aspect_ratio,
-                                available_size.y,
-                            )
-                        } else {
-                            Vec2::new(
-                                available_size.x,
-                                available_size.x / self.texture_aspect_ratio,
-                            )
-                        };
-
-                        ui.centered_and_justified(|ui| {
-                            ui.image(egui::load::SizedTexture::new(texture_id, display_size));
+                        // Before / After mode toolbar
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(t!("develop_before_after")).strong());
+                            if ui
+                                .selectable_label(
+                                    self.before_after_mode == BeforeAfterMode::Normal,
+                                    t!("develop_mode_normal"),
+                                )
+                                .clicked()
+                            {
+                                self.before_after_mode = BeforeAfterMode::Normal;
+                            }
+                            if ui
+                                .selectable_label(
+                                    self.before_after_mode == BeforeAfterMode::Toggle,
+                                    t!("develop_mode_toggle"),
+                                )
+                                .on_hover_text(t!("develop_before_toggle_tooltip"))
+                                .clicked()
+                            {
+                                self.before_after_mode = BeforeAfterMode::Toggle;
+                            }
+                            if ui
+                                .selectable_label(
+                                    self.before_after_mode == BeforeAfterMode::SplitView,
+                                    t!("develop_mode_split"),
+                                )
+                                .on_hover_text(t!("develop_split_tooltip"))
+                                .clicked()
+                            {
+                                self.before_after_mode = BeforeAfterMode::SplitView;
+                            }
+                            if ui
+                                .selectable_label(
+                                    self.before_after_mode == BeforeAfterMode::SideBySide,
+                                    t!("develop_mode_side_by_side"),
+                                )
+                                .on_hover_text(t!("develop_side_by_side_tooltip"))
+                                .clicked()
+                            {
+                                self.before_after_mode = BeforeAfterMode::SideBySide;
+                            }
                         });
+                        ui.separator();
+
+                        let before_id = self.egui_before_texture_id.unwrap_or(texture_id);
+
+                        match self.before_after_mode {
+                            BeforeAfterMode::Normal => {
+                                let available_aspect = available_size.x / available_size.y.max(1.0);
+                                let display_size = if available_aspect > self.texture_aspect_ratio {
+                                    Vec2::new(
+                                        available_size.y * self.texture_aspect_ratio,
+                                        available_size.y,
+                                    )
+                                } else {
+                                    Vec2::new(
+                                        available_size.x,
+                                        available_size.x / self.texture_aspect_ratio,
+                                    )
+                                };
+
+                                ui.centered_and_justified(|ui| {
+                                    ui.image(egui::load::SizedTexture::new(
+                                        texture_id,
+                                        display_size,
+                                    ));
+                                });
+                            }
+                            BeforeAfterMode::Toggle => {
+                                let available_aspect = available_size.x / available_size.y.max(1.0);
+                                let display_size = if available_aspect > self.texture_aspect_ratio {
+                                    Vec2::new(
+                                        available_size.y * self.texture_aspect_ratio,
+                                        available_size.y,
+                                    )
+                                } else {
+                                    Vec2::new(
+                                        available_size.x,
+                                        available_size.x / self.texture_aspect_ratio,
+                                    )
+                                };
+
+                                ui.centered_and_justified(|ui| {
+                                    let (rect, _) =
+                                        ui.allocate_exact_size(display_size, egui::Sense::hover());
+                                    ui.painter().image(
+                                        before_id,
+                                        rect,
+                                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                        Color32::WHITE,
+                                    );
+                                    let badge_rect = Rect::from_min_size(
+                                        rect.min + Vec2::new(12.0, 12.0),
+                                        Vec2::new(80.0, 24.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        badge_rect,
+                                        4.0,
+                                        Color32::from_black_alpha(200),
+                                    );
+                                    ui.painter().text(
+                                        badge_rect.center(),
+                                        Align2::CENTER_CENTER,
+                                        t!("develop_before_badge"),
+                                        FontId::proportional(12.0),
+                                        Color32::WHITE,
+                                    );
+                                });
+                            }
+                            BeforeAfterMode::SideBySide => {
+                                let half_w = ((available_size.x - 12.0) * 0.5).max(10.0);
+                                let half_aspect = half_w / available_size.y.max(1.0);
+                                let display_size = if half_aspect > self.texture_aspect_ratio {
+                                    Vec2::new(
+                                        available_size.y * self.texture_aspect_ratio,
+                                        available_size.y,
+                                    )
+                                } else {
+                                    Vec2::new(half_w, half_w / self.texture_aspect_ratio)
+                                };
+
+                                ui.centered_and_justified(|ui| {
+                                    ui.horizontal(|ui| {
+                                        // Left: Before
+                                        let (rect_before, _) = ui.allocate_exact_size(
+                                            display_size,
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().image(
+                                            before_id,
+                                            rect_before,
+                                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                            Color32::WHITE,
+                                        );
+                                        let badge_rect = Rect::from_min_size(
+                                            rect_before.min + Vec2::new(8.0, 8.0),
+                                            Vec2::new(72.0, 22.0),
+                                        );
+                                        ui.painter().rect_filled(
+                                            badge_rect,
+                                            4.0,
+                                            Color32::from_black_alpha(200),
+                                        );
+                                        ui.painter().text(
+                                            badge_rect.center(),
+                                            Align2::CENTER_CENTER,
+                                            t!("develop_before_badge"),
+                                            FontId::proportional(11.0),
+                                            Color32::WHITE,
+                                        );
+
+                                        ui.add_space(8.0);
+
+                                        // Right: After
+                                        let (rect_after, _) = ui.allocate_exact_size(
+                                            display_size,
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().image(
+                                            texture_id,
+                                            rect_after,
+                                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                            Color32::WHITE,
+                                        );
+                                        let badge_rect = Rect::from_min_size(
+                                            rect_after.min + Vec2::new(8.0, 8.0),
+                                            Vec2::new(72.0, 22.0),
+                                        );
+                                        ui.painter().rect_filled(
+                                            badge_rect,
+                                            4.0,
+                                            Color32::from_black_alpha(200),
+                                        );
+                                        ui.painter().text(
+                                            badge_rect.center(),
+                                            Align2::CENTER_CENTER,
+                                            t!("develop_after_badge"),
+                                            FontId::proportional(11.0),
+                                            Color32::WHITE,
+                                        );
+                                    });
+                                });
+                            }
+                            BeforeAfterMode::SplitView => {
+                                let available_aspect = available_size.x / available_size.y.max(1.0);
+                                let display_size = if available_aspect > self.texture_aspect_ratio {
+                                    Vec2::new(
+                                        available_size.y * self.texture_aspect_ratio,
+                                        available_size.y,
+                                    )
+                                } else {
+                                    Vec2::new(
+                                        available_size.x,
+                                        available_size.x / self.texture_aspect_ratio,
+                                    )
+                                };
+
+                                ui.centered_and_justified(|ui| {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        display_size,
+                                        egui::Sense::click_and_drag(),
+                                    );
+
+                                    if response.dragged() {
+                                        if let Some(pos) = response.interact_pointer_pos() {
+                                            let fraction = ((pos.x - rect.min.x)
+                                                / rect.width().max(1.0))
+                                            .clamp(0.02, 0.98);
+                                            self.split_view_divider = fraction;
+                                        }
+                                    }
+
+                                    let split_x =
+                                        rect.min.x + rect.width() * self.split_view_divider;
+
+                                    // Left: Before
+                                    let left_rect = Rect::from_min_max(
+                                        rect.min,
+                                        Pos2::new(split_x, rect.max.y),
+                                    );
+                                    let left_uv = Rect::from_min_max(
+                                        Pos2::ZERO,
+                                        Pos2::new(self.split_view_divider, 1.0),
+                                    );
+                                    ui.painter().image(
+                                        before_id,
+                                        left_rect,
+                                        left_uv,
+                                        Color32::WHITE,
+                                    );
+
+                                    // Right: After
+                                    let right_rect = Rect::from_min_max(
+                                        Pos2::new(split_x, rect.min.y),
+                                        rect.max,
+                                    );
+                                    let right_uv = Rect::from_min_max(
+                                        Pos2::new(self.split_view_divider, 0.0),
+                                        Pos2::new(1.0, 1.0),
+                                    );
+                                    ui.painter().image(
+                                        texture_id,
+                                        right_rect,
+                                        right_uv,
+                                        Color32::WHITE,
+                                    );
+
+                                    // Divider Line
+                                    ui.painter().line_segment(
+                                        [
+                                            Pos2::new(split_x, rect.min.y),
+                                            Pos2::new(split_x, rect.max.y),
+                                        ],
+                                        Stroke::new(2.0, Color32::WHITE),
+                                    );
+
+                                    // Center Handle
+                                    let center_pos = Pos2::new(split_x, rect.center().y);
+                                    ui.painter().circle_filled(
+                                        center_pos,
+                                        14.0,
+                                        Color32::from_black_alpha(200),
+                                    );
+                                    ui.painter().circle_stroke(
+                                        center_pos,
+                                        14.0,
+                                        Stroke::new(1.5, Color32::WHITE),
+                                    );
+                                    ui.painter().text(
+                                        center_pos,
+                                        Align2::CENTER_CENTER,
+                                        "↔",
+                                        FontId::proportional(13.0),
+                                        Color32::WHITE,
+                                    );
+
+                                    // Badges
+                                    let before_badge = Rect::from_min_size(
+                                        rect.min + Vec2::new(8.0, 8.0),
+                                        Vec2::new(72.0, 22.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        before_badge,
+                                        4.0,
+                                        Color32::from_black_alpha(200),
+                                    );
+                                    ui.painter().text(
+                                        before_badge.center(),
+                                        Align2::CENTER_CENTER,
+                                        t!("develop_before_badge"),
+                                        FontId::proportional(11.0),
+                                        Color32::WHITE,
+                                    );
+
+                                    let after_badge = Rect::from_min_size(
+                                        Pos2::new(rect.max.x - 80.0, rect.min.y + 8.0),
+                                        Vec2::new(72.0, 22.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        after_badge,
+                                        4.0,
+                                        Color32::from_black_alpha(200),
+                                    );
+                                    ui.painter().text(
+                                        after_badge.center(),
+                                        Align2::CENTER_CENTER,
+                                        t!("develop_after_badge"),
+                                        FontId::proportional(11.0),
+                                        Color32::WHITE,
+                                    );
+                                });
+                            }
+                        }
                     } else if !self.is_loading {
                         // Empty state
                         ui.centered_and_justified(|ui| {

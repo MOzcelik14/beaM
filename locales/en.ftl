@@ -16,12 +16,15 @@ menu_exit = Exit
 menu_quit = Quit
 
 menu_edit = Edit
+menu_undo = Undo (Ctrl+Z)
+menu_redo = Redo (Ctrl+Shift+Z)
 menu_settings = Settings
 
 menu_view = View
 menu_view_library = Library View (G)
 menu_view_develop = Develop View (D)
-menu_develop_panel = Develop Panel
+menu_develop_panel = Adjustments Panel
+menu_history_panel = History Panel
 menu_histogram = Histogram
 menu_reset_layout = Reset Layout
 
@@ -161,6 +164,38 @@ develop_empty_desc = Open-source non-destructive RAW photo editor & library mana
 develop_open_btn = Open RAW Photo (Ctrl+O)
 develop_decoding_with_name = Decoding {$name} with rawler...
 develop_decoding = Decoding...
+
+# Develop History & Before/After
+develop_history = History
+develop_history_empty = No edit history
+develop_history_initial = Initial State
+develop_undo_btn = ↶ Undo
+develop_redo_btn = ↷ Redo
+develop_toggle_history = Toggle History Panel
+develop_before_after = Before / After:
+develop_mode_normal = Single
+develop_mode_toggle = Before (\)
+develop_mode_split = Split View
+develop_mode_side_by_side = Side by Side
+develop_before_badge = BEFORE
+develop_after_badge = AFTER
+develop_before_toggle_tooltip = Toggle between original unedited and edited photo (\)
+develop_split_tooltip = Compare before and after with an interactive split screen
+develop_side_by_side_tooltip = Compare before and after side by side
+
+# History Action Names
+history_initial = Initial
+history_exposure = Exposure: {$val} EV
+history_temperature = Temp: {$val}
+history_tint = Tint: {$val}
+history_highlights = Highlights: {$val}
+history_shadows = Shadows: {$val}
+history_contrast = Contrast: {$val}
+history_tone_curve = Tone Curve
+history_hsl_band = HSL: {$band}
+history_reset_all = Reset All Adjustments
+history_reset_section = Reset {$section}
+history_toggle_section = Toggle {$section}
 
 # Export Dialog
 export_title = Export Photo

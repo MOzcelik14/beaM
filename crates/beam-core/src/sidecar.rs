@@ -224,6 +224,31 @@ impl ColorLabel {
     }
 }
 
+pub const MAX_HISTORY_STEPS: usize = 50;
+
+/// A single recorded snapshot in the non-destructive edit history.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryStep {
+    pub name: String,
+    pub stack: EditStack,
+    #[serde(default)]
+    pub timestamp: u64,
+}
+
+impl HistoryStep {
+    pub fn new(name: impl Into<String>, stack: EditStack) -> Self {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self {
+            name: name.into(),
+            stack,
+            timestamp,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sidecar {
     pub format_version: u32,
@@ -233,16 +258,23 @@ pub struct Sidecar {
     #[serde(default)]
     pub color_label: ColorLabel,
     pub edit_stack: EditStack,
+    #[serde(default)]
+    pub history: Vec<HistoryStep>,
+    #[serde(default)]
+    pub history_index: usize,
 }
 
 impl Sidecar {
     pub fn new(source_filename: impl Into<String>) -> Self {
+        let default_stack = EditStack::default();
         Self {
             format_version: CURRENT_FORMAT_VERSION,
             source_filename: source_filename.into(),
             rating: 0,
             color_label: ColorLabel::None,
-            edit_stack: EditStack::default(),
+            edit_stack: default_stack.clone(),
+            history: vec![HistoryStep::new("Initial", default_stack)],
+            history_index: 0,
         }
     }
 
@@ -252,6 +284,70 @@ impl Sidecar {
 
     pub fn set_color_label(&mut self, label: ColorLabel) {
         self.color_label = label;
+    }
+
+    /// Push a new edit step into the history stack.
+    /// If user previously undid steps, prunes any forward redo entries.
+    /// Caps the history at `MAX_HISTORY_STEPS` while retaining the Initial state at index 0.
+    pub fn push_history_step(&mut self, name: impl Into<String>, stack: EditStack) {
+        if self.history.is_empty() {
+            self.history
+                .push(HistoryStep::new("Initial", stack.clone()));
+            self.history_index = 0;
+            self.edit_stack = stack;
+            return;
+        }
+
+        // Branching: prune redo history if not at the head
+        if self.history_index + 1 < self.history.len() {
+            self.history.truncate(self.history_index + 1);
+        }
+
+        self.history.push(HistoryStep::new(name, stack.clone()));
+        self.history_index = self.history.len() - 1;
+        self.edit_stack = stack;
+
+        // Cap size while preserving initial baseline at index 0
+        if self.history.len() > MAX_HISTORY_STEPS {
+            self.history.remove(1);
+            self.history_index = self.history.len() - 1;
+        }
+    }
+
+    /// Undo to previous history step if available.
+    pub fn undo(&mut self) -> Option<&EditStack> {
+        if self.history_index > 0 && !self.history.is_empty() {
+            self.history_index -= 1;
+            let stack = self.history[self.history_index].stack.clone();
+            self.edit_stack = stack;
+            Some(&self.edit_stack)
+        } else {
+            None
+        }
+    }
+
+    /// Redo to next history step if available.
+    pub fn redo(&mut self) -> Option<&EditStack> {
+        if self.history_index + 1 < self.history.len() {
+            self.history_index += 1;
+            let stack = self.history[self.history_index].stack.clone();
+            self.edit_stack = stack;
+            Some(&self.edit_stack)
+        } else {
+            None
+        }
+    }
+
+    /// Jump directly to a step by index.
+    pub fn jump_to_history_step(&mut self, index: usize) -> Option<&EditStack> {
+        if index < self.history.len() {
+            self.history_index = index;
+            let stack = self.history[index].stack.clone();
+            self.edit_stack = stack;
+            Some(&self.edit_stack)
+        } else {
+            None
+        }
     }
 
     /// Compute sidecar path next to the target image (e.g. `image.ARW.beam.ron`).
@@ -279,6 +375,11 @@ impl Sidecar {
     /// Parse sidecar from RON string and automatically run migrations if necessary.
     pub fn from_ron_str(content: &str) -> Result<Self> {
         let mut sidecar: Sidecar = ron::from_str(content).map_err(BeamError::from)?;
+        if sidecar.history.is_empty() {
+            let initial = sidecar.edit_stack.clone();
+            sidecar.history.push(HistoryStep::new("Initial", initial));
+            sidecar.history_index = 0;
+        }
         sidecar.migrate_if_needed()?;
         Ok(sidecar)
     }
@@ -398,5 +499,92 @@ mod tests {
         let loaded = Sidecar::from_ron_str(&legacy_ron).expect("Should parse legacy sidecar");
         assert_eq!(loaded.rating, 0);
         assert_eq!(loaded.color_label, ColorLabel::None);
+    }
+
+    #[test]
+    fn test_history_push_undo_redo_jump() {
+        let mut sidecar = Sidecar::new("sample.ARW");
+        assert_eq!(sidecar.history.len(), 1);
+        assert_eq!(sidecar.history_index, 0);
+        assert_eq!(sidecar.history[0].name, "Initial");
+
+        // Push step 1: Exposure
+        let mut stack1 = sidecar.edit_stack.clone();
+        stack1.exposure.ev = 1.0;
+        sidecar.push_history_step("Exposure: +1.00 EV", stack1);
+        assert_eq!(sidecar.history.len(), 2);
+        assert_eq!(sidecar.history_index, 1);
+        assert_eq!(sidecar.edit_stack.exposure.ev, 1.0);
+
+        // Push step 2: Contrast
+        let mut stack2 = sidecar.edit_stack.clone();
+        stack2.contrast.contrast = 20.0;
+        sidecar.push_history_step("Contrast: +20", stack2);
+        assert_eq!(sidecar.history.len(), 3);
+        assert_eq!(sidecar.history_index, 2);
+
+        // Undo 1: Back to Exposure
+        assert!(sidecar.undo().is_some());
+        assert_eq!(sidecar.history_index, 1);
+        assert_eq!(sidecar.edit_stack.exposure.ev, 1.0);
+        assert_eq!(sidecar.edit_stack.contrast.contrast, 0.0);
+
+        // Undo 2: Back to Initial
+        assert!(sidecar.undo().is_some());
+        assert_eq!(sidecar.history_index, 0);
+        assert_eq!(sidecar.edit_stack.exposure.ev, 0.0);
+
+        // Undo 3: No-op at index 0
+        assert!(sidecar.undo().is_none());
+        assert_eq!(sidecar.history_index, 0);
+
+        // Redo 1: Back to Exposure
+        assert!(sidecar.redo().is_some());
+        assert_eq!(sidecar.history_index, 1);
+        assert_eq!(sidecar.edit_stack.exposure.ev, 1.0);
+
+        // Branching: While at index 1, push a new edit (White Balance)
+        let mut stack3 = sidecar.edit_stack.clone();
+        stack3.white_balance.temperature = 15.0;
+        sidecar.push_history_step("WB Temp: +15", stack3);
+        assert_eq!(sidecar.history.len(), 3);
+        assert_eq!(sidecar.history_index, 2);
+        assert_eq!(sidecar.history[2].name, "WB Temp: +15");
+        // Contrast step should have been pruned by branching
+        assert!(sidecar.redo().is_none());
+
+        // Jump to Initial (index 0)
+        assert!(sidecar.jump_to_history_step(0).is_some());
+        assert_eq!(sidecar.history_index, 0);
+        assert_eq!(sidecar.edit_stack.exposure.ev, 0.0);
+        assert_eq!(sidecar.edit_stack.white_balance.temperature, 0.0);
+
+        // Jump to Step 2
+        assert!(sidecar.jump_to_history_step(2).is_some());
+        assert_eq!(sidecar.history_index, 2);
+        assert_eq!(sidecar.edit_stack.white_balance.temperature, 15.0);
+
+        // Roundtrip to RON preserves history
+        let ron_str = sidecar.to_ron_string().expect("Serialization failed");
+        assert!(ron_str.contains("WB Temp: +15"));
+        let loaded = Sidecar::from_ron_str(&ron_str).expect("Deserialization failed");
+        assert_eq!(loaded.history.len(), 3);
+        assert_eq!(loaded.history_index, 2);
+        assert_eq!(loaded.edit_stack.white_balance.temperature, 15.0);
+    }
+
+    #[test]
+    fn test_history_capping_at_max() {
+        let mut sidecar = Sidecar::new("sample.ARW");
+        for i in 1..=60 {
+            let mut stack = sidecar.edit_stack.clone();
+            stack.exposure.ev = i as f32;
+            sidecar.push_history_step(format!("Step {i}"), stack);
+        }
+
+        assert_eq!(sidecar.history.len(), MAX_HISTORY_STEPS);
+        assert_eq!(sidecar.history[0].name, "Initial");
+        assert_eq!(sidecar.history_index, MAX_HISTORY_STEPS - 1);
+        assert_eq!(sidecar.history.last().unwrap().name, "Step 60");
     }
 }

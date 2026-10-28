@@ -12,4 +12,4 @@ pub mod sidecar;
 pub use color::ExportColorSpace;
 pub use error::{BeamError, Result};
 pub use i18n::{current_language, set_language, t, t_with_args, AppConfig, I18n, Language};
-pub use sidecar::{EditStack, Sidecar, CURRENT_FORMAT_VERSION};
+pub use sidecar::{EditStack, HistoryStep, Sidecar, CURRENT_FORMAT_VERSION, MAX_HISTORY_STEPS};
