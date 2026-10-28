@@ -107,14 +107,31 @@ pub fn rec2020_linear_to_srgb_display(rec2020: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// Converts a gamma-encoded sRGB triplet to linear Rec.2020 RGB.
-pub fn srgb_to_rec2020_linear(srgb: [f32; 3]) -> [f32; 3] {
-    let linear_srgb = [
-        srgb_to_linear(srgb[0]),
-        srgb_to_linear(srgb[1]),
-        srgb_to_linear(srgb[2]),
-    ];
-    mat3_mul_vec3(&SRGB_TO_REC2020, linear_srgb)
+/// Converts temperature and tint slider offsets [-100.0, +100.0] into linear RGB gains.
+///
+/// - `temp_offset > 0` warms the image (boosts Red, reduces Blue).
+/// - `temp_offset < 0` cools the image (boosts Blue, reduces Red).
+/// - `tint_offset > 0` shifts towards Green.
+/// - `tint_offset < 0` shifts towards Magenta.
+pub fn white_balance_gains(temp_offset: f32, tint_offset: f32) -> [f32; 3] {
+    let t = (temp_offset.clamp(-100.0, 100.0) / 100.0) * 0.5; // [-0.5, +0.5] EV range
+    let tint = (tint_offset.clamp(-100.0, 100.0) / 100.0) * 0.5;
+
+    let r_gain = 2.0f32.powf(t);
+    let g_gain = 2.0f32.powf(tint);
+    let b_gain = 2.0f32.powf(-t);
+
+    [r_gain, g_gain, b_gain]
+}
+
+/// Converts a contrast slider value [-100.0, +100.0] into an exponential slope factor.
+///
+/// - `contrast = 0.0` -> slope = 1.0 (identity).
+/// - `contrast = 100.0` -> slope = 2.0.
+/// - `contrast = -100.0` -> slope = 0.5.
+pub fn contrast_slope(contrast: f32) -> f32 {
+    let c = contrast.clamp(-100.0, 100.0);
+    2.0f32.powf(c / 100.0)
 }
 
 #[cfg(test)]
@@ -156,5 +173,31 @@ mod tests {
         for c in srgb {
             assert!((c - 1.0).abs() < 1e-3, "White point shifted: got {c}");
         }
+    }
+
+    #[test]
+    fn test_white_balance_neutral() {
+        let gains = white_balance_gains(0.0, 0.0);
+        assert!((gains[0] - 1.0).abs() < 1e-5);
+        assert!((gains[1] - 1.0).abs() < 1e-5);
+        assert!((gains[2] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_white_balance_warming_and_cooling() {
+        let warm = white_balance_gains(50.0, 0.0);
+        assert!(warm[0] > 1.0, "Red should be boosted when warming");
+        assert!(warm[2] < 1.0, "Blue should be reduced when warming");
+
+        let cool = white_balance_gains(-50.0, 0.0);
+        assert!(cool[0] < 1.0, "Red should be reduced when cooling");
+        assert!(cool[2] > 1.0, "Blue should be boosted when cooling");
+    }
+
+    #[test]
+    fn test_contrast_slope() {
+        assert_eq!(contrast_slope(0.0), 1.0);
+        assert_eq!(contrast_slope(100.0), 2.0);
+        assert_eq!(contrast_slope(-100.0), 0.5);
     }
 }

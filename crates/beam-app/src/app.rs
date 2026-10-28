@@ -1,9 +1,10 @@
 //! Main egui application view and state for beaM.
 
+use beam_core::sidecar::{EditStack, Sidecar};
 use beam_core::APP_NAME;
-use beam_gpu::{DisplayPipeline, GpuImage};
+use beam_gpu::{EditPipeline, GpuImage};
 use beam_media::{decode_image, DecodedImage, ImageMetadata};
-use eframe::egui::{self, Color32, MenuBar, Panel, RichText, Vec2};
+use eframe::egui::{self, Color32, MenuBar, Panel, RichText, Slider, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -20,10 +21,16 @@ pub struct BeamApp {
     current_path: Option<PathBuf>,
     current_metadata: Option<ImageMetadata>,
 
+    // Non-destructive edit stack & sidecar
+    edit_stack: EditStack,
+    sidecar_path: Option<PathBuf>,
+    sidecar_status: String,
+
     // GPU rendering state
-    display_pipeline: Option<DisplayPipeline>,
-    egui_texture_id: Option<egui::TextureId>,
+    edit_pipeline: Option<EditPipeline>,
+    gpu_proxy_image: Option<GpuImage>,
     gpu_display_texture: Option<wgpu::Texture>,
+    egui_texture_id: Option<egui::TextureId>,
     texture_aspect_ratio: f32,
 
     // Background decoding
@@ -35,25 +42,29 @@ pub struct BeamApp {
     // UI state
     error_message: Option<String>,
     show_about: bool,
+    show_develop_panel: bool,
 }
 
 impl BeamApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = channel();
 
-        // Initialize display pipeline using the wgpu device if available
-        let display_pipeline = cc
+        let edit_pipeline = cc
             .wgpu_render_state
             .as_ref()
-            .map(|rs| DisplayPipeline::new(&rs.device, wgpu::TextureFormat::Rgba8Unorm));
+            .map(|rs| EditPipeline::new(&rs.device, wgpu::TextureFormat::Rgba8Unorm));
 
         Self {
             current_image: None,
             current_path: None,
             current_metadata: None,
-            display_pipeline,
-            egui_texture_id: None,
+            edit_stack: EditStack::default(),
+            sidecar_path: None,
+            sidecar_status: "No image".to_string(),
+            edit_pipeline,
+            gpu_proxy_image: None,
             gpu_display_texture: None,
+            egui_texture_id: None,
             texture_aspect_ratio: 1.0,
             tx,
             rx,
@@ -61,6 +72,7 @@ impl BeamApp {
             loading_filename: None,
             error_message: None,
             show_about: false,
+            show_develop_panel: true,
         }
     }
 
@@ -117,15 +129,35 @@ impl BeamApp {
                         .file_name()
                         .and_then(|n| n.to_str())
                         .map(|s| s.to_string());
-                    self.current_path = Some(path);
+                    self.current_path = Some(path.clone());
                     self.error_message = None;
+
+                    // Compute sidecar path and load existing edits if present
+                    let sidecar_p = Sidecar::path_for(&path);
+                    if sidecar_p.exists() {
+                        match Sidecar::load_from_file(&sidecar_p) {
+                            Ok(sidecar) => {
+                                self.edit_stack = sidecar.edit_stack;
+                                self.sidecar_status = "Loaded from disk".to_string();
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to read existing sidecar: {e}");
+                                self.edit_stack = EditStack::default();
+                                self.sidecar_status = "Failed to parse sidecar".to_string();
+                            }
+                        }
+                    } else {
+                        self.edit_stack = EditStack::default();
+                        self.sidecar_status = "New sidecar".to_string();
+                    }
+                    self.sidecar_path = Some(sidecar_p);
                     ctx.request_repaint();
                 }
                 BackgroundMsg::Success(decoded) => {
                     self.is_loading = false;
                     self.loading_filename = None;
                     self.current_metadata = Some(decoded.metadata.clone());
-                    self.upload_and_render_image(frame, *decoded);
+                    self.upload_proxy_and_render(frame, *decoded);
                     ctx.request_repaint();
                 }
                 BackgroundMsg::Error(err_msg) => {
@@ -138,8 +170,8 @@ impl BeamApp {
         }
     }
 
-    /// Upload decoded image to GPU and render display transform
-    fn upload_and_render_image(&mut self, frame: &mut eframe::Frame, decoded: DecodedImage) {
+    /// Upload proxy buffer to GPU and render edit pipeline
+    fn upload_proxy_and_render(&mut self, frame: &mut eframe::Frame, decoded: DecodedImage) {
         let Some(render_state) = frame.wgpu_render_state() else {
             self.error_message = Some("GPU RenderState not available".to_string());
             return;
@@ -148,37 +180,31 @@ impl BeamApp {
         let device = &render_state.device;
         let queue = &render_state.queue;
 
-        // Ensure display pipeline is initialized
-        if self.display_pipeline.is_none() {
-            self.display_pipeline = Some(DisplayPipeline::new(
-                device,
-                wgpu::TextureFormat::Rgba8Unorm,
-            ));
+        if self.edit_pipeline.is_none() {
+            self.edit_pipeline = Some(EditPipeline::new(device, wgpu::TextureFormat::Rgba8Unorm));
         }
 
-        let pipeline = self.display_pipeline.as_ref().unwrap();
-
-        // 1. Upload linear float pixels into GPU image texture
-        let gpu_image = match GpuImage::from_rgba32f(
+        // Upload proxy image in linear Rec.2020
+        let gpu_proxy = match GpuImage::from_rgba32f(
             device,
             queue,
-            decoded.width,
-            decoded.height,
-            &decoded.data,
+            decoded.proxy_width,
+            decoded.proxy_height,
+            &decoded.proxy_data,
         ) {
             Ok(img) => img,
             Err(e) => {
-                self.error_message = Some(format!("Failed to upload image to GPU: {e}"));
+                self.error_message = Some(format!("Failed to upload proxy to GPU: {e}"));
                 return;
             }
         };
 
-        // 2. Create the display target texture (Rgba8Unorm)
+        // Create the display target texture (Rgba8Unorm)
         let display_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("beam_display_target_texture"),
             size: wgpu::Extent3d {
-                width: decoded.width,
-                height: decoded.height,
+                width: decoded.proxy_width,
+                height: decoded.proxy_height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -191,10 +217,16 @@ impl BeamApp {
 
         let display_view = display_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // 3. Execute display transform render pass (Linear Rec.2020 -> sRGB)
-        pipeline.render_to_target(device, queue, &gpu_image, &display_view);
+        // Run edit pipeline (White balance -> Exposure -> Contrast -> Display)
+        self.edit_pipeline.as_mut().unwrap().render(
+            device,
+            queue,
+            &gpu_proxy,
+            &display_view,
+            &self.edit_stack,
+        );
 
-        // 4. Register or update egui native texture
+        // Register or update egui native texture
         let mut renderer = render_state.renderer.write();
         if let Some(existing_id) = self.egui_texture_id {
             renderer.update_egui_texture_from_wgpu_texture(
@@ -211,7 +243,44 @@ impl BeamApp {
 
         self.texture_aspect_ratio = decoded.width as f32 / decoded.height as f32;
         self.gpu_display_texture = Some(display_texture);
+        self.gpu_proxy_image = Some(gpu_proxy);
         self.current_image = Some(Box::new(decoded));
+    }
+
+    /// Re-render the existing proxy with updated slider values (takes <1ms on GPU)
+    fn re_render_edits(&mut self, frame: &mut eframe::Frame) {
+        let (Some(render_state), Some(gpu_proxy), Some(display_tex), Some(pipeline)) = (
+            frame.wgpu_render_state(),
+            &self.gpu_proxy_image,
+            &self.gpu_display_texture,
+            &mut self.edit_pipeline,
+        ) else {
+            return;
+        };
+
+        let device = &render_state.device;
+        let queue = &render_state.queue;
+        let display_view = display_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        pipeline.render(device, queue, gpu_proxy, &display_view, &self.edit_stack);
+
+        // Save sidecar automatically
+        self.save_sidecar();
+    }
+
+    /// Persist current edit stack to the sidecar file on disk
+    fn save_sidecar(&mut self) {
+        if let (Some(path), Some(sidecar_path)) = (&self.current_path, &self.sidecar_path) {
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+            let mut sidecar = Sidecar::new(filename);
+            sidecar.edit_stack = self.edit_stack.clone();
+            if let Err(e) = sidecar.save_to_file(sidecar_path) {
+                log::error!("Failed to save sidecar to {}: {e}", sidecar_path.display());
+                self.sidecar_status = format!("Save error: {e}");
+            } else {
+                self.sidecar_status = "Saved".to_string();
+            }
+        }
     }
 }
 
@@ -234,6 +303,10 @@ impl eframe::App for BeamApp {
                     if ui.button("Quit").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
+                });
+
+                ui.menu_button("View", |ui| {
+                    ui.checkbox(&mut self.show_develop_panel, "Develop Panel");
                 });
 
                 ui.menu_button("Help", |ui| {
@@ -270,6 +343,9 @@ impl eframe::App for BeamApp {
                             ui.label(format!("{make} {model}"));
                         }
                     }
+
+                    ui.separator();
+                    ui.label(format!("Sidecar: {}", self.sidecar_status));
                 } else {
                     ui.label(
                         "No image loaded. Use File -> Open RAW Photo... (Ctrl+O) to open an image.",
@@ -289,9 +365,192 @@ impl eframe::App for BeamApp {
             });
         });
 
+        // Right-side Develop Adjustment Panel
+        let mut edits_changed = false;
+        if self.show_develop_panel && self.current_image.is_some() {
+            Panel::right("develop_panel")
+                .resizable(true)
+                .default_size(300.0)
+                .min_size(260.0)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.heading("Develop");
+                        ui.separator();
+
+                        // 1. White Balance Section
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong("White Balance");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .button("↺")
+                                            .on_hover_text("Reset White Balance")
+                                            .clicked()
+                                        {
+                                            self.edit_stack.reset_white_balance();
+                                            edits_changed = true;
+                                        }
+                                        ui.checkbox(&mut self.edit_stack.white_balance.enabled, "");
+                                    },
+                                );
+                            });
+
+                            ui.add_space(4.0);
+
+                            // Temperature slider
+                            ui.horizontal(|ui| {
+                                ui.label("Temp");
+                                let resp = ui.add(
+                                    Slider::new(
+                                        &mut self.edit_stack.white_balance.temperature,
+                                        -100.0..=100.0,
+                                    )
+                                    .show_value(true),
+                                );
+                                if resp.changed() {
+                                    edits_changed = true;
+                                }
+                                if ui
+                                    .button("↺")
+                                    .on_hover_text("Reset Temperature (0)")
+                                    .clicked()
+                                {
+                                    self.edit_stack.white_balance.temperature = 0.0;
+                                    edits_changed = true;
+                                }
+                            });
+
+                            // Tint slider
+                            ui.horizontal(|ui| {
+                                ui.label("Tint  ");
+                                let resp = ui.add(
+                                    Slider::new(
+                                        &mut self.edit_stack.white_balance.tint,
+                                        -100.0..=100.0,
+                                    )
+                                    .show_value(true),
+                                );
+                                if resp.changed() {
+                                    edits_changed = true;
+                                }
+                                if ui.button("↺").on_hover_text("Reset Tint (0)").clicked() {
+                                    self.edit_stack.white_balance.tint = 0.0;
+                                    edits_changed = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(8.0);
+
+                        // 2. Exposure Section
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong("Exposure");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("↺").on_hover_text("Reset Exposure").clicked()
+                                        {
+                                            self.edit_stack.reset_exposure();
+                                            edits_changed = true;
+                                        }
+                                        ui.checkbox(&mut self.edit_stack.exposure.enabled, "");
+                                    },
+                                );
+                            });
+
+                            ui.add_space(4.0);
+
+                            // Exposure EV slider
+                            ui.horizontal(|ui| {
+                                ui.label("EV    ");
+                                let resp = ui.add(
+                                    Slider::new(&mut self.edit_stack.exposure.ev, -5.00..=5.00)
+                                        .step_by(0.05)
+                                        .custom_formatter(|v, _| format!("{:+.2} EV", v)),
+                                );
+                                if resp.changed() {
+                                    edits_changed = true;
+                                }
+                                if ui.button("↺").on_hover_text("Reset Exposure (0)").clicked() {
+                                    self.edit_stack.exposure.ev = 0.0;
+                                    edits_changed = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(8.0);
+
+                        // 3. Contrast Section
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong("Contrast");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("↺").on_hover_text("Reset Contrast").clicked()
+                                        {
+                                            self.edit_stack.reset_contrast();
+                                            edits_changed = true;
+                                        }
+                                        ui.checkbox(&mut self.edit_stack.contrast.enabled, "");
+                                    },
+                                );
+                            });
+
+                            ui.add_space(4.0);
+
+                            // Contrast factor slider
+                            ui.horizontal(|ui| {
+                                ui.label("Level ");
+                                let resp = ui.add(
+                                    Slider::new(
+                                        &mut self.edit_stack.contrast.contrast,
+                                        -100.0..=100.0,
+                                    )
+                                    .show_value(true),
+                                );
+                                if resp.changed() {
+                                    edits_changed = true;
+                                }
+                                if ui.button("↺").on_hover_text("Reset Contrast (0)").clicked() {
+                                    self.edit_stack.contrast.contrast = 0.0;
+                                    edits_changed = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(16.0);
+
+                        // 4. Action Buttons
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(RichText::new("↺ Reset All").color(Color32::LIGHT_RED))
+                                .on_hover_text("Reset all adjustments to defaults")
+                                .clicked()
+                            {
+                                self.edit_stack.reset_all();
+                                edits_changed = true;
+                            }
+
+                            if ui.button("💾 Save Sidecar").clicked() {
+                                self.save_sidecar();
+                            }
+                        });
+                    });
+                });
+        }
+
+        // Apply edits if sliders or reset buttons were clicked
+        if edits_changed {
+            self.re_render_edits(frame);
+            ctx.request_repaint();
+        }
+
         // Central viewport panel
         egui::CentralPanel::default().show(ui, |ui| {
-            // Error banner if any
             let mut clear_error = false;
             if let Some(err) = &self.error_message {
                 ui.group(|ui| {
@@ -312,7 +571,6 @@ impl eframe::App for BeamApp {
             let available_size = ui.available_size();
 
             if let Some(texture_id) = self.egui_texture_id {
-                // Aspect-fit image display
                 let available_aspect = available_size.x / available_size.y.max(1.0);
                 let display_size = if available_aspect > self.texture_aspect_ratio {
                     Vec2::new(

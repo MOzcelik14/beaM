@@ -1,16 +1,25 @@
-//! RAW image decoding using `rawler`.
+//! RAW image decoding using `rawler` and proxy generation.
 
 use beam_core::error::{BeamError, Result};
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use std::path::{Path, PathBuf};
 
-/// Decoded linear image representation ready for GPU texture upload.
+/// Default maximum dimension for the interactive editing proxy
+pub const PROXY_MAX_DIMENSION: u32 = 1920;
+
+/// Decoded linear image representation containing full-resolution and fast proxy buffers.
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
-    /// RGBA32F linear pixel data (4 * width * height floats in [0.0, 1.0]).
+    /// RGBA32F linear pixel data at full resolution (4 * width * height floats in [0.0, 1.0]).
     pub data: Vec<f32>,
+    /// Fast proxy width (<= PROXY_MAX_DIMENSION)
+    pub proxy_width: u32,
+    /// Fast proxy height (<= PROXY_MAX_DIMENSION)
+    pub proxy_height: u32,
+    /// RGBA32F linear proxy pixel data for real-time 60 FPS slider preview.
+    pub proxy_data: Vec<f32>,
     pub metadata: ImageMetadata,
 }
 
@@ -24,6 +33,59 @@ pub struct ImageMetadata {
     pub aperture: Option<f32>,
     pub focal_length: Option<f32>,
     pub original_dimensions: (u32, u32),
+}
+
+/// Downscale an RGBA32F linear image to fit within max_dim using bilinear sampling.
+pub fn generate_proxy(
+    src_w: u32,
+    src_h: u32,
+    src_data: &[f32],
+    max_dim: u32,
+) -> (u32, u32, Vec<f32>) {
+    let max_side = src_w.max(src_h);
+    if max_side <= max_dim {
+        return (src_w, src_h, src_data.to_vec());
+    }
+
+    let scale = max_dim as f32 / max_side as f32;
+    let dst_w = ((src_w as f32 * scale).round() as u32).max(1);
+    let dst_h = ((src_h as f32 * scale).round() as u32).max(1);
+
+    let mut dst_data = Vec::with_capacity((dst_w * dst_h * 4) as usize);
+
+    let x_ratio = (src_w - 1) as f32 / (dst_w - 1).max(1) as f32;
+    let y_ratio = (src_h - 1) as f32 / (dst_h - 1).max(1) as f32;
+
+    for dy in 0..dst_h {
+        let sy_f = dy as f32 * y_ratio;
+        let y0 = sy_f.floor() as u32;
+        let y1 = (y0 + 1).min(src_h - 1);
+        let y_weight = sy_f - y0 as f32;
+
+        let row0_idx = (y0 * src_w * 4) as usize;
+        let row1_idx = (y1 * src_w * 4) as usize;
+
+        for dx in 0..dst_w {
+            let sx_f = dx as f32 * x_ratio;
+            let x0 = sx_f.floor() as u32;
+            let x1 = (x0 + 1).min(src_w - 1);
+            let x_weight = sx_f - x0 as f32;
+
+            let c00 = row0_idx + (x0 * 4) as usize;
+            let c01 = row0_idx + (x1 * 4) as usize;
+            let c10 = row1_idx + (x0 * 4) as usize;
+            let c11 = row1_idx + (x1 * 4) as usize;
+
+            for ch in 0..4 {
+                let top = src_data[c00 + ch] * (1.0 - x_weight) + src_data[c01 + ch] * x_weight;
+                let bottom = src_data[c10 + ch] * (1.0 - x_weight) + src_data[c11 + ch] * x_weight;
+                let interpolated = top * (1.0 - y_weight) + bottom * y_weight;
+                dst_data.push(interpolated);
+            }
+        }
+    }
+
+    (dst_w, dst_h, dst_data)
 }
 
 /// Decode an image file (camera RAW formats via rawler, or raster image fallback via image crate).
@@ -99,7 +161,6 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             let mut rgba = Vec::with_capacity(count * 4);
             let flat = pixels.flatten();
             for chunk in flat.as_chunks::<4>().0 {
-                // Approximate 4-color CFA (e.g. RGBE or dual green) to RGB
                 rgba.push(chunk[0]);
                 rgba.push((chunk[1] + chunk[3]) * 0.5);
                 rgba.push(chunk[2]);
@@ -128,10 +189,16 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
         }
     }
 
+    let (proxy_w, proxy_h, proxy_data) =
+        generate_proxy(width, height, &rgba_floats, PROXY_MAX_DIMENSION);
+
     Ok(DecodedImage {
         width,
         height,
         data: rgba_floats,
+        proxy_width: proxy_w,
+        proxy_height: proxy_h,
+        proxy_data,
         metadata: ImageMetadata {
             file_path: path.to_path_buf(),
             camera_make: if camera_make.is_empty() {
@@ -168,10 +235,15 @@ fn decode_raster_fallback(path: &Path) -> Result<DecodedImage> {
         data.push(pixel[3] as f32 / 255.0);
     }
 
+    let (proxy_w, proxy_h, proxy_data) = generate_proxy(width, height, &data, PROXY_MAX_DIMENSION);
+
     Ok(DecodedImage {
         width,
         height,
         data,
+        proxy_width: proxy_w,
+        proxy_height: proxy_h,
+        proxy_data,
         metadata: ImageMetadata {
             file_path: path.to_path_buf(),
             camera_make: None,
@@ -191,6 +263,20 @@ mod tests {
     use image::{ImageBuffer, Rgba};
 
     #[test]
+    fn test_proxy_generation() {
+        let w = 4000;
+        let h = 3000;
+        let data = vec![0.5f32; (w * h * 4) as usize];
+        let (pw, ph, pdata) = generate_proxy(w, h, &data, 1920);
+
+        assert_eq!(pw, 1920);
+        assert_eq!(ph, 1440);
+        assert_eq!(pdata.len(), (1920 * 1440 * 4) as usize);
+        // Midpoint value should remain ~0.5
+        assert!((pdata[0] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
     fn test_raster_fallback_decode() {
         let temp_dir = std::env::temp_dir();
         let test_path = temp_dir.join("beam_test_image.png");
@@ -202,6 +288,7 @@ mod tests {
         let decoded = decode_image(&test_path).expect("failed to decode raster image");
         assert_eq!(decoded.width, 10);
         assert_eq!(decoded.height, 10);
+        assert_eq!(decoded.proxy_width, 10);
         assert_eq!(decoded.data.len(), 10 * 10 * 4);
 
         let _ = std::fs::remove_file(test_path);

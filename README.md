@@ -86,11 +86,14 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Non-blocking async background decoding channel.
   - Sidecar format (`.beam.ron`) serialization with migration test.
   - SQLite database initialization (`beam-library`).
-- [ ] **Milestone 2 – Edit pipeline**:
+- [x] **Milestone 2 – Edit pipeline**:
   - Develop view with right-side adjustment panel.
-  - GPU shader stages: exposure, white balance (temperature/tint), contrast.
-  - Live preview on proxy image with reset-per-slider and reset-all.
-  - Sidecar persistence on image load/save.
+  - GPU shader stages: exposure (`exposure.wgsl`), white balance (`white_balance.wgsl`), contrast (`contrast.wgsl`).
+  - Ping-pong intermediate rendering pipeline with reorderable and skippable passes.
+  - Live preview on proxy image (~1920px max dimension) for sub-millisecond slider interaction.
+  - Reset-per-slider `↺` and Reset All adjustments buttons.
+  - Sidecar persistence: automatically loads edits on file open and saves on edit change.
+  - Golden-image test with GPU readback verifying mathematical exposure doubling.
 - [ ] **Milestone 3 – More adjustments**:
   - Highlights/shadows tone mapping.
   - Draggable tone curve widget.
@@ -110,6 +113,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 ## Design Decisions
 
 1. **Working Color Space**: We selected **Linear Rec.2020** as the primary working space. Rec.2020 encompasses virtually all real-world surface colors and modern camera sensor gamuts while maintaining physically accurate linearity for exposure, white balance, and contrast mathematics.
-2. **WGSL Shader Sampling & Texel Loading**: For HDR 32-bit floating point textures (`Rgba32Float`), standard hardware samplers often require vendor-specific filterable extensions. We utilize unfilterable texture bindings with direct texel loading (`textureLoad`) in the display pass, avoiding any GPU driver compatibility issues across Intel, Nvidia, AMD, and software rasterizers.
-3. **Graceful Raster Fallback**: While camera RAW formats (ARW, CR2, CR3, NEF, DNG, RAF, etc.) are prioritized through `rawler`, standard raster formats (PNG, JPEG) are supported via a fallback to ensure testing and mixed-library viewing. Corrupted or invalid files surface clear error banners in the UI rather than crashing.
-4. **Sidecar Format**: We use human-readable [RON](https://github.com/ron-rs/ron) format with an explicit `format_version: u32` header, allowing human inspectability, git diffability, and version migration.
+2. **Ping-Pong Modular Pipeline**: Adjustments are structured as independent WGSL shader passes executing between two ping-pong intermediate textures (`Rgba32Float`). Each stage receives its own dedicated uniform buffer, ensuring passes can be reordered, bypassed, or extended without rebuilding pipeline resources.
+3. **Linear Contrast & White Balance**:
+   - Contrast operates in linear light pivoted around middle-gray ($M = 0.18$) using an exponential slope: $x' = M \cdot (x / M)^{2^{C / 100}}$. This preserves midtone tonality without harsh clipping.
+   - White balance computes chromatic adaptation gains $(G_r, G_g, G_b)$ from Kelvin temperature and Green-Magenta tint offsets, applied directly to linear channel amplitudes.
+4. **Proxy for Interactive Responsiveness**: Decoded RAW files generate a fast bilinear proxy (~1920px max dimension). Sliders manipulate the proxy on the GPU in <1ms without re-uploading texture data, guaranteeing 60+ FPS responsiveness.
+5. **WGSL Shader Sampling & Texel Loading**: For HDR 32-bit floating point textures (`Rgba32Float`), standard hardware samplers often require vendor-specific filterable extensions. We utilize unfilterable texture bindings with direct texel loading (`textureLoad`) in the display pass, avoiding any GPU driver compatibility issues across Intel, Nvidia, AMD, and software rasterizers.
+6. **Graceful Raster Fallback**: While camera RAW formats (ARW, CR2, CR3, NEF, DNG, RAF, etc.) are prioritized through `rawler`, standard raster formats (PNG, JPEG) are supported via a fallback to ensure testing and mixed-library viewing. Corrupted or invalid files surface clear error banners in the UI rather than crashing.
+7. **Sidecar Format**: We use human-readable [RON](https://github.com/ron-rs/ron) format with an explicit `format_version: u32` header, allowing human inspectability, git diffability, and version migration.

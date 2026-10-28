@@ -68,6 +68,28 @@ pub struct EditStack {
     pub contrast: ContrastAdjustment,
 }
 
+impl EditStack {
+    pub fn reset_all(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn reset_white_balance(&mut self) {
+        self.white_balance = WhiteBalanceAdjustment::default();
+    }
+
+    pub fn reset_exposure(&mut self) {
+        self.exposure = ExposureAdjustment::default();
+    }
+
+    pub fn reset_contrast(&mut self) {
+        self.contrast = ContrastAdjustment::default();
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sidecar {
     pub format_version: u32,
