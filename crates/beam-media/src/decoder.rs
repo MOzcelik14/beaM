@@ -794,7 +794,15 @@ pub fn generate_thumbnail_with_edits(
         BeamError::ImageProcessing("Failed to construct thumbnail image buffer".to_string())
     })?;
 
-    Ok(apply_orientation(img, decoded.metadata.orientation))
+    let oriented = apply_orientation(img, decoded.metadata.orientation);
+    if let Some(stack) = edit_stack {
+        if stack.crop.is_active() {
+            let cropped = crate::export::apply_crop_and_orientation(&oriented, &stack.crop);
+            return Ok(cropped);
+        }
+    }
+
+    Ok(oriented)
 }
 
 /// Generate an 8-bit sRGB thumbnail without edits (or using default settings).

@@ -148,6 +148,16 @@ cargo clippy --workspace --all-targets -- -D warnings
     - **Side-by-Side Mode**: Dual-viewport comparison displaying before and after versions simultaneously with aligned aspect ratios and badges.
   - Complete English and Turkish localization for all history entries, comparison toolbar labels, and tooltips.
 
+- [x] **Milestone 11 – Crop, rotate, straighten**:
+  - Interactive crop overlay widget in viewport with draggable L-bracket corner and edge handles, rule-of-thirds compositional grid, dimmed exterior mask, and live cursor feedback.
+  - Aspect ratio constraint presets: Original, 1:1 Square, 4:5 (8:10), 3:2, 16:9, and Free/Custom, with automatic centered crop box positioning.
+  - Lossless 90° clockwise and counter-clockwise rotation and horizontal/vertical flipping.
+  - High-precision continuous straighten slider (-45.0° to +45.0°) with 1-click reset.
+  - Hardware-accelerated GPU display shader pipeline with universal 4-tap manual bilinear texture sampling (`sample_input_bilinear`) ensuring crisp, artifact-free subpixel rendering on all hardware.
+  - Dual display modes: shows uncropped photo under crop overlay during active editing mode (`C` shortcut / `Enter` or `Esc` to finish), and seamlessly clips to cropped aspect ratio during normal viewing.
+  - Full export pipeline and thumbnail generation integration: applies orientation, flips, straighten, and crop box before resizing and sharpening.
+  - Complete English and Turkish localization across all UI elements, presets, and history records.
+
 ---
 
 ## Adding a New Language

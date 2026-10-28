@@ -6,10 +6,18 @@ pub const APP_NAME: &str = "beaM.";
 
 pub mod color;
 pub mod error;
+pub mod geometry;
 pub mod i18n;
 pub mod sidecar;
 
 pub use color::ExportColorSpace;
 pub use error::{BeamError, Result};
+pub use geometry::{
+    calculate_cropped_dimensions, calculate_effective_aspect_ratio, create_centered_crop_rect,
+    map_output_uv_to_source,
+};
 pub use i18n::{current_language, set_language, t, t_with_args, AppConfig, I18n, Language};
-pub use sidecar::{EditStack, HistoryStep, Sidecar, CURRENT_FORMAT_VERSION, MAX_HISTORY_STEPS};
+pub use sidecar::{
+    CropAdjustment, CropAspectPreset, EditStack, HistoryStep, Sidecar, CURRENT_FORMAT_VERSION,
+    MAX_HISTORY_STEPS,
+};

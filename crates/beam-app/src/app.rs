@@ -1,9 +1,11 @@
 use crate::views::library::{
     show_library_view, LibraryAction, LibraryViewState, ThumbnailRequest, ThumbnailStatus,
 };
+use crate::widgets::crop::show_crop_overlay;
 use crate::widgets::curve::show_tone_curve;
 use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
-use beam_core::sidecar::{EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS};
+use beam_core::geometry::{calculate_effective_aspect_ratio, create_centered_crop_rect};
+use beam_core::sidecar::{CropAspectPreset, EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS};
 use beam_core::{set_language, t, AppConfig, Language, APP_NAME};
 use beam_gpu::{EditPipeline, GpuImage};
 use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
@@ -86,6 +88,7 @@ pub struct BeamApp {
     texture_aspect_ratio: f32,
     before_after_mode: BeforeAfterMode,
     split_view_divider: f32,
+    pub crop_mode_active: bool,
 
     // Background decoding
     tx: Sender<BackgroundMsg>,
@@ -279,6 +282,7 @@ impl BeamApp {
             texture_aspect_ratio: 1.0,
             before_after_mode: BeforeAfterMode::Normal,
             split_view_divider: 0.5,
+            crop_mode_active: false,
             tx,
             rx,
             is_loading: false,
@@ -629,7 +633,8 @@ impl BeamApp {
         }
 
         self.histogram_data = Some(HistogramData::compute_from_rgba32f(&decoded.proxy_data));
-        self.texture_aspect_ratio = decoded.width as f32 / decoded.height as f32;
+        self.texture_aspect_ratio =
+            calculate_effective_aspect_ratio(decoded.width, decoded.height, &self.edit_stack.crop);
         self.gpu_display_texture = Some(display_texture);
         self.gpu_before_texture = Some(before_texture);
         self.gpu_proxy_image = Some(gpu_proxy);
@@ -655,11 +660,34 @@ impl BeamApp {
             return;
         };
 
+        if let Some(img) = &self.current_image {
+            if self.crop_mode_active {
+                let (w, h) = if self.edit_stack.crop.rotation == 90
+                    || self.edit_stack.crop.rotation == 270
+                {
+                    (img.height as f32, img.width as f32)
+                } else {
+                    (img.width as f32, img.height as f32)
+                };
+                self.texture_aspect_ratio = w / h;
+            } else {
+                self.texture_aspect_ratio =
+                    calculate_effective_aspect_ratio(img.width, img.height, &self.edit_stack.crop);
+            }
+        }
+
         let device = &render_state.device;
         let queue = &render_state.queue;
         let display_view = display_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        pipeline.render(device, queue, gpu_proxy, &display_view, &self.edit_stack);
+        pipeline.render_with_crop_mode(
+            device,
+            queue,
+            gpu_proxy,
+            &display_view,
+            &self.edit_stack,
+            self.crop_mode_active,
+        );
 
         // Save sidecar automatically
         self.save_sidecar();
@@ -938,11 +966,42 @@ impl eframe::App for BeamApp {
         if ctx.input(|i| {
             i.key_pressed(egui::Key::Backslash) && !i.modifiers.command && !i.modifiers.ctrl
         }) {
+            if self.crop_mode_active {
+                self.crop_mode_active = false;
+                self.re_render_edits(frame);
+            }
             self.toggle_before_after();
             ctx.request_repaint();
         }
 
+        if self.current_view == AppView::Develop {
+            if ctx
+                .input(|i| i.key_pressed(egui::Key::C) && !i.modifiers.command && !i.modifiers.ctrl)
+            {
+                self.crop_mode_active = !self.crop_mode_active;
+                if self.crop_mode_active {
+                    self.before_after_mode = BeforeAfterMode::Normal;
+                }
+                self.re_render_edits(frame);
+                ctx.request_repaint();
+            } else if self.crop_mode_active
+                && ctx.input(|i| {
+                    (i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape))
+                        && !i.modifiers.command
+                        && !i.modifiers.ctrl
+                })
+            {
+                self.crop_mode_active = false;
+                self.re_render_edits(frame);
+                ctx.request_repaint();
+            }
+        }
+
         if ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.command && !i.modifiers.ctrl) {
+            if self.crop_mode_active {
+                self.crop_mode_active = false;
+                self.re_render_edits(frame);
+            }
             self.current_view = AppView::Library;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::D) && !i.modifiers.command && !i.modifiers.ctrl) {
@@ -1131,7 +1190,173 @@ impl eframe::App for BeamApp {
                                         ui.add_space(4.0);
                                     }
 
-                                    // 2. White Balance Section
+                                    // 2. Crop & Straighten Section
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong(t!("develop_crop_tool"));
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    // Reset Crop button
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text(t!("develop_crop_reset"))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.crop = Default::default();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!("history_crop_reset"));
+                                                    }
+
+                                                    // Toggle Crop Tool button
+                                                    let btn_text = if self.crop_mode_active {
+                                                        format!("✔ {}", t!("develop_crop_done"))
+                                                    } else {
+                                                        format!("⛶ {}", t!("develop_crop_btn"))
+                                                    };
+                                                    let resp = ui.selectable_label(self.crop_mode_active, btn_text);
+                                                    if resp.clicked() {
+                                                        self.crop_mode_active = !self.crop_mode_active;
+                                                        if self.crop_mode_active {
+                                                            self.before_after_mode = BeforeAfterMode::Normal;
+                                                        }
+                                                        edits_changed = true;
+                                                        immediate_action = false;
+                                                    }
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(4.0);
+
+                                        // Aspect Preset Selector
+                                        ui.horizontal(|ui| {
+                                            ui.label(t!("develop_crop_aspect"));
+                                            let current_preset = self.edit_stack.crop.preset;
+                                            let mut selected_preset = current_preset;
+                                            egui::ComboBox::from_id_salt("crop_aspect_combo")
+                                                .selected_text(match current_preset {
+                                                    CropAspectPreset::Original => t!("develop_crop_aspect_original"),
+                                                    CropAspectPreset::Square => t!("develop_crop_aspect_1_1"),
+                                                    CropAspectPreset::Ratio4x5 => t!("develop_crop_aspect_4_5"),
+                                                    CropAspectPreset::Ratio3x2 => t!("develop_crop_aspect_3_2"),
+                                                    CropAspectPreset::Ratio16x9 => t!("develop_crop_aspect_16_9"),
+                                                    CropAspectPreset::Free => t!("develop_crop_aspect_free"),
+                                                })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Original, t!("develop_crop_aspect_original"));
+                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Square, t!("develop_crop_aspect_1_1"));
+                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Ratio4x5, t!("develop_crop_aspect_4_5"));
+                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Ratio3x2, t!("develop_crop_aspect_3_2"));
+                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Ratio16x9, t!("develop_crop_aspect_16_9"));
+                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Free, t!("develop_crop_aspect_free"));
+                                                });
+
+                                            if selected_preset != current_preset {
+                                                self.edit_stack.crop.preset = selected_preset;
+                                                if let Some(img) = &self.current_image {
+                                                    let orig_aspect = if self.edit_stack.crop.rotation == 90
+                                                        || self.edit_stack.crop.rotation == 270
+                                                    {
+                                                        img.height as f32 / img.width as f32
+                                                    } else {
+                                                        img.width as f32 / img.height as f32
+                                                    };
+                                                    let (x, y, w, h) = create_centered_crop_rect(orig_aspect, selected_preset);
+                                                    self.edit_stack.crop.x = x;
+                                                    self.edit_stack.crop.y = y;
+                                                    self.edit_stack.crop.width = w;
+                                                    self.edit_stack.crop.height = h;
+                                                    if selected_preset != CropAspectPreset::Free && (w < 0.999 || h < 0.999) {
+                                                        self.edit_stack.crop.enabled = true;
+                                                    }
+                                                }
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_crop_aspect",
+                                                    "preset" => format!("{:?}", selected_preset)
+                                                ));
+                                            }
+                                        });
+
+                                        // Rotate and Flip Buttons
+                                        ui.horizontal(|ui| {
+                                            if ui.button("↶ 90°").on_hover_text(t!("develop_crop_rotate_ccw")).clicked() {
+                                                self.edit_stack.crop.rotation = (self.edit_stack.crop.rotation + 270) % 360;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_crop_rotate",
+                                                    "angle" => format!("{}°", self.edit_stack.crop.rotation)
+                                                ));
+                                            }
+                                            if ui.button("↷ 90°").on_hover_text(t!("develop_crop_rotate_cw")).clicked() {
+                                                self.edit_stack.crop.rotation = (self.edit_stack.crop.rotation + 90) % 360;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_crop_rotate",
+                                                    "angle" => format!("{}°", self.edit_stack.crop.rotation)
+                                                ));
+                                            }
+                                            if ui.button("⇄ Flip H").on_hover_text(t!("develop_crop_flip_h")).clicked() {
+                                                self.edit_stack.crop.flip_h = !self.edit_stack.crop.flip_h;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_crop_flip_h"));
+                                            }
+                                            if ui.button("⇅ Flip V").on_hover_text(t!("develop_crop_flip_v")).clicked() {
+                                                self.edit_stack.crop.flip_v = !self.edit_stack.crop.flip_v;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_crop_flip_v"));
+                                            }
+                                        });
+
+                                        // Straighten slider
+                                        ui.horizontal(|ui| {
+                                            ui.label(t!("develop_crop_straighten"));
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self.edit_stack.crop.straighten,
+                                                    -45.0..=45.0,
+                                                )
+                                                .suffix("°")
+                                                .show_value(true),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_crop_straighten",
+                                                    "val" => format!("{:+0.1}°", self.edit_stack.crop.straighten)
+                                                ));
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text(t!("develop_crop_straighten_reset"))
+                                                .clicked()
+                                            {
+                                                self.edit_stack.crop.straighten = 0.0;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!(
+                                                    "history_reset_section",
+                                                    "section" => t!("develop_crop_straighten")
+                                                ));
+                                            }
+                                        });
+
+                                        if self.crop_mode_active {
+                                            ui.add_space(2.0);
+                                            ui.label(RichText::new(t!("develop_crop_instruction")).weak().small());
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 3. White Balance Section
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
                                             ui.strong(t!("develop_white_balance"));
@@ -1918,6 +2143,10 @@ impl eframe::App for BeamApp {
                                 .on_hover_text(t!("develop_before_toggle_tooltip"))
                                 .clicked()
                             {
+                                if self.crop_mode_active {
+                                    self.crop_mode_active = false;
+                                    self.re_render_edits(frame);
+                                }
                                 self.before_after_mode = BeforeAfterMode::Toggle;
                             }
                             if ui
@@ -1928,6 +2157,10 @@ impl eframe::App for BeamApp {
                                 .on_hover_text(t!("develop_split_tooltip"))
                                 .clicked()
                             {
+                                if self.crop_mode_active {
+                                    self.crop_mode_active = false;
+                                    self.re_render_edits(frame);
+                                }
                                 self.before_after_mode = BeforeAfterMode::SplitView;
                             }
                             if ui
@@ -1938,6 +2171,10 @@ impl eframe::App for BeamApp {
                                 .on_hover_text(t!("develop_side_by_side_tooltip"))
                                 .clicked()
                             {
+                                if self.crop_mode_active {
+                                    self.crop_mode_active = false;
+                                    self.re_render_edits(frame);
+                                }
                                 self.before_after_mode = BeforeAfterMode::SideBySide;
                             }
                         });
@@ -1961,10 +2198,49 @@ impl eframe::App for BeamApp {
                                 };
 
                                 ui.centered_and_justified(|ui| {
-                                    ui.image(egui::load::SizedTexture::new(
+                                    let img_resp = ui.image(egui::load::SizedTexture::new(
                                         texture_id,
                                         display_size,
                                     ));
+                                    if self.crop_mode_active {
+                                        if let Some(img) = &self.current_image {
+                                            let orig_aspect = if self.edit_stack.crop.rotation == 90
+                                                || self.edit_stack.crop.rotation == 270
+                                            {
+                                                img.height as f32 / img.width as f32
+                                            } else {
+                                                img.width as f32 / img.height as f32
+                                            };
+                                            if show_crop_overlay(
+                                                ui,
+                                                img_resp.rect,
+                                                &mut self.edit_stack.crop,
+                                                orig_aspect,
+                                            ) {
+                                                if self.slider_drag_start_stack.is_none() {
+                                                    let baseline = if self.history_index
+                                                        < self.history.len()
+                                                    {
+                                                        self.history[self.history_index]
+                                                            .stack
+                                                            .clone()
+                                                    } else {
+                                                        self.edit_stack.clone()
+                                                    };
+                                                    self.slider_drag_start_stack = Some(baseline);
+                                                }
+                                                self.slider_drag_action_name = Some(t!(
+                                                    "history_crop",
+                                                    "preset" => format!(
+                                                        "{:?}",
+                                                        self.edit_stack.crop.preset
+                                                    )
+                                                ));
+                                                self.re_render_edits(frame);
+                                                ctx.request_repaint();
+                                            }
+                                        }
+                                    }
                                 });
                             }
                             BeforeAfterMode::Toggle => {

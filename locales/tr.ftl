@@ -196,6 +196,33 @@ history_hsl_band = HSL: {$band}
 history_reset_all = Tüm Ayarları Sıfırla
 history_reset_section = {$section} Sıfırla
 history_toggle_section = {$section} Aç/Kapat
+history_crop = Kırpma: {$preset}
+history_rotate_left = 90° Sola Döndür
+history_rotate_right = 90° Sağa Döndür
+history_flip_h = Yatay Çevir
+history_flip_v = Dikey Çevir
+history_straighten = Düzeltme: {$val}°
+history_reset_crop = Kırpmayı Sıfırla
+
+# Crop & Straighten Tool
+develop_crop_tool = Kırpma ve Düzeltme
+develop_crop_btn = ✂ Kırp (C)
+develop_crop_aspect = En Boy Oranı:
+develop_crop_aspect_original = Orijinal
+develop_crop_aspect_1_1 = 1:1 Kare
+develop_crop_aspect_4_5 = 4:5
+develop_crop_aspect_3_2 = 3:2
+develop_crop_aspect_16_9 = 16:9
+develop_crop_aspect_free = Serbest
+develop_crop_rotate_ccw = 90° Sola Döndür
+develop_crop_rotate_cw = 90° Sağa Döndür
+develop_crop_flip_h = Yatay Çevir
+develop_crop_flip_v = Dikey Çevir
+develop_crop_straighten = Düzeltme
+develop_crop_straighten_reset = Düzeltmeyi Sıfırla
+develop_crop_reset = Kırpmayı Sıfırla
+develop_crop_done = Tamamlandı
+develop_crop_instruction = Kırpmak için köşeleri veya kenarları sürükleyin • Konumu ayarlamak için içeriği sürükleyin • Tamamlamak için Enter veya Tamamlandı'ya basın
 
 # Export Dialog
 export_title = Fotoğrafı Dışa Aktar

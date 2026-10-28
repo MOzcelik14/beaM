@@ -196,6 +196,33 @@ history_hsl_band = HSL: {$band}
 history_reset_all = Reset All Adjustments
 history_reset_section = Reset {$section}
 history_toggle_section = Toggle {$section}
+history_crop = Crop: {$preset}
+history_rotate_left = Rotate 90° CCW
+history_rotate_right = Rotate 90° CW
+history_flip_h = Flip Horizontal
+history_flip_v = Flip Vertical
+history_straighten = Straighten: {$val}°
+history_reset_crop = Reset Crop
+
+# Crop & Straighten Tool
+develop_crop_tool = Crop & Straighten
+develop_crop_btn = ✂ Crop (C)
+develop_crop_aspect = Aspect Ratio:
+develop_crop_aspect_original = Original
+develop_crop_aspect_1_1 = 1:1 Square
+develop_crop_aspect_4_5 = 4:5
+develop_crop_aspect_3_2 = 3:2
+develop_crop_aspect_16_9 = 16:9
+develop_crop_aspect_free = Free
+develop_crop_rotate_ccw = Rotate 90° Left
+develop_crop_rotate_cw = Rotate 90° Right
+develop_crop_flip_h = Flip Horizontal
+develop_crop_flip_v = Flip Vertical
+develop_crop_straighten = Straighten
+develop_crop_straighten_reset = Reset Straighten
+develop_crop_reset = Reset Crop
+develop_crop_done = Done
+develop_crop_instruction = Drag corners or edges to crop • Drag inside to reposition • Press Enter or Done to finish
 
 # Export Dialog
 export_title = Export Photo

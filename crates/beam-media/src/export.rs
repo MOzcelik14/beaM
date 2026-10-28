@@ -1,7 +1,7 @@
 //! Full-resolution image export and batch processing.
 
 use beam_core::error::{BeamError, Result};
-use beam_core::sidecar::EditStack;
+use beam_core::sidecar::{CropAdjustment, EditStack};
 use beam_core::ExportColorSpace;
 use beam_gpu::pipeline::{EditPipeline, HeadlessGpu};
 use image::codecs::jpeg::JpegEncoder;
@@ -191,6 +191,103 @@ pub fn apply_unsharp_mask(
     }
 
     output
+}
+
+/// Applies non-destructive crop, 90-degree rotations, flips, and straighten to an RGBA8 image.
+pub fn apply_crop_and_orientation(
+    img: &image::RgbaImage,
+    crop: &CropAdjustment,
+) -> image::RgbaImage {
+    if !crop.is_active() {
+        return img.clone();
+    }
+
+    let mut current = img.clone();
+
+    // 1. 90-degree clockwise rotations
+    match crop.rotation % 360 {
+        90 => current = image::imageops::rotate90(&current),
+        180 => current = image::imageops::rotate180(&current),
+        270 => current = image::imageops::rotate270(&current),
+        _ => {}
+    }
+
+    // 2. Flips
+    if crop.flip_h {
+        current = image::imageops::flip_horizontal(&current);
+    }
+    if crop.flip_v {
+        current = image::imageops::flip_vertical(&current);
+    }
+
+    // 3. Straighten (rotation around center using bilinear sampling)
+    if crop.straighten.abs() > 0.001 {
+        let (w, h) = current.dimensions();
+        let mut straightened = image::RgbaImage::new(w, h);
+        let rad = (-crop.straighten).to_radians();
+        let cos_a = rad.cos();
+        let sin_a = rad.sin();
+        let cx = (w as f32) * 0.5;
+        let cy = (h as f32) * 0.5;
+
+        for y in 0..h {
+            for x in 0..w {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                let src_x = cx + dx * cos_a - dy * sin_a;
+                let src_y = cy + dx * sin_a + dy * cos_a;
+
+                if src_x >= 0.0
+                    && src_x <= (w - 1) as f32
+                    && src_y >= 0.0
+                    && src_y <= (h - 1) as f32
+                {
+                    let x0 = src_x.floor() as u32;
+                    let y0 = src_y.floor() as u32;
+                    let x1 = (x0 + 1).min(w - 1);
+                    let y1 = (y0 + 1).min(h - 1);
+
+                    let fx = src_x - x0 as f32;
+                    let fy = src_y - y0 as f32;
+
+                    let p00 = current.get_pixel(x0, y0);
+                    let p10 = current.get_pixel(x1, y0);
+                    let p01 = current.get_pixel(x0, y1);
+                    let p11 = current.get_pixel(x1, y1);
+
+                    let mut interp = [0u8; 4];
+                    for c in 0..4 {
+                        let top = (p00[c] as f32) * (1.0 - fx) + (p10[c] as f32) * fx;
+                        let bot = (p01[c] as f32) * (1.0 - fx) + (p11[c] as f32) * fx;
+                        interp[c] = (top * (1.0 - fy) + bot * fy).round().clamp(0.0, 255.0) as u8;
+                    }
+                    straightened.put_pixel(x, y, image::Rgba(interp));
+                } else {
+                    let cx_clamped = src_x.clamp(0.0, (w - 1) as f32).round() as u32;
+                    let cy_clamped = src_y.clamp(0.0, (h - 1) as f32).round() as u32;
+                    straightened.put_pixel(x, y, *current.get_pixel(cx_clamped, cy_clamped));
+                }
+            }
+        }
+        current = straightened;
+    }
+
+    // 4. Crop
+    if crop.enabled {
+        let (w, h) = current.dimensions();
+        let crop_x = ((w as f32) * crop.x.clamp(0.0, 1.0)).round() as u32;
+        let crop_y = ((h as f32) * crop.y.clamp(0.0, 1.0)).round() as u32;
+        let mut crop_w = ((w as f32) * crop.width.clamp(0.01, 1.0)).round() as u32;
+        let mut crop_h = ((h as f32) * crop.height.clamp(0.01, 1.0)).round() as u32;
+
+        crop_w = crop_w.min(w.saturating_sub(crop_x)).max(1);
+        crop_h = crop_h.min(h.saturating_sub(crop_y)).max(1);
+
+        let sub_img = image::imageops::crop_imm(&current, crop_x, crop_y, crop_w, crop_h);
+        current = sub_img.to_image();
+    }
+
+    current
 }
 
 /// Generates valid ICC profile binary payload for the specified color space.
@@ -398,10 +495,15 @@ pub fn export_decoded_image(
             BeamError::ImageProcessing("Failed to construct RgbaImage from raw pixel buffer".into())
         })?;
 
-    // 2. Resizing with Lanczos3 if requested
+    // 2. Non-destructive crop, rotation, flip, and straighten
+    if edit_stack.crop.is_active() {
+        rgba_image = apply_crop_and_orientation(&rgba_image, &edit_stack.crop);
+    }
+
+    // 3. Resizing with Lanczos3 if requested
     let (target_w, target_h) =
-        calculate_target_dimensions(decoded.width, decoded.height, config.resize);
-    if target_w != decoded.width || target_h != decoded.height {
+        calculate_target_dimensions(rgba_image.width(), rgba_image.height(), config.resize);
+    if target_w != rgba_image.width() || target_h != rgba_image.height() {
         rgba_image = image::imageops::resize(
             &rgba_image,
             target_w,
@@ -929,5 +1031,35 @@ mod tests {
         assert_eq!(results.unwrap().len(), 0);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_apply_crop_and_orientation() {
+        let mut img = image::RgbaImage::new(100, 50);
+        // Paint top-left red, bottom-right blue
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        img.put_pixel(99, 49, image::Rgba([0, 0, 255, 255]));
+
+        // Test 90 degree rotation
+        let crop = CropAdjustment {
+            rotation: 90,
+            ..Default::default()
+        };
+        let rot90 = apply_crop_and_orientation(&img, &crop);
+        assert_eq!(rot90.width(), 50);
+        assert_eq!(rot90.height(), 100);
+
+        // Test crop
+        let crop2 = CropAdjustment {
+            enabled: true,
+            x: 0.2,
+            y: 0.1,
+            width: 0.5,
+            height: 0.5,
+            ..Default::default()
+        };
+        let cropped = apply_crop_and_orientation(&img, &crop2);
+        assert_eq!(cropped.width(), 50);
+        assert_eq!(cropped.height(), 25);
     }
 }

@@ -305,9 +305,46 @@ impl<U: bytemuck::Pod + bytemuck::Zeroable> StagePass<U> {
 // Display Transform Pipeline (Linear Rec.2020 -> sRGB)
 // ----------------------------------------------------------------------------
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DisplayGeometryUniforms {
+    pub crop_x: f32,
+    pub crop_y: f32,
+    pub crop_w: f32,
+    pub crop_h: f32,
+    pub rotation: u32,
+    pub flip_h: u32,
+    pub flip_v: u32,
+    pub straighten_rad: f32,
+    pub crop_enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
+}
+
+impl Default for DisplayGeometryUniforms {
+    fn default() -> Self {
+        Self {
+            crop_x: 0.0,
+            crop_y: 0.0,
+            crop_w: 1.0,
+            crop_h: 1.0,
+            rotation: 0,
+            flip_h: 0,
+            flip_v: 0,
+            straighten_rad: 0.0,
+            crop_enabled: 0,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        }
+    }
+}
+
 pub struct DisplayPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    uniform_buffer: wgpu::Buffer,
     target_format: wgpu::TextureFormat,
 }
 
@@ -318,18 +355,37 @@ impl DisplayPipeline {
             source: wgpu::ShaderSource::Wgsl(DISPLAY_SHADER_SRC.into()),
         });
 
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("display_geometry_uniform_buffer"),
+            size: std::mem::size_of::<DisplayGeometryUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("display_bind_group_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -375,6 +431,7 @@ impl DisplayPipeline {
         Self {
             pipeline,
             bind_group_layout,
+            uniform_buffer,
             target_format,
         }
     }
@@ -385,14 +442,23 @@ impl DisplayPipeline {
         queue: &wgpu::Queue,
         input_view: &wgpu::TextureView,
         target_view: &wgpu::TextureView,
+        uniforms: &DisplayGeometryUniforms,
     ) {
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(uniforms));
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("display_render_bind_group"),
             layout: &self.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(input_view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -911,6 +977,7 @@ impl EditPipeline {
     }
 
     /// Execute the full edit stack from input texture to output display target.
+    /// Execute the full edit stack from input texture to output display target.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -919,14 +986,48 @@ impl EditPipeline {
         target_view: &wgpu::TextureView,
         edit_stack: &EditStack,
     ) {
+        self.render_with_crop_mode(device, queue, input, target_view, edit_stack, false);
+    }
+
+    /// Execute the full edit stack, optionally keeping uncropped view for interactive crop editing.
+    pub fn render_with_crop_mode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        target_view: &wgpu::TextureView,
+        edit_stack: &EditStack,
+        crop_mode_active: bool,
+    ) {
         self.ensure_intermediate_textures(device, input.width, input.height);
         self.update_uniforms(queue, edit_stack);
         self.render_intermediate_stages(device, queue, input);
 
         let pong = self.pong_view.as_ref().unwrap();
+
+        let crop = &edit_stack.crop;
+        let uniforms = DisplayGeometryUniforms {
+            crop_x: crop.x,
+            crop_y: crop.y,
+            crop_w: crop.width,
+            crop_h: crop.height,
+            rotation: crop.rotation,
+            flip_h: if crop.flip_h { 1 } else { 0 },
+            flip_v: if crop.flip_v { 1 } else { 0 },
+            straighten_rad: crop.straighten.to_radians(),
+            crop_enabled: if crop.enabled && !crop_mode_active {
+                1
+            } else {
+                0
+            },
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        };
+
         // Final Stage: Display Transform (pong -> target_view)
         self.display_pipeline
-            .render_to_target(device, queue, pong, target_view);
+            .render_to_target(device, queue, pong, target_view, &uniforms);
     }
 
     /// Execute the complete edit stack onto an image and read back 8-bit RGBA pixels in requested color space.

@@ -9,8 +9,9 @@ pub use decoder::{
     srgb_to_rec2020_linear, thumbnail_cache_path, DecodedImage, ImageMetadata, PROXY_MAX_DIMENSION,
 };
 pub use export::{
-    apply_unsharp_mask, calculate_target_dimensions, expand_filename_template, export_batch,
-    export_decoded_image, export_image, extract_raw_exif, generate_output_path,
-    get_icc_profile_bytes, resolve_unique_output_path, sanitize_exif_orientation, BatchProgress,
-    ExportConfig, ExportFormat, OutputSharpening, ResizeMode,
+    apply_crop_and_orientation, apply_unsharp_mask, calculate_target_dimensions,
+    expand_filename_template, export_batch, export_decoded_image, export_image, extract_raw_exif,
+    generate_output_path, get_icc_profile_bytes, resolve_unique_output_path,
+    sanitize_exif_orientation, BatchProgress, ExportConfig, ExportFormat, OutputSharpening,
+    ResizeMode,
 };

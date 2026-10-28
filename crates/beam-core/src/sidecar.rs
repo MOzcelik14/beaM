@@ -133,6 +133,112 @@ impl Default for HslAdjustment {
     }
 }
 
+/// Presets for crop aspect ratios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CropAspectPreset {
+    #[default]
+    Original,
+    Square,    // 1:1
+    Ratio4x5,  // 4:5
+    Ratio3x2,  // 3:2
+    Ratio16x9, // 16:9
+    Free,      // Unconstrained
+}
+
+impl CropAspectPreset {
+    /// Return the target width / height aspect ratio, or None if Free.
+    pub fn ratio(&self, original_aspect: f32) -> Option<f32> {
+        match self {
+            Self::Original => Some(original_aspect.max(0.001)),
+            Self::Square => Some(1.0),
+            Self::Ratio4x5 => {
+                if original_aspect >= 1.0 {
+                    Some(5.0 / 4.0)
+                } else {
+                    Some(4.0 / 5.0)
+                }
+            }
+            Self::Ratio3x2 => {
+                if original_aspect >= 1.0 {
+                    Some(3.0 / 2.0)
+                } else {
+                    Some(2.0 / 3.0)
+                }
+            }
+            Self::Ratio16x9 => {
+                if original_aspect >= 1.0 {
+                    Some(16.0 / 9.0)
+                } else {
+                    Some(9.0 / 16.0)
+                }
+            }
+            Self::Free => None,
+        }
+    }
+}
+
+/// Non-destructive crop, rotate, flip, and straighten adjustments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CropAdjustment {
+    pub enabled: bool,
+    /// Left offset in normalized [0.0, 1.0] image space
+    pub x: f32,
+    /// Top offset in normalized [0.0, 1.0] image space
+    pub y: f32,
+    /// Width in normalized [0.0, 1.0] image space
+    pub width: f32,
+    /// Height in normalized [0.0, 1.0] image space
+    pub height: f32,
+    /// Active aspect ratio preset
+    pub preset: CropAspectPreset,
+    /// Clockwise rotation in degrees: 0, 90, 180, 270
+    pub rotation: u32,
+    /// Horizontal flip (mirror across Y axis)
+    pub flip_h: bool,
+    /// Vertical flip (mirror across X axis)
+    pub flip_v: bool,
+    /// Straighten angle in degrees: -45.0..=45.0
+    pub straighten: f32,
+}
+
+impl Default for CropAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            preset: CropAspectPreset::Original,
+            rotation: 0,
+            flip_h: false,
+            flip_v: false,
+            straighten: 0.0,
+        }
+    }
+}
+
+impl CropAdjustment {
+    /// Returns true if any geometric transformation (crop, rotation, flip, or straighten) is applied.
+    pub fn is_active(&self) -> bool {
+        self.enabled
+            || self.rotation != 0
+            || self.flip_h
+            || self.flip_v
+            || self.straighten.abs() > 0.001
+            || (self.x > 0.0001 || self.y > 0.0001 || self.width < 0.9999 || self.height < 0.9999)
+    }
+
+    /// Reset crop rectangle to full bounds (0, 0, 1, 1).
+    pub fn reset_crop_rect(&mut self) {
+        self.x = 0.0;
+        self.y = 0.0;
+        self.width = 1.0;
+        self.height = 1.0;
+        self.enabled = false;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditStack {
     pub white_balance: WhiteBalanceAdjustment,
@@ -141,6 +247,8 @@ pub struct EditStack {
     pub contrast: ContrastAdjustment,
     pub tone_curve: ToneCurveAdjustment,
     pub hsl: HslAdjustment,
+    #[serde(default)]
+    pub crop: CropAdjustment,
 }
 
 impl EditStack {
@@ -170,6 +278,10 @@ impl EditStack {
 
     pub fn reset_hsl(&mut self) {
         self.hsl = HslAdjustment::default();
+    }
+
+    pub fn reset_crop(&mut self) {
+        self.crop = CropAdjustment::default();
     }
 
     pub fn is_default(&self) -> bool {
@@ -586,5 +698,55 @@ mod tests {
         assert_eq!(sidecar.history[0].name, "Initial");
         assert_eq!(sidecar.history_index, MAX_HISTORY_STEPS - 1);
         assert_eq!(sidecar.history.last().unwrap().name, "Step 60");
+    }
+
+    #[test]
+    fn test_crop_sidecar_roundtrip_and_backward_compatibility() {
+        let mut sidecar = Sidecar::new("crop_test.ARW");
+        sidecar.edit_stack.crop.enabled = true;
+        sidecar.edit_stack.crop.x = 0.1;
+        sidecar.edit_stack.crop.y = 0.2;
+        sidecar.edit_stack.crop.width = 0.7;
+        sidecar.edit_stack.crop.height = 0.6;
+        sidecar.edit_stack.crop.rotation = 90;
+        sidecar.edit_stack.crop.flip_h = true;
+        sidecar.edit_stack.crop.straighten = 2.5;
+        sidecar.edit_stack.crop.preset = CropAspectPreset::Square;
+
+        let ron_str = sidecar.to_ron_string().expect("Serialization failed");
+        assert!(ron_str.contains("rotation: 90"));
+        assert!(ron_str.contains("flip_h: true"));
+
+        let loaded = Sidecar::from_ron_str(&ron_str).expect("Deserialization failed");
+        assert!(loaded.edit_stack.crop.enabled);
+        assert_eq!(loaded.edit_stack.crop.rotation, 90);
+        assert!(loaded.edit_stack.crop.flip_h);
+        assert!(!loaded.edit_stack.crop.flip_v);
+        assert_eq!(loaded.edit_stack.crop.straighten, 2.5);
+        assert_eq!(loaded.edit_stack.crop.preset, CropAspectPreset::Square);
+
+        // Backward compatibility: sidecar without `crop`
+        let base_sidecar = Sidecar::new("legacy.ARW");
+        let base_ron = base_sidecar.to_ron_string().unwrap();
+        let mut in_crop = false;
+        let mut legacy_lines = Vec::new();
+        for line in base_ron.lines() {
+            if line.trim_start().starts_with("crop:") {
+                in_crop = true;
+                continue;
+            }
+            if in_crop {
+                if line.trim() == ")," {
+                    in_crop = false;
+                }
+                continue;
+            }
+            legacy_lines.push(line);
+        }
+        let legacy_ron = legacy_lines.join("\n");
+        let legacy_loaded =
+            Sidecar::from_ron_str(&legacy_ron).expect("Legacy deserialization failed");
+        assert_eq!(legacy_loaded.edit_stack.crop, CropAdjustment::default());
+        assert!(!legacy_loaded.edit_stack.crop.enabled);
     }
 }
