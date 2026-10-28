@@ -1,6 +1,5 @@
-//! Color spaces, transfer functions, tone curve spline interpolation and HSL math.
-
 use crate::sidecar::ToneCurvePoint;
+use serde::{Deserialize, Serialize};
 
 /// Standard 3x3 matrix multiplication: `result = M * v`.
 #[inline]
@@ -61,6 +60,47 @@ pub const SRGB_TO_REC2020: [f32; 9] = [
     0.8955953,
 ];
 
+#[allow(clippy::excessive_precision)]
+/// Direct transformation matrix: Linear Rec.2020 -> Linear Display P3 (D65).
+pub const REC2020_TO_DISPLAY_P3: [f32; 9] = [
+    1.3435774, -0.2821798, -0.0613987, -0.0652972, 1.0757884, -0.0104912, 0.0028224, -0.0195982,
+    1.0167768,
+];
+
+#[allow(clippy::excessive_precision)]
+/// Direct transformation matrix: Linear Rec.2020 -> Linear Adobe RGB (1998) (D65).
+pub const REC2020_TO_ADOBE_RGB: [f32; 9] = [
+    1.4883403, -0.4042402, -0.0841001, -0.0827202, 1.0924901, -0.0097701, 0.0068800, -0.0381300,
+    1.0312500,
+];
+
+/// Supported export color spaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum ExportColorSpace {
+    #[default]
+    Srgb,
+    DisplayP3,
+    AdobeRgb,
+}
+
+impl ExportColorSpace {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Srgb => "sRGB",
+            Self::DisplayP3 => "Display P3",
+            Self::AdobeRgb => "Adobe RGB",
+        }
+    }
+
+    pub fn translation_key(&self) -> &'static str {
+        match self {
+            Self::Srgb => "export_colorspace_srgb",
+            Self::DisplayP3 => "export_colorspace_display_p3",
+            Self::AdobeRgb => "export_colorspace_adobe_rgb",
+        }
+    }
+}
+
 /// Converts a linear scalar channel [0.0, 1.0] to sRGB gamma-encoded scalar.
 #[inline]
 pub fn linear_to_srgb(x: f32) -> f32 {
@@ -81,6 +121,12 @@ pub fn srgb_to_linear(x: f32) -> f32 {
     }
 }
 
+/// Converts a linear scalar channel [0.0, 1.0] to Adobe RGB (1998) pure-gamma 2.19921875 scalar.
+#[inline]
+pub fn linear_to_adobe_rgb(x: f32) -> f32 {
+    x.clamp(0.0, 1.0).powf(256.0 / 563.0)
+}
+
 /// Converts a linear Rec.2020 RGB triplet to gamma-encoded sRGB.
 pub fn rec2020_linear_to_srgb_display(rec2020: [f32; 3]) -> [f32; 3] {
     let linear_srgb = mat3_mul_vec3(&REC2020_TO_SRGB, rec2020);
@@ -89,6 +135,35 @@ pub fn rec2020_linear_to_srgb_display(rec2020: [f32; 3]) -> [f32; 3] {
         linear_to_srgb(linear_srgb[1].clamp(0.0, 1.0)),
         linear_to_srgb(linear_srgb[2].clamp(0.0, 1.0)),
     ]
+}
+
+/// Converts a linear Rec.2020 RGB triplet to gamma-encoded Display P3.
+pub fn rec2020_linear_to_display_p3(rec2020: [f32; 3]) -> [f32; 3] {
+    let lin_p3 = mat3_mul_vec3(&REC2020_TO_DISPLAY_P3, rec2020);
+    [
+        linear_to_srgb(lin_p3[0].clamp(0.0, 1.0)),
+        linear_to_srgb(lin_p3[1].clamp(0.0, 1.0)),
+        linear_to_srgb(lin_p3[2].clamp(0.0, 1.0)),
+    ]
+}
+
+/// Converts a linear Rec.2020 RGB triplet to gamma-encoded Adobe RGB (1998).
+pub fn rec2020_linear_to_adobe_rgb(rec2020: [f32; 3]) -> [f32; 3] {
+    let lin_adobe = mat3_mul_vec3(&REC2020_TO_ADOBE_RGB, rec2020);
+    [
+        linear_to_adobe_rgb(lin_adobe[0]),
+        linear_to_adobe_rgb(lin_adobe[1]),
+        linear_to_adobe_rgb(lin_adobe[2]),
+    ]
+}
+
+/// Converts a linear Rec.2020 RGB triplet to the requested export color space.
+pub fn rec2020_linear_to_color_space(rec2020: [f32; 3], cs: ExportColorSpace) -> [f32; 3] {
+    match cs {
+        ExportColorSpace::Srgb => rec2020_linear_to_srgb_display(rec2020),
+        ExportColorSpace::DisplayP3 => rec2020_linear_to_display_p3(rec2020),
+        ExportColorSpace::AdobeRgb => rec2020_linear_to_adobe_rgb(rec2020),
+    }
 }
 
 /// Converts temperature and tint slider offsets [-100.0, +100.0] into linear RGB gains.

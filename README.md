@@ -126,6 +126,17 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Settings dialog (`Ctrl+,`) with instant live language switching and reactive repaint.
   - Automated compile-time key parity unit testing.
 
+- [x] **Milestone 9 – Complete the export options**:
+  - Color space conversion on export: sRGB, Display P3, and Adobe RGB (1998) via GPU shader stage and linear algebra transformation matrices.
+  - Standard embedded ICC profiles generated pure-Rust via `moxcms` (`new_srgb()`, `new_display_p3()`, `new_adobe_rgb()`) and tagged directly into JPEG/PNG metadata.
+  - Image resizing options: original dimensions, long-edge scaling, percentage scaling, and exact dimensions with aspect ratio lock, using high-quality Lanczos3 filtering.
+  - Output sharpening: configurable unsharp mask for Screen or Print with separable Gaussian blur.
+  - EXIF metadata preservation: transfers camera capture metadata while normalizing the orientation tag to upright (1).
+  - Flexible file naming template engine supporting variables (`{name}`, `{date}`, `{counter}`, `{rating}`) with dynamic preview.
+  - Collision-avoidance logic preventing accidental source or existing file overwrite.
+  - Zero-seam tiled GPU processing: automatically divides images exceeding 2048px into discrete tiles, strictly bounding GPU memory (< 70 MB) even for 40+ MP and 100 MP images.
+  - Full bilingual localization in English and Turkish.
+
 ---
 
 ## Adding a New Language

@@ -94,6 +94,16 @@ pub struct BeamApp {
     export_output_dir: PathBuf,
     export_format_is_png: bool,
     export_jpeg_quality: u8,
+    export_color_space: beam_core::ExportColorSpace,
+    export_resize_mode_index: usize,
+    export_resize_long_edge: u32,
+    export_resize_percentage: f32,
+    export_resize_width: u32,
+    export_resize_height: u32,
+    export_resize_lock_aspect: bool,
+    export_sharpening_index: usize,
+    export_include_exif: bool,
+    export_template: String,
     export_suffix: String,
     export_targets: Vec<(PathBuf, EditStack)>,
     export_cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -262,6 +272,16 @@ impl BeamApp {
             export_output_dir,
             export_format_is_png: false,
             export_jpeg_quality: 90,
+            export_color_space: beam_core::ExportColorSpace::Srgb,
+            export_resize_mode_index: 0,
+            export_resize_long_edge: 2048,
+            export_resize_percentage: 100.0,
+            export_resize_width: 1920,
+            export_resize_height: 1080,
+            export_resize_lock_aspect: true,
+            export_sharpening_index: 0,
+            export_include_exif: true,
+            export_template: "{name}".to_string(),
             export_suffix: "_beam".to_string(),
             export_targets: Vec::new(),
             export_cancel_flag: None,
@@ -1533,6 +1553,23 @@ impl BeamApp {
         self.export_cancel_flag = Some(cancel_flag.clone());
 
         let tx = self.tx.clone();
+        let resize = match self.export_resize_mode_index {
+            1 => beam_media::ResizeMode::LongEdge(self.export_resize_long_edge.max(1)),
+            2 => beam_media::ResizeMode::Percentage(self.export_resize_percentage.max(1.0)),
+            3 => beam_media::ResizeMode::Exact {
+                width: self.export_resize_width.max(1),
+                height: self.export_resize_height.max(1),
+                lock_aspect: self.export_resize_lock_aspect,
+            },
+            _ => beam_media::ResizeMode::Original,
+        };
+
+        let sharpening = match self.export_sharpening_index {
+            1 => beam_media::OutputSharpening::Screen,
+            2 => beam_media::OutputSharpening::Print,
+            _ => beam_media::OutputSharpening::None,
+        };
+
         let config = beam_media::ExportConfig {
             output_dir: self.export_output_dir.clone(),
             format: if self.export_format_is_png {
@@ -1541,6 +1578,15 @@ impl BeamApp {
                 beam_media::ExportFormat::Jpeg {
                     quality: self.export_jpeg_quality,
                 }
+            },
+            color_space: self.export_color_space,
+            resize,
+            sharpening,
+            export_exif: self.export_include_exif,
+            filename_template: if self.export_template.trim().is_empty() {
+                "{name}".to_string()
+            } else {
+                self.export_template.clone()
             },
             custom_suffix: if self.export_suffix.trim().is_empty() {
                 None
@@ -1582,79 +1628,256 @@ impl BeamApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(400.0);
-                ui.vertical(|ui| {
-                    ui.heading(t!("export_title"));
-                    ui.separator();
+                ui.set_min_width(460.0);
+                egui::ScrollArea::vertical()
+                    .max_height(600.0)
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            ui.heading(t!("export_title"));
+                            ui.separator();
 
-                    let count = self.export_targets.len();
-                    ui.label(
-                        RichText::new(t!("export_photos_to_export", "count" => count)).strong(),
-                    );
-                    ui.add_space(8.0);
+                            let count = self.export_targets.len();
+                            ui.label(
+                                RichText::new(t!("export_photos_to_export", "count" => count))
+                                    .strong(),
+                            );
+                            ui.add_space(8.0);
 
-                    // Destination folder
-                    ui.label(t!("export_destination_folder"));
-                    ui.horizontal(|ui| {
-                        let path_str = self.export_output_dir.display().to_string();
-                        let mut text = path_str.as_str();
-                        ui.add(
-                            egui::TextEdit::singleline(&mut text)
-                                .desired_width(280.0)
-                                .interactive(false),
-                        );
-                        if ui.button(t!("export_browse")).clicked() {
-                            if let Some(folder) = rfd::FileDialog::new()
-                                .set_title(t!("export_choose_dest"))
-                                .set_directory(&self.export_output_dir)
-                                .pick_folder()
-                            {
-                                self.export_output_dir = folder;
+                            // Destination folder
+                            ui.label(t!("export_destination_folder"));
+                            ui.horizontal(|ui| {
+                                let path_str = self.export_output_dir.display().to_string();
+                                let mut text = path_str.as_str();
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut text)
+                                        .desired_width(330.0)
+                                        .interactive(false),
+                                );
+                                if ui.button(t!("export_browse")).clicked() {
+                                    if let Some(folder) = rfd::FileDialog::new()
+                                        .set_title(t!("export_choose_dest"))
+                                        .set_directory(&self.export_output_dir)
+                                        .pick_folder()
+                                    {
+                                        self.export_output_dir = folder;
+                                    }
+                                }
+                            });
+                            ui.add_space(8.0);
+
+                            // Format & Quality
+                            ui.label(t!("export_format"));
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut self.export_format_is_png, false, "JPEG");
+                                ui.radio_value(&mut self.export_format_is_png, true, "PNG");
+                            });
+
+                            if !self.export_format_is_png {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(t!("export_jpeg_quality"));
+                                    ui.add(
+                                        Slider::new(&mut self.export_jpeg_quality, 1..=100)
+                                            .text("%"),
+                                    );
+                                });
                             }
-                        }
-                    });
-                    ui.add_space(8.0);
+                            ui.add_space(8.0);
 
-                    // Format
-                    ui.label(t!("export_format"));
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.export_format_is_png, false, "JPEG");
-                        ui.radio_value(&mut self.export_format_is_png, true, "PNG");
-                    });
+                            // Color Space
+                            ui.label(t!("export_colorspace"));
+                            egui::ComboBox::from_id_salt("export_colorspace_combo")
+                                .selected_text(t!(self.export_color_space.translation_key()))
+                                .show_ui(ui, |ui| {
+                                    for cs in [
+                                        beam_core::ExportColorSpace::Srgb,
+                                        beam_core::ExportColorSpace::DisplayP3,
+                                        beam_core::ExportColorSpace::AdobeRgb,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut self.export_color_space,
+                                            cs,
+                                            t!(cs.translation_key()),
+                                        );
+                                    }
+                                });
+                            ui.add_space(8.0);
 
-                    if !self.export_format_is_png {
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(t!("export_jpeg_quality"));
-                            ui.add(Slider::new(&mut self.export_jpeg_quality, 1..=100).text("%"));
+                            // Resize
+                            ui.label(t!("export_resize_mode"));
+                            let resize_label = match self.export_resize_mode_index {
+                                1 => t!("export_resize_long_edge"),
+                                2 => t!("export_resize_percentage"),
+                                3 => t!("export_resize_exact"),
+                                _ => t!("export_resize_original"),
+                            };
+                            egui::ComboBox::from_id_salt("export_resize_combo")
+                                .selected_text(resize_label)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.export_resize_mode_index,
+                                        0,
+                                        t!("export_resize_original"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.export_resize_mode_index,
+                                        1,
+                                        t!("export_resize_long_edge"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.export_resize_mode_index,
+                                        2,
+                                        t!("export_resize_percentage"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.export_resize_mode_index,
+                                        3,
+                                        t!("export_resize_exact"),
+                                    );
+                                });
+
+                            match self.export_resize_mode_index {
+                                1 => {
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_resize_long_edge"));
+                                        ui.add(
+                                            egui::DragValue::new(&mut self.export_resize_long_edge)
+                                                .range(64..=16384)
+                                                .suffix(" px"),
+                                        );
+                                    });
+                                }
+                                2 => {
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_resize_percentage"));
+                                        ui.add(
+                                            Slider::new(
+                                                &mut self.export_resize_percentage,
+                                                5.0..=200.0,
+                                            )
+                                            .suffix("%"),
+                                        );
+                                    });
+                                }
+                                3 => {
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_resize_width"));
+                                        ui.add(
+                                            egui::DragValue::new(&mut self.export_resize_width)
+                                                .range(16..=16384)
+                                                .suffix(" px"),
+                                        );
+                                        ui.label(t!("export_resize_height"));
+                                        ui.add(
+                                            egui::DragValue::new(&mut self.export_resize_height)
+                                                .range(16..=16384)
+                                                .suffix(" px"),
+                                        );
+                                    });
+                                    ui.checkbox(
+                                        &mut self.export_resize_lock_aspect,
+                                        t!("export_resize_lock_aspect"),
+                                    );
+                                }
+                                _ => {}
+                            }
+                            ui.add_space(8.0);
+
+                            // Output Sharpening
+                            ui.label(t!("export_sharpening"));
+                            let sharpening_label = match self.export_sharpening_index {
+                                1 => t!("export_sharpening_screen"),
+                                2 => t!("export_sharpening_print"),
+                                _ => t!("export_sharpening_none"),
+                            };
+                            egui::ComboBox::from_id_salt("export_sharpening_combo")
+                                .selected_text(sharpening_label)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.export_sharpening_index,
+                                        0,
+                                        t!("export_sharpening_none"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.export_sharpening_index,
+                                        1,
+                                        t!("export_sharpening_screen"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.export_sharpening_index,
+                                        2,
+                                        t!("export_sharpening_print"),
+                                    );
+                                });
+                            ui.add_space(8.0);
+
+                            // Metadata (EXIF)
+                            ui.checkbox(&mut self.export_include_exif, t!("export_include_exif"))
+                                .on_hover_text(t!("export_include_exif_tooltip"));
+                            ui.add_space(8.0);
+
+                            // File Naming Pattern & Suffix
+                            ui.label(t!("export_template_label"));
+                            ui.text_edit_singleline(&mut self.export_template);
+                            ui.label(RichText::new(t!("export_template_hint")).weak().size(11.0));
+
+                            ui.horizontal(|ui| {
+                                ui.label(t!("export_filename_suffix"));
+                                ui.text_edit_singleline(&mut self.export_suffix);
+                            });
+                            ui.label(RichText::new(t!("export_suffix_example")).weak().size(11.0));
+
+                            // Live preview
+                            let sample_name = self
+                                .export_targets
+                                .first()
+                                .and_then(|(p, _)| p.file_stem().and_then(|s| s.to_str()))
+                                .unwrap_or("sample_photo");
+                            let mut preview = beam_media::expand_filename_template(
+                                &self.export_template,
+                                sample_name,
+                                Some("2026-10-28"),
+                                1,
+                                5,
+                            );
+                            if !self.export_suffix.trim().is_empty() {
+                                preview.push_str(&self.export_suffix);
+                            }
+                            let ext = if self.export_format_is_png {
+                                "png"
+                            } else {
+                                "jpg"
+                            };
+                            preview = format!("{preview}.{ext}");
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} {}",
+                                    t!("export_template_preview"),
+                                    preview
+                                ))
+                                .color(Color32::from_rgb(140, 200, 255))
+                                .size(12.0),
+                            );
+
+                            ui.add_space(16.0);
+                            ui.separator();
+
+                            // Dialog buttons
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(
+                                        RichText::new(t!("export_start_btn")).strong().size(14.0),
+                                    )
+                                    .clicked()
+                                {
+                                    start_requested = true;
+                                }
+                                if ui.button(t!("export_cancel")).clicked() {
+                                    cancel_requested = true;
+                                }
+                            });
                         });
-                    }
-
-                    ui.add_space(8.0);
-
-                    // Filename Suffix
-                    ui.horizontal(|ui| {
-                        ui.label(t!("export_filename_suffix"));
-                        ui.text_edit_singleline(&mut self.export_suffix);
                     });
-                    ui.label(RichText::new(t!("export_suffix_example")).weak().size(11.0));
-
-                    ui.add_space(16.0);
-                    ui.separator();
-
-                    // Dialog buttons
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button(RichText::new(t!("export_start_btn")).strong().size(14.0))
-                            .clicked()
-                        {
-                            start_requested = true;
-                        }
-                        if ui.button(t!("export_cancel")).clicked() {
-                            cancel_requested = true;
-                        }
-                    });
-                });
             });
 
         if start_requested {

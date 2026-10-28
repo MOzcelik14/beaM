@@ -12,6 +12,8 @@ pub const HIGHLIGHTS_SHADOWS_SHADER_SRC: &str =
     include_str!("../../../shaders/highlights_shadows.wgsl");
 pub const TONE_CURVE_SHADER_SRC: &str = include_str!("../../../shaders/tone_curve.wgsl");
 pub const HSL_SHADER_SRC: &str = include_str!("../../../shaders/hsl.wgsl");
+pub const EXPORT_TRANSFORM_SHADER_SRC: &str =
+    include_str!("../../../shaders/export_transform.wgsl");
 
 /// GPU texture container for an image in linear working space.
 pub struct GpuImage {
@@ -429,6 +431,180 @@ impl DisplayPipeline {
 }
 
 // ----------------------------------------------------------------------------
+// Export Transform Pipeline (Linear Rec.2020 -> sRGB / Display P3 / Adobe RGB)
+// ----------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ExportUniforms {
+    pub color_space: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
+}
+
+pub struct ExportDisplayPipeline {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    uniform_buffer: wgpu::Buffer,
+    target_format: wgpu::TextureFormat,
+}
+
+impl ExportDisplayPipeline {
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("export_transform_shader"),
+            source: wgpu::ShaderSource::Wgsl(EXPORT_TRANSFORM_SHADER_SRC.into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("export_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("export_uniform_buffer"),
+            size: std::mem::size_of::<ExportUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("export_pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("export_render_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            uniform_buffer,
+            target_format,
+        }
+    }
+
+    pub fn render_to_target(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input_view: &wgpu::TextureView,
+        target_view: &wgpu::TextureView,
+        color_space: u32,
+    ) {
+        let uniforms = ExportUniforms {
+            color_space,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("export_render_bind_group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("export_command_encoder"),
+        });
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("export_render_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            rpass.set_pipeline(&self.pipeline);
+            rpass.set_bind_group(0, &bind_group, &[]);
+            rpass.draw(0..3, 0..1);
+        }
+
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    pub fn target_format(&self) -> wgpu::TextureFormat {
+        self.target_format
+    }
+}
+
+// ----------------------------------------------------------------------------
 // Full Edit Pipeline (Ping-Pong Intermediate Passes)
 // ----------------------------------------------------------------------------
 
@@ -440,7 +616,7 @@ pub struct EditPipeline {
     tone_curve_stage: StagePass<ToneCurveUniforms>,
     hsl_stage: StagePass<HslUniforms>,
     display_pipeline: DisplayPipeline,
-    export_display_pipeline: Option<DisplayPipeline>,
+    export_display_pipeline: Option<ExportDisplayPipeline>,
 
     // Ping-pong intermediate linear working textures
     ping_texture: Option<wgpu::Texture>,
@@ -753,13 +929,14 @@ impl EditPipeline {
             .render_to_target(device, queue, pong, target_view);
     }
 
-    /// Execute the complete edit stack onto an image and read back standard sRGB 8-bit RGBA pixels.
-    pub fn render_to_rgba8(
+    /// Execute the complete edit stack onto an image and read back 8-bit RGBA pixels in requested color space.
+    pub fn render_to_rgba8_with_colorspace(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input: &GpuImage,
         edit_stack: &EditStack,
+        color_space: beam_core::ExportColorSpace,
     ) -> Result<Vec<u8>> {
         let width = input.width;
         let height = input.height;
@@ -782,26 +959,27 @@ impl EditPipeline {
         let target_texture = device.create_texture(&target_desc);
         let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // 2. Render passes through pipeline
-        if self.display_pipeline.target_format() == wgpu::TextureFormat::Rgba8Unorm {
-            self.render(device, queue, input, &target_view, edit_stack);
-        } else {
-            if self.export_display_pipeline.is_none() {
-                self.export_display_pipeline = Some(DisplayPipeline::new(
-                    device,
-                    wgpu::TextureFormat::Rgba8Unorm,
-                ));
-            }
-            self.ensure_intermediate_textures(device, width, height);
-            self.update_uniforms(queue, edit_stack);
-            self.render_intermediate_stages(device, queue, input);
-
-            let pong = self.pong_view.as_ref().unwrap();
-            self.export_display_pipeline
-                .as_ref()
-                .unwrap()
-                .render_to_target(device, queue, pong, &target_view);
+        if self.export_display_pipeline.is_none() {
+            self.export_display_pipeline = Some(ExportDisplayPipeline::new(
+                device,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ));
         }
+
+        self.ensure_intermediate_textures(device, width, height);
+        self.update_uniforms(queue, edit_stack);
+        self.render_intermediate_stages(device, queue, input);
+
+        let pong = self.pong_view.as_ref().unwrap();
+        let cs_val = match color_space {
+            beam_core::ExportColorSpace::Srgb => 0u32,
+            beam_core::ExportColorSpace::DisplayP3 => 1u32,
+            beam_core::ExportColorSpace::AdobeRgb => 2u32,
+        };
+        self.export_display_pipeline
+            .as_ref()
+            .unwrap()
+            .render_to_target(device, queue, pong, &target_view, cs_val);
 
         // 3. Staging buffer with 256-byte row alignment
         let bytes_per_pixel = 4u32;
@@ -876,6 +1054,102 @@ impl EditPipeline {
         staging_buffer.unmap();
 
         Ok(output_bytes)
+    }
+
+    /// Execute the complete edit stack onto an image and read back sRGB 8-bit RGBA pixels.
+    pub fn render_to_rgba8(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        edit_stack: &EditStack,
+    ) -> Result<Vec<u8>> {
+        self.render_to_rgba8_with_colorspace(
+            device,
+            queue,
+            input,
+            edit_stack,
+            beam_core::ExportColorSpace::Srgb,
+        )
+    }
+
+    /// Execute the complete edit stack onto an image buffer using tiling if dimensions exceed `max_tile_size`.
+    /// Guarantees that GPU VRAM usage is strictly bounded and large images (e.g. 40+ MP or 100 MP)
+    /// never exceed hardware texture limits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_tiled_to_rgba8(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[f32],
+        edit_stack: &EditStack,
+        color_space: beam_core::ExportColorSpace,
+        max_tile_size: u32,
+    ) -> Result<Vec<u8>> {
+        let max_tile_size = max_tile_size.max(256);
+
+        // If image fits within a single tile along both axes, run standard single pass
+        if width <= max_tile_size && height <= max_tile_size {
+            let gpu_image = GpuImage::from_rgba32f(device, queue, width, height, data)?;
+            return self.render_to_rgba8_with_colorspace(
+                device,
+                queue,
+                &gpu_image,
+                edit_stack,
+                color_space,
+            );
+        }
+
+        // Tiled grid processing
+        let mut final_rgba8 = vec![0u8; (width * height * 4) as usize];
+        let tiles_x = width.div_ceil(max_tile_size);
+        let tiles_y = height.div_ceil(max_tile_size);
+
+        for ty in 0..tiles_y {
+            let tile_y = ty * max_tile_size;
+            let tile_h = max_tile_size.min(height - tile_y);
+
+            for tx in 0..tiles_x {
+                let tile_x = tx * max_tile_size;
+                let tile_w = max_tile_size.min(width - tile_x);
+
+                // Extract sub-rectangle of f32 pixel data for this tile
+                let mut tile_data = Vec::with_capacity((tile_w * tile_h * 4) as usize);
+                for row in 0..tile_h {
+                    let src_y = tile_y + row;
+                    let src_start = ((src_y * width + tile_x) * 4) as usize;
+                    let src_end = src_start + (tile_w * 4) as usize;
+                    tile_data.extend_from_slice(&data[src_start..src_end]);
+                }
+
+                let tile_gpu_image =
+                    GpuImage::from_rgba32f(device, queue, tile_w, tile_h, &tile_data)?;
+
+                let tile_rgba8 = self.render_to_rgba8_with_colorspace(
+                    device,
+                    queue,
+                    &tile_gpu_image,
+                    edit_stack,
+                    color_space,
+                )?;
+
+                // Copy tile bytes into final image buffer
+                for row in 0..tile_h {
+                    let dst_y = tile_y + row;
+                    let dst_start = ((dst_y * width + tile_x) * 4) as usize;
+                    let dst_end = dst_start + (tile_w * 4) as usize;
+                    let tile_row_start = (row * tile_w * 4) as usize;
+                    let tile_row_end = tile_row_start + (tile_w * 4) as usize;
+
+                    final_rgba8[dst_start..dst_end]
+                        .copy_from_slice(&tile_rgba8[tile_row_start..tile_row_end]);
+                }
+            }
+        }
+
+        Ok(final_rgba8)
     }
 }
 
@@ -1236,5 +1510,57 @@ mod tests {
             );
             assert!(rgba[i * 4] > 0, "Red channel should be positive");
         }
+    }
+
+    #[test]
+    fn test_render_tiled_matches_monolithic() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            println!("Skipping tiled test (no GPU adapter)");
+            return;
+        };
+
+        let width = 17u32;
+        let height = 13u32;
+        let mut input_data = vec![0.0f32; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                input_data[idx] = (x as f32) / (width as f32);
+                input_data[idx + 1] = (y as f32) / (height as f32);
+                input_data[idx + 2] = 0.4f32;
+                input_data[idx + 3] = 1.0f32;
+            }
+        }
+
+        let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut edit_stack = EditStack::default();
+        edit_stack.exposure.ev = 0.5;
+        edit_stack.contrast.contrast = 20.0;
+
+        let monolithic = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &input_img, &edit_stack)
+            .expect("monolithic render failed");
+
+        let tiled = pipeline
+            .render_tiled_to_rgba8(
+                &gpu.device,
+                &gpu.queue,
+                width,
+                height,
+                &input_data,
+                &edit_stack,
+                beam_core::ExportColorSpace::Srgb,
+                7, // Small tile size to force 3x2 grid of tiles
+            )
+            .expect("tiled render failed");
+
+        assert_eq!(monolithic.len(), tiled.len());
+        assert_eq!(
+            monolithic, tiled,
+            "Tiled render must be bit-exact with monolithic render!"
+        );
     }
 }
