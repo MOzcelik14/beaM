@@ -50,6 +50,7 @@ pub struct LibraryViewState {
     pub is_importing: bool,
     pub import_status: Option<String>,
     pub needs_refresh: bool,
+    pub logo_texture: Option<egui::TextureHandle>,
 }
 
 impl Default for LibraryViewState {
@@ -64,6 +65,7 @@ impl Default for LibraryViewState {
             is_importing: false,
             import_status: None,
             needs_refresh: true,
+            logo_texture: None,
         }
     }
 }
@@ -395,6 +397,13 @@ pub fn show_library_view(
         if state.photos.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
+                    if let Some(logo) = &state.logo_texture {
+                        ui.image(egui::load::SizedTexture::new(
+                            logo.id(),
+                            Vec2::new(128.0, 128.0),
+                        ));
+                        ui.add_space(16.0);
+                    }
                     ui.heading(t!("library_empty_heading"));
                     ui.add_space(8.0);
                     ui.label(t!("library_empty_desc"));

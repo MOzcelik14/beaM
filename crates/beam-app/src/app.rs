@@ -188,6 +188,7 @@ pub struct BeamApp {
     export_progress_data: Option<beam_media::BatchProgress>,
     export_is_running: bool,
     export_status_message: Option<String>,
+    logo_texture: egui::TextureHandle,
 }
 
 fn default_export_dir() -> PathBuf {
@@ -319,10 +320,24 @@ impl BeamApp {
         let preset_dir = default_presets_dir();
         let user_presets = load_user_presets(&preset_dir);
 
+        let logo_texture = {
+            let img = image::load_from_memory(include_bytes!("../../../assets/logo.png"))
+                .expect("Valid embedded logo asset")
+                .to_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            cc.egui_ctx
+                .load_texture("beam_app_logo", color_image, egui::TextureOptions::LINEAR)
+        };
+        let library_state = LibraryViewState {
+            logo_texture: Some(logo_texture.clone()),
+            ..Default::default()
+        };
+
         Self {
             current_view: AppView::Library,
             library_db,
-            library_state: LibraryViewState::default(),
+            library_state,
             thumbnail_cache_dir,
             thumb_queue,
             current_image: None,
@@ -405,6 +420,7 @@ impl BeamApp {
             export_progress_data: None,
             export_is_running: false,
             export_status_message: None,
+            logo_texture,
         }
     }
 
@@ -1046,6 +1062,11 @@ impl eframe::App for BeamApp {
         // Top menu bar
         Panel::top("menu_bar").show(ui, |ui| {
             MenuBar::new().ui(ui, |ui| {
+                ui.image(egui::load::SizedTexture::new(
+                    self.logo_texture.id(),
+                    Vec2::new(18.0, 18.0),
+                ));
+                ui.add_space(2.0);
                 ui.label(RichText::new(APP_NAME).strong().size(15.0));
                 ui.separator();
 
@@ -3227,7 +3248,12 @@ impl eframe::App for BeamApp {
                         // Empty state
                         ui.centered_and_justified(|ui| {
                             ui.vertical_centered(|ui| {
-                                ui.add_space(available_size.y * 0.3);
+                                ui.add_space(available_size.y * 0.15);
+                                ui.image(egui::load::SizedTexture::new(
+                                    self.logo_texture.id(),
+                                    Vec2::new(128.0, 128.0),
+                                ));
+                                ui.add_space(16.0);
                                 ui.heading(RichText::new(APP_NAME).size(32.0));
                                 ui.label(t!("develop_empty_desc"));
                                 ui.add_space(20.0);
@@ -3265,6 +3291,12 @@ impl eframe::App for BeamApp {
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .show(&ctx, |ui| {
                     ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.image(egui::load::SizedTexture::new(
+                            self.logo_texture.id(),
+                            Vec2::new(96.0, 96.0),
+                        ));
+                        ui.add_space(10.0);
                         ui.heading(RichText::new(APP_NAME).size(26.0).strong());
                         ui.label(t!("about_version"));
                         ui.label(t!("about_license_text"));

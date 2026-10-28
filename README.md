@@ -1,8 +1,20 @@
-# beaM.
+<p align="center">
+  <img src="assets/logo.png" alt="beaM. Logo" width="160" />
+</p>
 
-**beaM.** (pronounced *beam dot*) is an open-source, non-destructive RAW photo editor and library manager for Linux and Windows — designed as a modern, high-performance Lightroom alternative.
+<h1 align="center">beaM.</h1>
 
-Licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+<p align="center">
+  <strong>Open-source, non-destructive RAW photo editor and library manager for Linux and Windows</strong><br>
+  <em>A modern, pure-Rust alternative to Adobe Lightroom built with wgpu and egui</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-1.90%2B-orange?logo=rust" alt="Rust" />
+  <img src="https://img.shields.io/badge/wgpu-30.0-blue?logo=webgpu" alt="wgpu" />
+  <img src="https://img.shields.io/badge/egui-0.37-green" alt="egui" />
+  <img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License: GPL-3.0" />
+</p>
 
 ---
 

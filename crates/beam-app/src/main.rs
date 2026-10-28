@@ -17,11 +17,24 @@ fn main() -> eframe::Result<()> {
     // Check if an initial file was passed as argument (e.g. `beam photo.ARW`)
     let initial_file = std::env::args().nth(1).map(PathBuf::from);
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(APP_NAME)
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([800.0, 600.0]);
+
+    if let Ok(img) = image::load_from_memory(include_bytes!("../../../assets/icon.png")) {
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let icon_data = egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        };
+        viewport = viewport.with_icon(icon_data);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_NAME)
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([800.0, 600.0]),
+        viewport,
         ..Default::default()
     };
 
