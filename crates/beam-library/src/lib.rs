@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "arw", "cr2", "cr3", "nef", "dng", "raf", "rw2", "orf", "pef", "jpg", "jpeg", "png", "tif",
-    "tiff",
+    "tiff", "webp",
 ];
 
 pub fn is_supported_image(path: &Path) -> bool {
@@ -75,10 +75,35 @@ pub enum SortOrder {
     FileNameAsc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileTypeFilter {
+    #[default]
+    All,
+    Raw,
+    Jpeg,
+    Png,
+    Tiff,
+    WebP,
+}
+
+impl FileTypeFilter {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Raw => "RAW",
+            Self::Jpeg => "JPEG",
+            Self::Png => "PNG",
+            Self::Tiff => "TIFF",
+            Self::WebP => "WebP",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LibraryFilter {
     pub min_rating: u8,
     pub color_label: Option<ColorLabel>,
+    pub file_type: FileTypeFilter,
     pub search_query: Option<String>,
     pub sort_by: SortOrder,
 }
@@ -358,6 +383,31 @@ impl LibraryDb {
             }
         }
 
+        match filter.file_type {
+            FileTypeFilter::All => {}
+            FileTypeFilter::Raw => {
+                sql.push_str(
+                    " AND (lower(file_name) LIKE '%.arw' OR lower(file_name) LIKE '%.cr2' OR lower(file_name) LIKE '%.cr3' OR lower(file_name) LIKE '%.nef' OR lower(file_name) LIKE '%.dng' OR lower(file_name) LIKE '%.raf' OR lower(file_name) LIKE '%.rw2' OR lower(file_name) LIKE '%.orf' OR lower(file_name) LIKE '%.pef')",
+                );
+            }
+            FileTypeFilter::Jpeg => {
+                sql.push_str(
+                    " AND (lower(file_name) LIKE '%.jpg' OR lower(file_name) LIKE '%.jpeg')",
+                );
+            }
+            FileTypeFilter::Png => {
+                sql.push_str(" AND lower(file_name) LIKE '%.png'");
+            }
+            FileTypeFilter::Tiff => {
+                sql.push_str(
+                    " AND (lower(file_name) LIKE '%.tif' OR lower(file_name) LIKE '%.tiff')",
+                );
+            }
+            FileTypeFilter::WebP => {
+                sql.push_str(" AND lower(file_name) LIKE '%.webp'");
+            }
+        }
+
         match filter.sort_by {
             SortOrder::DateTakenDesc => sql.push_str(" ORDER BY created_at DESC, id DESC"),
             SortOrder::DateTakenAsc => sql.push_str(" ORDER BY created_at ASC, id ASC"),
@@ -618,6 +668,72 @@ mod tests {
         db.clear_all_thumbnails().unwrap();
         let cleared = db.get_photo(photo.id).unwrap().unwrap();
         assert_eq!(cleared.thumbnail_path, None);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_library_file_type_filtering() {
+        let db = LibraryDb::open_in_memory().expect("Failed to open db");
+        let temp_dir = std::env::temp_dir().join("beam_library_ft_test");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let p_png = temp_dir.join("photo.png");
+        let p_jpg = temp_dir.join("photo.jpg");
+        let p_webp = temp_dir.join("photo.webp");
+        let thumb_dir = temp_dir.join("thumbs");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([100, 100, 100, 255]));
+        img.save(&p_png).unwrap();
+        image::DynamicImage::ImageRgba8(img.clone())
+            .to_rgb8()
+            .save(&p_jpg)
+            .unwrap();
+        img.save(&p_webp).unwrap();
+
+        db.import_file(&p_png, &thumb_dir).unwrap();
+        db.import_file(&p_jpg, &thumb_dir).unwrap();
+        db.import_file(&p_webp, &thumb_dir).unwrap();
+
+        // 1. All
+        let all = db.query_photos(&LibraryFilter::default()).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // 2. PNG only
+        let filter_png = LibraryFilter {
+            file_type: FileTypeFilter::Png,
+            ..Default::default()
+        };
+        let png_only = db.query_photos(&filter_png).unwrap();
+        assert_eq!(png_only.len(), 1);
+        assert!(png_only[0].file_name.ends_with(".png"));
+
+        // 3. JPEG only
+        let filter_jpg = LibraryFilter {
+            file_type: FileTypeFilter::Jpeg,
+            ..Default::default()
+        };
+        let jpg_only = db.query_photos(&filter_jpg).unwrap();
+        assert_eq!(jpg_only.len(), 1);
+        assert!(jpg_only[0].file_name.ends_with(".jpg"));
+
+        // 4. WebP only
+        let filter_webp = LibraryFilter {
+            file_type: FileTypeFilter::WebP,
+            ..Default::default()
+        };
+        let webp_only = db.query_photos(&filter_webp).unwrap();
+        assert_eq!(webp_only.len(), 1);
+        assert!(webp_only[0].file_name.ends_with(".webp"));
+
+        // 5. RAW only
+        let filter_raw = LibraryFilter {
+            file_type: FileTypeFilter::Raw,
+            ..Default::default()
+        };
+        let raw_only = db.query_photos(&filter_raw).unwrap();
+        assert_eq!(raw_only.len(), 0);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

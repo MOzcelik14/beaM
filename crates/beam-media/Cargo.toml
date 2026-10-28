@@ -10,5 +10,7 @@ beam-gpu = { workspace = true }
 wgpu = { workspace = true }
 rawler = { workspace = true }
 image = { workspace = true }
+moxcms = { workspace = true }
+exif = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }

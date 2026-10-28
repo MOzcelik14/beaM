@@ -266,6 +266,27 @@ pub fn show_library_view(
                     }
                 });
 
+                ui.add_space(6.0);
+
+                // File format filter
+                ui.label(RichText::new("Format:").weak());
+                ui.horizontal_wrapped(|ui| {
+                    for ft in [
+                        beam_library::FileTypeFilter::All,
+                        beam_library::FileTypeFilter::Raw,
+                        beam_library::FileTypeFilter::Jpeg,
+                        beam_library::FileTypeFilter::Png,
+                        beam_library::FileTypeFilter::Tiff,
+                        beam_library::FileTypeFilter::WebP,
+                    ] {
+                        let is_selected = state.filter.file_type == ft;
+                        if ui.selectable_label(is_selected, ft.as_str()).clicked() {
+                            state.filter.file_type = ft;
+                            state.needs_refresh = true;
+                        }
+                    }
+                });
+
                 ui.add_space(8.0);
 
                 // Search box

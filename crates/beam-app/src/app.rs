@@ -271,10 +271,10 @@ impl BeamApp {
             let file = rfd::FileDialog::new()
                 .set_title("Open RAW Photo")
                 .add_filter(
-                    "RAW Images & Photos",
+                    "RAW & Raster Photos",
                     &[
                         "arw", "cr2", "cr3", "nef", "dng", "raf", "rw2", "orf", "pef", "jpg",
-                        "jpeg", "png", "tif", "tiff",
+                        "jpeg", "png", "tif", "tiff", "webp",
                     ],
                 )
                 .pick_file();

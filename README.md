@@ -94,19 +94,29 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Reset-per-slider `↺` and Reset All adjustments buttons.
   - Sidecar persistence: automatically loads edits on file open and saves on edit change.
   - Golden-image test with GPU readback verifying mathematical exposure doubling.
-- [ ] **Milestone 3 – More adjustments**:
+- [x] **Milestone 3 – More adjustments**:
   - Highlights/shadows tone mapping.
   - Draggable tone curve widget.
   - 8-band HSL adjustments (hue, saturation, luminance).
   - Fast histogram widget.
-- [ ] **Milestone 4 – Library**:
+- [x] **Milestone 4 – Library**:
   - Folder import and SQLite photo cataloging.
   - Thumbnail grid with on-disk thumbnail cache.
   - Star ratings, color labels, and search filters.
-- [ ] **Milestone 5 – Export**:
+- [x] **Milestone 5 – Export**:
   - Full-resolution rendering pipeline export to JPEG and PNG.
   - Selectable dimensions, quality, and color spaces.
   - Batch export with progress tracking.
+- [x] **Milestone 6 – Fix: Library thumbnails display & background generator**:
+  - Root cause diagnosis: resolved background queue deadlocks and missing UI repaint requests.
+  - Lazy thumbnail texture loading with LRU cache in `egui`.
+  - Non-blocking background worker thread for thumbnail decoding and generation.
+- [x] **Milestone 7 – Support standard image formats (JPEG, PNG, TIFF, WebP)**:
+  - Native pure-Rust decoding for JPEG, PNG, TIFF (8-bit & 16-bit), and WebP alongside Camera RAW.
+  - Embedded ICC profile extraction and color transformation via `moxcms` into linear Rec.2020.
+  - 16-bit channel depth preservation without quantization to 8-bit.
+  - EXIF metadata extraction (orientation, ISO, shutter speed, aperture, camera make/model).
+  - Library filtering by format (All, RAW, JPEG, PNG, TIFF, WebP).
 
 ---
 
@@ -119,5 +129,6 @@ cargo clippy --workspace --all-targets -- -D warnings
    - White balance computes chromatic adaptation gains $(G_r, G_g, G_b)$ from Kelvin temperature and Green-Magenta tint offsets, applied directly to linear channel amplitudes.
 4. **Proxy for Interactive Responsiveness**: Decoded RAW files generate a fast bilinear proxy (~1920px max dimension). Sliders manipulate the proxy on the GPU in <1ms without re-uploading texture data, guaranteeing 60+ FPS responsiveness.
 5. **WGSL Shader Sampling & Texel Loading**: For HDR 32-bit floating point textures (`Rgba32Float`), standard hardware samplers often require vendor-specific filterable extensions. We utilize unfilterable texture bindings with direct texel loading (`textureLoad`) in the display pass, avoiding any GPU driver compatibility issues across Intel, Nvidia, AMD, and software rasterizers.
-6. **Graceful Raster Fallback**: While camera RAW formats (ARW, CR2, CR3, NEF, DNG, RAF, etc.) are prioritized through `rawler`, standard raster formats (PNG, JPEG) are supported via a fallback to ensure testing and mixed-library viewing. Corrupted or invalid files surface clear error banners in the UI rather than crashing.
+6. **First-Class Standard Image Formats & Color Management**: Standard raster formats (JPEG, PNG, TIFF 8/16-bit, WebP) are fully supported first-class formats alongside Camera RAW. Unlike RAW files, they are display-referred: embedded ICC profiles are parsed via `moxcms` and transformed into linear Rec.2020 (falling back to sRGB transfer when absent). 16-bit TIFF/PNG channels are preserved directly into `f32` normalized values without intermediate 8-bit quantization. EXIF tags and image orientation (1..=8) are parsed natively via `kamadak-exif` and applied losslessly.
 7. **Sidecar Format**: We use human-readable [RON](https://github.com/ron-rs/ron) format with an explicit `format_version: u32` header, allowing human inspectability, git diffability, and version migration.
+

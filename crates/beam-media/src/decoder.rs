@@ -2,7 +2,12 @@
 
 use beam_core::error::{BeamError, Result};
 use beam_core::sidecar::{EditStack, Sidecar};
+use exif::{In, Reader, Tag, Value};
+use image::ImageDecoder;
+use moxcms::{ColorProfile, Layout, TransformOptions};
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 /// Default maximum dimension for the interactive editing proxy
@@ -107,12 +112,30 @@ pub fn generate_proxy(
 }
 
 /// Decode an image file (camera RAW formats via rawler, or raster image fallback via image crate).
+/// Check if the file path has a regular raster image extension (JPEG, PNG, TIFF, WebP).
+pub fn is_raster_file(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp"
+    )
+}
+
+/// Decode an image file (camera RAW formats via rawler, or raster image formats via image crate).
 pub fn decode_image(path: &Path) -> Result<DecodedImage> {
     if !path.exists() {
         return Err(BeamError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("File not found: {}", path.display()),
         )));
+    }
+
+    if is_raster_file(path) {
+        return decode_raster_image(path);
     }
 
     // Try decoding with rawler first
@@ -123,8 +146,7 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage> {
                 "Rawler decode unsuccessful for {}: {raw_err}. Attempting raster fallback...",
                 path.display()
             );
-            // Fallback to image crate (e.g. for JPEG, PNG, TIFF fallback)
-            decode_raster_fallback(path).map_err(|img_err| {
+            decode_raster_image(path).map_err(|img_err| {
                 BeamError::RawDecode(format!(
                     "Failed to decode file '{}'. RAW error: {raw_err}. Raster fallback error: {img_err}",
                     path.display()
@@ -207,13 +229,21 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
         }
     }
 
+    // Apply EXIF orientation if needed
+    let orient_u16 = rawimage.orientation.to_u16();
+    let (oriented_w, oriented_h, oriented_data) = if orient_u16 > 1 && orient_u16 <= 8 {
+        apply_orientation_f32(width, height, &rgba_floats, orient_u16)
+    } else {
+        (width, height, rgba_floats)
+    };
+
     let (proxy_w, proxy_h, proxy_data) =
-        generate_proxy(width, height, &rgba_floats, PROXY_MAX_DIMENSION);
+        generate_proxy(oriented_w, oriented_h, &oriented_data, PROXY_MAX_DIMENSION);
 
     Ok(DecodedImage {
-        width,
-        height,
-        data: rgba_floats,
+        width: oriented_w,
+        height: oriented_h,
+        data: oriented_data,
         proxy_width: proxy_w,
         proxy_height: proxy_h,
         proxy_data,
@@ -234,45 +264,375 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             aperture: None,
             focal_length: None,
             original_dimensions: (orig_w, orig_h),
-            orientation: rawimage.orientation.to_u16(),
+            orientation: 1,
         },
     })
 }
 
-/// Fallback decoder for regular image formats (JPEG, PNG, etc.)
-fn decode_raster_fallback(path: &Path) -> Result<DecodedImage> {
-    let img = image::open(path).map_err(|e| BeamError::UnsupportedFormat(e.to_string()))?;
-    let rgba8 = img.to_rgba8();
-    let (width, height) = (rgba8.width(), rgba8.height());
+/// Converts non-linear sRGB (0.0..=1.0) to wide-gamut linear Rec.2020.
+#[inline]
+pub fn srgb_to_rec2020_linear(r: f32, g: f32, b: f32) -> [f32; 3] {
+    let lin_r = beam_core::color::srgb_to_linear(r.clamp(0.0, 1.0));
+    let lin_g = beam_core::color::srgb_to_linear(g.clamp(0.0, 1.0));
+    let lin_b = beam_core::color::srgb_to_linear(b.clamp(0.0, 1.0));
+    beam_core::color::mat3_mul_vec3(&beam_core::color::SRGB_TO_REC2020, [lin_r, lin_g, lin_b])
+}
 
-    // Convert sRGB u8 to linear f32
-    let mut data = Vec::with_capacity((width * height * 4) as usize);
-    for pixel in rgba8.pixels() {
-        data.push(beam_core::color::srgb_to_linear(pixel[0] as f32 / 255.0));
-        data.push(beam_core::color::srgb_to_linear(pixel[1] as f32 / 255.0));
-        data.push(beam_core::color::srgb_to_linear(pixel[2] as f32 / 255.0));
-        data.push(pixel[3] as f32 / 255.0);
+/// Parsed EXIF metadata from an image file.
+#[derive(Debug, Clone, Default)]
+pub struct ExifMetadata {
+    pub orientation: u16,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub iso: Option<u32>,
+    pub shutter: Option<String>,
+    pub aperture: Option<f32>,
+    pub focal_length: Option<f32>,
+}
+
+/// Extract EXIF metadata (orientation, make, model, iso, shutter, aperture, focal_length) using kamadak-exif.
+pub fn extract_exif_metadata(path: &Path) -> ExifMetadata {
+    let mut meta = ExifMetadata {
+        orientation: 1,
+        ..Default::default()
+    };
+
+    if let Ok(file) = File::open(path) {
+        let mut buf_reader = BufReader::new(file);
+        if let Ok(exif) = Reader::new().read_from_container(&mut buf_reader) {
+            if let Some(field) = exif.get_field(Tag::Orientation, In::PRIMARY) {
+                if let Value::Short(ref v) = field.value {
+                    if let Some(&orient) = v.first() {
+                        meta.orientation = orient;
+                    }
+                }
+            }
+            if let Some(field) = exif.get_field(Tag::Make, In::PRIMARY) {
+                let s = field.display_value().to_string();
+                let clean = s.trim_matches('"').trim();
+                if !clean.is_empty() {
+                    meta.make = Some(clean.to_string());
+                }
+            }
+            if let Some(field) = exif.get_field(Tag::Model, In::PRIMARY) {
+                let s = field.display_value().to_string();
+                let clean = s.trim_matches('"').trim();
+                if !clean.is_empty() {
+                    meta.model = Some(clean.to_string());
+                }
+            }
+            if let Some(field) = exif.get_field(Tag::PhotographicSensitivity, In::PRIMARY) {
+                if let Value::Short(ref v) = field.value {
+                    meta.iso = v.first().map(|&x| x as u32);
+                }
+            }
+            if let Some(field) = exif.get_field(Tag::ExposureTime, In::PRIMARY) {
+                meta.shutter = Some(field.display_value().to_string());
+            }
+            if let Some(field) = exif.get_field(Tag::FNumber, In::PRIMARY) {
+                if let Value::Rational(ref v) = field.value {
+                    if let Some(r) = v.first() {
+                        if r.denom != 0 {
+                            meta.aperture = Some(r.num as f32 / r.denom as f32);
+                        }
+                    }
+                }
+            }
+            if let Some(field) = exif.get_field(Tag::FocalLength, In::PRIMARY) {
+                if let Value::Rational(ref v) = field.value {
+                    if let Some(r) = v.first() {
+                        if r.denom != 0 {
+                            meta.focal_length = Some(r.num as f32 / r.denom as f32);
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    let (proxy_w, proxy_h, proxy_data) = generate_proxy(width, height, &data, PROXY_MAX_DIMENSION);
+    meta
+}
+
+/// Extract embedded ICC profile byte array from image container if present.
+pub fn extract_icc_profile(path: &Path) -> Option<Vec<u8>> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut decoder = image::ImageReader::new(reader)
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    decoder.icc_profile().ok().flatten()
+}
+
+/// Transform non-linear pixel buffer from embedded ICC profile to linear Rec.2020 working space using moxcms.
+#[allow(clippy::chunks_exact_to_as_chunks)]
+pub fn transform_icc_to_linear_rec2020(
+    icc_bytes: &[u8],
+    pixels: &mut [f32],
+) -> std::result::Result<(), String> {
+    let src_profile = ColorProfile::new_from_slice(icc_bytes)
+        .map_err(|e| format!("Invalid ICC profile: {e:?}"))?;
+
+    let dst_profile = ColorProfile::new_srgb();
+    let transform = src_profile
+        .create_transform_f32(
+            Layout::Rgba,
+            &dst_profile,
+            Layout::Rgba,
+            TransformOptions::default(),
+        )
+        .map_err(|e| format!("Failed to create ICC transform: {e:?}"))?;
+
+    let mut transformed = vec![0.0f32; pixels.len()];
+    transform
+        .transform(pixels, &mut transformed)
+        .map_err(|e| format!("ICC transform execution failed: {e:?}"))?;
+
+    // Now transformed is in non-linear sRGB; convert sRGB -> linear Rec.2020
+    for chunk in transformed.chunks_exact_mut(4) {
+        let lin = srgb_to_rec2020_linear(chunk[0], chunk[1], chunk[2]);
+        chunk[0] = lin[0].max(0.0);
+        chunk[1] = lin[1].max(0.0);
+        chunk[2] = lin[2].max(0.0);
+    }
+    pixels.copy_from_slice(&transformed);
+    Ok(())
+}
+
+/// Apply EXIF orientation transform (1..=8) to full-resolution float RGBA buffers.
+pub fn apply_orientation_f32(
+    src_w: u32,
+    src_h: u32,
+    src_data: &[f32],
+    orientation: u16,
+) -> (u32, u32, Vec<f32>) {
+    match orientation {
+        2 => {
+            // Flip horizontal
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = ((y * src_w + (src_w - 1 - x)) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_w, src_h, dst)
+        }
+        3 => {
+            // Rotate 180
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = (((src_h - 1 - y) * src_w + (src_w - 1 - x)) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_w, src_h, dst)
+        }
+        4 => {
+            // Flip vertical
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = (((src_h - 1 - y) * src_w + x) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_w, src_h, dst)
+        }
+        5 => {
+            // Transpose (flip horizontal & rotate 270 CW)
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = ((x * src_h + y) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_h, src_w, dst)
+        }
+        6 => {
+            // Rotate 90 CW: (x, y) -> (src_h - 1 - y, x)
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = ((x * src_h + (src_h - 1 - y)) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_h, src_w, dst)
+        }
+        7 => {
+            // Transverse (flip horizontal & rotate 90 CW)
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = (((src_w - 1 - x) * src_h + (src_h - 1 - y)) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_h, src_w, dst)
+        }
+        8 => {
+            // Rotate 270 CW: (x, y) -> (y, src_w - 1 - x)
+            let mut dst = vec![0.0f32; src_data.len()];
+            for y in 0..src_h {
+                for x in 0..src_w {
+                    let src_idx = ((y * src_w + x) * 4) as usize;
+                    let dst_idx = (((src_w - 1 - x) * src_h + y) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src_data[src_idx..src_idx + 4]);
+                }
+            }
+            (src_h, src_w, dst)
+        }
+        _ => (src_w, src_h, src_data.to_vec()),
+    }
+}
+
+/// Decode regular raster image formats (JPEG, PNG, TIFF 8/16-bit, WebP).
+/// Preserves 16-bit precision, applies embedded ICC color management,
+/// and converts into linear Rec.2020 working space.
+#[allow(clippy::chunks_exact_to_as_chunks)]
+pub fn decode_raster_image(path: &Path) -> Result<DecodedImage> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let image_reader = image::ImageReader::new(reader)
+        .with_guessed_format()
+        .map_err(|e| BeamError::UnsupportedFormat(e.to_string()))?;
+
+    // 1. Extract embedded ICC profile before decoding
+    let icc_bytes = extract_icc_profile(path);
+
+    // 2. Extract EXIF metadata & orientation
+    let exif_meta = extract_exif_metadata(path);
+    let orientation = exif_meta.orientation;
+
+    // 3. Decode image with full bit depth
+    let dyn_img = image_reader
+        .decode()
+        .map_err(|e| BeamError::UnsupportedFormat(e.to_string()))?;
+
+    let (width, height) = (dyn_img.width(), dyn_img.height());
+
+    // 4. Convert pixels to normalized f32 RGBA, strictly keeping 16-bit precision when present
+    let mut rgba_floats = match dyn_img {
+        image::DynamicImage::ImageRgb16(rgb16) => {
+            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            for p in rgb16.pixels() {
+                data.push(p[0] as f32 / 65535.0);
+                data.push(p[1] as f32 / 65535.0);
+                data.push(p[2] as f32 / 65535.0);
+                data.push(1.0);
+            }
+            data
+        }
+        image::DynamicImage::ImageRgba16(rgba16) => {
+            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            for p in rgba16.pixels() {
+                data.push(p[0] as f32 / 65535.0);
+                data.push(p[1] as f32 / 65535.0);
+                data.push(p[2] as f32 / 65535.0);
+                data.push(p[3] as f32 / 65535.0);
+            }
+            data
+        }
+        image::DynamicImage::ImageLuma16(luma16) => {
+            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            for p in luma16.pixels() {
+                let v = p[0] as f32 / 65535.0;
+                data.push(v);
+                data.push(v);
+                data.push(v);
+                data.push(1.0);
+            }
+            data
+        }
+        image::DynamicImage::ImageLumaA16(luma_a16) => {
+            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            for p in luma_a16.pixels() {
+                let v = p[0] as f32 / 65535.0;
+                let a = p[1] as f32 / 65535.0;
+                data.push(v);
+                data.push(v);
+                data.push(v);
+                data.push(a);
+            }
+            data
+        }
+        other => {
+            let rgba8 = other.to_rgba8();
+            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            for p in rgba8.pixels() {
+                data.push(p[0] as f32 / 255.0);
+                data.push(p[1] as f32 / 255.0);
+                data.push(p[2] as f32 / 255.0);
+                data.push(p[3] as f32 / 255.0);
+            }
+            data
+        }
+    };
+
+    // 5. Color management: Apply embedded ICC profile or fall back to standard sRGB
+    let mut icc_applied = false;
+    if let Some(ref icc) = icc_bytes {
+        if !icc.is_empty() {
+            match transform_icc_to_linear_rec2020(icc, &mut rgba_floats) {
+                Ok(()) => {
+                    icc_applied = true;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "Embedded ICC profile in {} unsupported/failed: {err}. Falling back to sRGB.",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    if !icc_applied {
+        for chunk in rgba_floats.chunks_exact_mut(4) {
+            let lin = srgb_to_rec2020_linear(chunk[0], chunk[1], chunk[2]);
+            chunk[0] = lin[0].max(0.0);
+            chunk[1] = lin[1].max(0.0);
+            chunk[2] = lin[2].max(0.0);
+        }
+    }
+
+    // 6. Apply EXIF orientation transform if needed
+    let (oriented_w, oriented_h, oriented_data) = if orientation > 1 && orientation <= 8 {
+        apply_orientation_f32(width, height, &rgba_floats, orientation)
+    } else {
+        (width, height, rgba_floats)
+    };
+
+    let (proxy_w, proxy_h, proxy_data) =
+        generate_proxy(oriented_w, oriented_h, &oriented_data, PROXY_MAX_DIMENSION);
 
     Ok(DecodedImage {
-        width,
-        height,
-        data,
+        width: oriented_w,
+        height: oriented_h,
+        data: oriented_data,
         proxy_width: proxy_w,
         proxy_height: proxy_h,
         proxy_data,
         metadata: ImageMetadata {
             file_path: path.to_path_buf(),
-            camera_make: None,
-            camera_model: None,
-            iso: None,
-            shutter_speed: None,
-            aperture: None,
-            focal_length: None,
-            original_dimensions: (width, height),
-            orientation: 1,
+            camera_make: exif_meta.make,
+            camera_model: exif_meta.model,
+            iso: exif_meta.iso,
+            shutter_speed: exif_meta.shutter,
+            aperture: exif_meta.aperture,
+            focal_length: exif_meta.focal_length,
+            original_dimensions: (oriented_w, oriented_h),
+            orientation: 1, // Oriented in pixel buffer
         },
     })
 }
@@ -703,5 +1063,145 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(test_path);
+    }
+
+    #[test]
+    fn test_decode_raster_formats() {
+        let temp_dir = std::env::temp_dir().join("beam_test_formats");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // 1. JPEG
+        let jpg_path = temp_dir.join("test.jpg");
+        let img_rgb8: image::RgbImage =
+            image::ImageBuffer::from_pixel(16, 16, image::Rgb([180, 100, 50]));
+        img_rgb8.save(&jpg_path).unwrap();
+        let decoded_jpg = decode_image(&jpg_path).expect("Failed to decode JPEG");
+        assert_eq!(decoded_jpg.width, 16);
+        assert_eq!(decoded_jpg.height, 16);
+        assert_eq!(decoded_jpg.data.len(), 16 * 16 * 4);
+
+        // 2. PNG
+        let png_path = temp_dir.join("test.png");
+        let img_rgba8: image::RgbaImage =
+            image::ImageBuffer::from_pixel(16, 16, image::Rgba([180, 100, 50, 255]));
+        img_rgba8.save(&png_path).unwrap();
+        let decoded_png = decode_image(&png_path).expect("Failed to decode PNG");
+        assert_eq!(decoded_png.width, 16);
+        assert_eq!(decoded_png.height, 16);
+
+        // 3. TIFF 8-bit
+        let tiff8_path = temp_dir.join("test_8.tif");
+        img_rgba8.save(&tiff8_path).unwrap();
+        let decoded_tiff8 = decode_image(&tiff8_path).expect("Failed to decode TIFF 8-bit");
+        assert_eq!(decoded_tiff8.width, 16);
+        assert_eq!(decoded_tiff8.height, 16);
+
+        // 4. TIFF 16-bit
+        let tiff16_path = temp_dir.join("test_16.tif");
+        let img_rgb16: image::ImageBuffer<image::Rgb<u16>, Vec<u16>> =
+            image::ImageBuffer::from_pixel(16, 16, image::Rgb([30000u16, 40000u16, 50000u16]));
+        img_rgb16.save(&tiff16_path).unwrap();
+        let decoded_tiff16 = decode_image(&tiff16_path).expect("Failed to decode TIFF 16-bit");
+        assert_eq!(decoded_tiff16.width, 16);
+        assert_eq!(decoded_tiff16.height, 16);
+
+        // 5. WebP
+        let webp_path = temp_dir.join("test.webp");
+        img_rgba8.save(&webp_path).unwrap();
+        let decoded_webp = decode_image(&webp_path).expect("Failed to decode WebP");
+        assert_eq!(decoded_webp.width, 16);
+        assert_eq!(decoded_webp.height, 16);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_raster_16bit_preservation() {
+        let temp_dir = std::env::temp_dir();
+        let test_16_path = temp_dir.join("beam_16bit_prec.png");
+
+        // Two adjacent 16-bit values that would collapse to the exact same value in 8-bit
+        // In 8-bit: 1000 / 256 = 3.9 -> 3; 1020 / 256 = 3.98 -> 3
+        let mut img16: image::ImageBuffer<image::Rgb<u16>, Vec<u16>> =
+            image::ImageBuffer::new(2, 1);
+        img16.put_pixel(0, 0, image::Rgb([1000u16, 2000u16, 3000u16]));
+        img16.put_pixel(1, 0, image::Rgb([1020u16, 2000u16, 3000u16]));
+        img16.save(&test_16_path).unwrap();
+
+        let decoded = decode_image(&test_16_path).expect("Failed to decode 16-bit PNG");
+        let p0_r = decoded.data[0];
+        let p1_r = decoded.data[4];
+
+        assert_ne!(
+            p0_r, p1_r,
+            "16-bit distinct values must not be quantized: {p0_r} != {p1_r}"
+        );
+        assert!(
+            p1_r > p0_r,
+            "Value 1020 must decode higher than 1000 in f32: {p1_r} > {p0_r}"
+        );
+
+        let _ = std::fs::remove_file(test_16_path);
+    }
+
+    #[test]
+    fn test_raster_orientation_f32() {
+        // 4x2 buffer with marker at (0, 0)
+        let mut data = vec![0.0f32; 4 * 2 * 4];
+        data[0] = 1.0; // Red at top-left
+        data[3] = 1.0;
+
+        // Orientation 3: rotate 180 (top-left moves to x=3, y=1)
+        let (w3, h3, d3) = apply_orientation_f32(4, 2, &data, 3);
+        assert_eq!((w3, h3), (4, 2));
+        let idx3 = (4 + 3) * 4;
+        assert_eq!(d3[idx3], 1.0);
+
+        // Orientation 6: rotate 90 CW (dimensions become 2x4, moves to x=1, y=0)
+        let (w6, h6, d6) = apply_orientation_f32(4, 2, &data, 6);
+        assert_eq!((w6, h6), (2, 4));
+        let idx6 = 4;
+        assert_eq!(d6[idx6], 1.0);
+    }
+
+    #[test]
+    fn test_srgb_linear_roundtrip() {
+        let test_colors = [
+            [0.0f32, 0.0f32, 0.0f32],
+            [1.0, 1.0, 1.0],
+            [0.5, 0.25, 0.75],
+            [0.8, 0.1, 0.4],
+            [0.2, 0.9, 0.3],
+        ];
+
+        for c in test_colors {
+            let rec2020 = srgb_to_rec2020_linear(c[0], c[1], c[2]);
+            let srgb = beam_core::color::rec2020_linear_to_srgb_display(rec2020);
+            for ch in 0..3 {
+                assert!(
+                    (c[ch] - srgb[ch]).abs() < 1e-4,
+                    "Channel {ch} round-trip failed: expected {}, got {}",
+                    c[ch],
+                    srgb[ch]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_embedded_icc_profile_transform() {
+        let p3_profile = moxcms::ColorProfile::new_display_p3();
+        let p3_bytes = p3_profile
+            .encode()
+            .expect("Failed to encode Display P3 ICC profile");
+
+        // Pure red in Display P3
+        let mut pixels = vec![1.0f32, 0.0, 0.0, 1.0];
+        let res = transform_icc_to_linear_rec2020(&p3_bytes, &mut pixels);
+        assert!(res.is_ok(), "Display P3 ICC profile transform must succeed");
+
+        // Pure Display P3 red should be transformed and stay positive
+        assert!(pixels[0] > 0.0);
+        assert_eq!(pixels[3], 1.0);
     }
 }
