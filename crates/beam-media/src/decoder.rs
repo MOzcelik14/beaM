@@ -1,6 +1,7 @@
 //! RAW image decoding using `rawler` and proxy generation.
 
 use beam_core::error::{BeamError, Result};
+use beam_core::sidecar::{EditStack, Sidecar};
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,7 @@ pub struct DecodedImage {
     pub metadata: ImageMetadata,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ImageMetadata {
     pub file_path: PathBuf,
     pub camera_make: Option<String>,
@@ -33,6 +34,23 @@ pub struct ImageMetadata {
     pub aperture: Option<f32>,
     pub focal_length: Option<f32>,
     pub original_dimensions: (u32, u32),
+    pub orientation: u16,
+}
+
+impl Default for ImageMetadata {
+    fn default() -> Self {
+        Self {
+            file_path: PathBuf::new(),
+            camera_make: None,
+            camera_model: None,
+            iso: None,
+            shutter_speed: None,
+            aperture: None,
+            focal_length: None,
+            original_dimensions: (0, 0),
+            orientation: 1,
+        }
+    }
 }
 
 /// Downscale an RGBA32F linear image to fit within max_dim using bilinear sampling.
@@ -216,6 +234,7 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             aperture: None,
             focal_length: None,
             original_dimensions: (orig_w, orig_h),
+            orientation: rawimage.orientation.to_u16(),
         },
     })
 }
@@ -253,12 +272,140 @@ fn decode_raster_fallback(path: &Path) -> Result<DecodedImage> {
             aperture: None,
             focal_length: None,
             original_dimensions: (width, height),
+            orientation: 1,
         },
     })
 }
 
-/// Generate an 8-bit sRGB thumbnail from an image file (RAW or raster) with max dimension.
-pub fn generate_thumbnail(path: &Path, max_dim: u32) -> Result<image::RgbaImage> {
+/// Apply EXIF orientation transform (1..=8) to an RgbaImage.
+pub fn apply_orientation(img: image::RgbaImage, orientation: u16) -> image::RgbaImage {
+    use image::imageops;
+    match orientation {
+        1 => img,
+        2 => imageops::flip_horizontal(&img),
+        3 => imageops::rotate180(&img),
+        4 => imageops::flip_vertical(&img),
+        5 => {
+            let flipped = imageops::flip_horizontal(&img);
+            imageops::rotate270(&flipped)
+        }
+        6 => imageops::rotate90(&img),
+        7 => {
+            let flipped = imageops::flip_horizontal(&img);
+            imageops::rotate90(&flipped)
+        }
+        8 => imageops::rotate270(&img),
+        _ => img,
+    }
+}
+
+/// Apply edit adjustments in CPU space for instant, lightweight thumbnail generation.
+pub fn apply_cpu_edits(_width: u32, _height: u32, input: &[f32], stack: &EditStack) -> Vec<f32> {
+    let wb_gains = if stack.white_balance.enabled {
+        beam_core::color::white_balance_gains(
+            stack.white_balance.temperature,
+            stack.white_balance.tint,
+        )
+    } else {
+        [1.0, 1.0, 1.0]
+    };
+
+    let ev_multiplier = if stack.exposure.enabled {
+        2.0f32.powf(stack.exposure.ev)
+    } else {
+        1.0
+    };
+
+    let contrast_slope = if stack.contrast.enabled {
+        beam_core::color::contrast_slope(stack.contrast.contrast)
+    } else {
+        1.0
+    };
+
+    let curve_lut = if stack.tone_curve.enabled {
+        Some(beam_core::color::generate_tone_curve_lut(
+            &stack.tone_curve.points,
+        ))
+    } else {
+        None
+    };
+
+    let highlights_shadows = if stack.highlights_shadows.enabled {
+        Some((
+            stack.highlights_shadows.highlights / 100.0,
+            stack.highlights_shadows.shadows / 100.0,
+        ))
+    } else {
+        None
+    };
+
+    let mut output = Vec::with_capacity(input.len());
+    for chunk in input.as_chunks::<4>().0 {
+        let mut r = chunk[0];
+        let mut g = chunk[1];
+        let mut b = chunk[2];
+        let a = chunk[3];
+
+        // 1. White balance
+        r *= wb_gains[0];
+        g *= wb_gains[1];
+        b *= wb_gains[2];
+
+        // 2. Exposure
+        r *= ev_multiplier;
+        g *= ev_multiplier;
+        b *= ev_multiplier;
+
+        // 3. Highlights & Shadows
+        if let Some((high, shad)) = highlights_shadows {
+            let lum = (0.2627 * r + 0.6780 * g + 0.0593 * b).max(0.0);
+            if lum > 0.0001 {
+                let shadow_factor = (1.0 - (lum / 0.18).min(1.0)).powi(2) * shad;
+                let highlight_factor = ((lum - 0.18).max(0.0) / 0.82).min(1.0).powi(2) * high;
+                let factor = (1.0 + shadow_factor + highlight_factor).max(0.0);
+                r *= factor;
+                g *= factor;
+                b *= factor;
+            }
+        }
+
+        // 4. Contrast
+        if stack.contrast.enabled {
+            r = ((r - 0.18) * contrast_slope + 0.18).max(0.0);
+            g = ((g - 0.18) * contrast_slope + 0.18).max(0.0);
+            b = ((b - 0.18) * contrast_slope + 0.18).max(0.0);
+        }
+
+        // 5. Tone curve
+        if let Some(lut) = &curve_lut {
+            let eval_curve = |val: f32| -> f32 {
+                let clamped = val.clamp(0.0, 1.0);
+                let idx_f = clamped * 255.0;
+                let idx = (idx_f.floor() as usize).min(254);
+                let frac = idx_f - idx as f32;
+                lut[idx] * (1.0 - frac) + lut[idx + 1] * frac
+            };
+            r = eval_curve(r);
+            g = eval_curve(g);
+            b = eval_curve(b);
+        }
+
+        output.push(r.max(0.0));
+        output.push(g.max(0.0));
+        output.push(b.max(0.0));
+        output.push(a);
+    }
+
+    output
+}
+
+/// Generate an 8-bit sRGB thumbnail from an image file (RAW or raster) with max dimension,
+/// optionally applying non-destructive edits and respecting EXIF orientation.
+pub fn generate_thumbnail_with_edits(
+    path: &Path,
+    edit_stack: Option<&EditStack>,
+    max_dim: u32,
+) -> Result<image::RgbaImage> {
     let decoded = decode_image(path)?;
     let (thumb_w, thumb_h, thumb_floats) = generate_proxy(
         decoded.proxy_width,
@@ -267,8 +414,14 @@ pub fn generate_thumbnail(path: &Path, max_dim: u32) -> Result<image::RgbaImage>
         max_dim,
     );
 
+    let processed_floats = if let Some(stack) = edit_stack {
+        apply_cpu_edits(thumb_w, thumb_h, &thumb_floats, stack)
+    } else {
+        thumb_floats
+    };
+
     let mut rgba_bytes = Vec::with_capacity((thumb_w * thumb_h * 4) as usize);
-    for chunk in thumb_floats.as_chunks::<4>().0 {
+    for chunk in processed_floats.as_chunks::<4>().0 {
         let [sr, sg, sb] =
             beam_core::color::rec2020_linear_to_srgb_display([chunk[0], chunk[1], chunk[2]]);
         rgba_bytes.push((sr.clamp(0.0, 1.0) * 255.0).round() as u8);
@@ -277,20 +430,52 @@ pub fn generate_thumbnail(path: &Path, max_dim: u32) -> Result<image::RgbaImage>
         rgba_bytes.push((chunk[3].clamp(0.0, 1.0) * 255.0).round() as u8);
     }
 
-    image::RgbaImage::from_raw(thumb_w, thumb_h, rgba_bytes).ok_or_else(|| {
+    let img = image::RgbaImage::from_raw(thumb_w, thumb_h, rgba_bytes).ok_or_else(|| {
         BeamError::ImageProcessing("Failed to construct thumbnail image buffer".to_string())
-    })
+    })?;
+
+    Ok(apply_orientation(img, decoded.metadata.orientation))
 }
 
-/// Compute persistent thumbnail path in cache directory using hash of canonical path.
+/// Generate an 8-bit sRGB thumbnail without edits (or using default settings).
+pub fn generate_thumbnail(path: &Path, max_dim: u32) -> Result<image::RgbaImage> {
+    generate_thumbnail_with_edits(path, None, max_dim)
+}
+
+/// Compute persistent thumbnail path in cache directory using hash of canonical path,
+/// modification time, file size, and sidecar modification time/size for robust cache invalidation.
 pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
-    image_path.to_string_lossy().hash(&mut hasher);
-    let hash = hasher.finish();
+    let canonical = image_path
+        .canonicalize()
+        .unwrap_or_else(|_| image_path.to_path_buf());
+    canonical.to_string_lossy().hash(&mut hasher);
 
+    // Hash source file size and modification time
+    if let Ok(meta) = std::fs::metadata(image_path) {
+        meta.len().hash(&mut hasher);
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                dur.as_millis().hash(&mut hasher);
+            }
+        }
+    }
+
+    // Hash sidecar file size and modification time if present
+    let sidecar_p = Sidecar::path_for(image_path);
+    if let Ok(sc_meta) = std::fs::metadata(&sidecar_p) {
+        sc_meta.len().hash(&mut hasher);
+        if let Ok(sc_mtime) = sc_meta.modified() {
+            if let Ok(dur) = sc_mtime.duration_since(std::time::UNIX_EPOCH) {
+                dur.as_millis().hash(&mut hasher);
+            }
+        }
+    }
+
+    let hash = hasher.finish();
     let filename = image_path
         .file_name()
         .and_then(|s| s.to_str())
@@ -298,14 +483,35 @@ pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
     cache_dir.join(format!("{hash:016x}_{filename}.jpg"))
 }
 
-/// Save an RGBA image as a thumbnail on disk.
+/// Save an RGBA image as a thumbnail on disk (supports JPEG and PNG).
 pub fn save_thumbnail(image: &image::RgbaImage, target_path: &Path) -> Result<()> {
+    use image::ImageEncoder;
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    image
-        .save(target_path)
-        .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+    let ext = target_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "jpg" || ext == "jpeg" {
+        let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+        let file = std::fs::File::create(target_path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 85);
+        encoder
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+    } else {
+        image
+            .save(target_path)
+            .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -371,5 +577,131 @@ mod tests {
 
         let _ = std::fs::remove_file(test_path);
         let _ = std::fs::remove_file(thumb_path);
+    }
+
+    #[test]
+    fn test_save_thumbnail_jpg_and_png() {
+        let temp_dir = std::env::temp_dir();
+        let thumb_jpg = temp_dir.join("test_save_thumb.jpg");
+        let thumb_png = temp_dir.join("test_save_thumb.png");
+        let img = image::RgbaImage::new(32, 32);
+
+        assert!(save_thumbnail(&img, &thumb_jpg).is_ok());
+        assert!(thumb_jpg.exists());
+        assert!(image::open(&thumb_jpg).is_ok());
+
+        assert!(save_thumbnail(&img, &thumb_png).is_ok());
+        assert!(thumb_png.exists());
+        assert!(image::open(&thumb_png).is_ok());
+
+        let _ = std::fs::remove_file(thumb_jpg);
+        let _ = std::fs::remove_file(thumb_png);
+    }
+
+    #[test]
+    fn test_thumbnail_cache_key_invalidation() {
+        let temp_dir = std::env::temp_dir().join("beam_test_cache_key");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let cache_dir = temp_dir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let img_path = temp_dir.join("photo.png");
+        let img = image::RgbaImage::new(16, 16);
+        img.save(&img_path).unwrap();
+
+        let path1 = thumbnail_cache_path(&img_path, &cache_dir);
+        let path2 = thumbnail_cache_path(&img_path, &cache_dir);
+        assert_eq!(
+            path1, path2,
+            "Cache path must be deterministic for unchanged file"
+        );
+
+        // Touch the file with different content
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        let larger_img = image::RgbaImage::new(32, 32);
+        larger_img.save(&img_path).unwrap();
+
+        let path3 = thumbnail_cache_path(&img_path, &cache_dir);
+        assert_ne!(
+            path1, path3,
+            "Cache path must change when source file changes"
+        );
+
+        // Create a sidecar file
+        let sidecar_p = Sidecar::path_for(&img_path);
+        let mut sidecar = Sidecar::new("photo.png");
+        sidecar.save_to_file(&sidecar_p).unwrap();
+
+        let path4 = thumbnail_cache_path(&img_path, &cache_dir);
+        assert_ne!(
+            path3, path4,
+            "Cache path must change when sidecar is created"
+        );
+
+        // Modify sidecar file
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        sidecar.edit_stack.exposure.ev = 1.5;
+        sidecar.save_to_file(&sidecar_p).unwrap();
+
+        let path5 = thumbnail_cache_path(&img_path, &cache_dir);
+        assert_ne!(
+            path4, path5,
+            "Cache path must change when sidecar is edited"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_thumbnail_exif_orientation() {
+        // Create an asymmetric 4x2 image
+        let mut img = image::RgbaImage::new(4, 2);
+        // Put a marker pixel at top-left (0, 0)
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+
+        // 1 = Normal
+        let r1 = apply_orientation(img.clone(), 1);
+        assert_eq!(r1.dimensions(), (4, 2));
+        assert_eq!(r1.get_pixel(0, 0), &image::Rgba([255, 0, 0, 255]));
+
+        // 3 = Rotate 180 (top-left moves to bottom-right: x = 3, y = 1)
+        let r3 = apply_orientation(img.clone(), 3);
+        assert_eq!(r3.dimensions(), (4, 2));
+        assert_eq!(r3.get_pixel(3, 1), &image::Rgba([255, 0, 0, 255]));
+
+        // 6 = Rotate 90 CW (dimensions become 2x4, top-left moves to top-right: x = 1, y = 0)
+        let r6 = apply_orientation(img.clone(), 6);
+        assert_eq!(r6.dimensions(), (2, 4));
+        assert_eq!(r6.get_pixel(1, 0), &image::Rgba([255, 0, 0, 255]));
+
+        // 8 = Rotate 270 CW (dimensions become 2x4, top-left moves to bottom-left: x = 0, y = 3)
+        let r8 = apply_orientation(img.clone(), 8);
+        assert_eq!(r8.dimensions(), (2, 4));
+        assert_eq!(r8.get_pixel(0, 3), &image::Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn test_generate_thumbnail_with_edits() {
+        let temp_dir = std::env::temp_dir();
+        let test_path = temp_dir.join("beam_test_thumb_edits.png");
+        let img = image::ImageBuffer::from_pixel(64, 64, image::Rgba([50u8, 50u8, 50u8, 255u8]));
+        img.save(&test_path).unwrap();
+
+        // Default thumbnail
+        let thumb_default = generate_thumbnail_with_edits(&test_path, None, 32).unwrap();
+        let p_default = thumb_default.get_pixel(16, 16)[0];
+
+        // Edit with +2 EV exposure
+        let mut stack = EditStack::default();
+        stack.exposure.ev = 2.0;
+        let thumb_bright = generate_thumbnail_with_edits(&test_path, Some(&stack), 32).unwrap();
+        let p_bright = thumb_bright.get_pixel(16, 16)[0];
+
+        assert!(
+            p_bright > p_default,
+            "Thumbnail with +2 EV exposure must be brighter than default: {p_bright} > {p_default}"
+        );
+
+        let _ = std::fs::remove_file(test_path);
     }
 }

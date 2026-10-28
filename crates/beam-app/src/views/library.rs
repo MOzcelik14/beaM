@@ -6,11 +6,36 @@ use eframe::egui::{self, Color32, Panel, RichText, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
+pub enum ThumbnailStatus {
+    Loading,
+    Ready(egui::TextureHandle),
+    Failed(String),
+}
+
+impl std::fmt::Debug for ThumbnailStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Loading => write!(f, "Loading"),
+            Self::Ready(_) => write!(f, "Ready(TextureHandle)"),
+            Self::Failed(e) => write!(f, "Failed({e})"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ThumbnailRequest {
+    pub photo_id: i64,
+    pub source_path: PathBuf,
+    pub sidecar_path: Option<PathBuf>,
+}
+
 pub enum LibraryAction {
     None,
     OpenPhoto(PathBuf),
     ImportFolder,
     ExportPhotos(Vec<PathBuf>),
+    RebuildThumbnails,
 }
 
 pub struct LibraryViewState {
@@ -18,7 +43,8 @@ pub struct LibraryViewState {
     pub filter: LibraryFilter,
     pub selected_photo_id: Option<i64>,
     pub selected_photo_ids: HashSet<i64>,
-    pub thumbnail_textures: HashMap<String, egui::TextureHandle>,
+    pub thumbnail_status: HashMap<i64, ThumbnailStatus>,
+    pub pending_thumbnail_requests: Vec<ThumbnailRequest>,
     pub is_importing: bool,
     pub import_status: Option<String>,
     pub needs_refresh: bool,
@@ -31,7 +57,8 @@ impl Default for LibraryViewState {
             filter: LibraryFilter::default(),
             selected_photo_id: None,
             selected_photo_ids: HashSet::new(),
-            thumbnail_textures: HashMap::new(),
+            thumbnail_status: HashMap::new(),
+            pending_thumbnail_requests: Vec::new(),
             is_importing: false,
             import_status: None,
             needs_refresh: true,
@@ -49,35 +76,24 @@ impl LibraryViewState {
     }
 }
 
-/// Load or retrieve cached egui TextureHandle for a thumbnail file.
-fn get_or_load_texture(
-    textures: &mut HashMap<String, egui::TextureHandle>,
+/// Helper to load an egui TextureHandle from an existing disk thumbnail.
+fn load_texture_from_path(
     ctx: &egui::Context,
-    thumb_path_str: &str,
-) -> Option<egui::TextureHandle> {
-    if let Some(tex) = textures.get(thumb_path_str) {
-        return Some(tex.clone());
-    }
-
-    let path = Path::new(thumb_path_str);
-    if !path.exists() {
-        return None;
-    }
-
-    let img = image::open(path).ok()?;
+    photo_id: i64,
+    path: &Path,
+) -> Result<egui::TextureHandle, String> {
+    let img = image::open(path).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
     let pixels = rgba.into_raw();
 
     let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
     let tex = ctx.load_texture(
-        format!("thumb_{}", path.file_name()?.to_string_lossy()),
+        format!("thumb_{photo_id}"),
         color_image,
         egui::TextureOptions::LINEAR,
     );
-
-    textures.insert(thumb_path_str.to_string(), tex.clone());
-    Some(tex)
+    Ok(tex)
 }
 
 /// Render the complete Library View (Sidebar + Responsive Grid).
@@ -161,6 +177,15 @@ pub fn show_library_view(
                             .collect()
                     };
                     action = LibraryAction::ExportPhotos(paths);
+                }
+
+                ui.add_space(4.0);
+                if ui
+                    .button(RichText::new("🔄 Rebuild Thumbnails").size(13.0))
+                    .on_hover_text("Regenerate all thumbnail previews from scratch")
+                    .clicked()
+                {
+                    action = LibraryAction::RebuildThumbnails;
                 }
 
                 if state.is_importing {
@@ -357,6 +382,7 @@ pub fn show_library_view(
                                     Vec2::new(card_width, card_height),
                                     Sense::click(),
                                 );
+                                let is_visible = ui.is_rect_visible(rect);
 
                                 if response.clicked() {
                                     let ctrl =
@@ -424,34 +450,141 @@ pub fn show_library_view(
                                     Vec2::new(card_width - 16.0, 115.0),
                                 );
 
-                                if let Some(thumb_p) = &photo.thumbnail_path {
-                                    if let Some(tex) = get_or_load_texture(
-                                        &mut state.thumbnail_textures,
-                                        &ctx,
-                                        thumb_p,
-                                    ) {
+                                if is_visible && !state.thumbnail_status.contains_key(&photo.id) {
+                                    let disk_file_valid = photo
+                                        .thumbnail_path
+                                        .as_ref()
+                                        .map(|p| Path::new(p).exists())
+                                        .unwrap_or(false);
+
+                                    if disk_file_valid {
+                                        let thumb_p = photo.thumbnail_path.as_ref().unwrap();
+                                        match load_texture_from_path(
+                                            &ctx,
+                                            photo.id,
+                                            Path::new(thumb_p),
+                                        ) {
+                                            Ok(tex) => {
+                                                state
+                                                    .thumbnail_status
+                                                    .insert(photo.id, ThumbnailStatus::Ready(tex));
+                                                ctx.request_repaint();
+                                            }
+                                            Err(_) => {
+                                                state
+                                                    .thumbnail_status
+                                                    .insert(photo.id, ThumbnailStatus::Loading);
+                                                state.pending_thumbnail_requests.push(
+                                                    ThumbnailRequest {
+                                                        photo_id: photo.id,
+                                                        source_path: PathBuf::from(
+                                                            &photo.file_path,
+                                                        ),
+                                                        sidecar_path: photo
+                                                            .sidecar_path
+                                                            .as_ref()
+                                                            .map(PathBuf::from),
+                                                    },
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        state
+                                            .thumbnail_status
+                                            .insert(photo.id, ThumbnailStatus::Loading);
+                                        state.pending_thumbnail_requests.push(ThumbnailRequest {
+                                            photo_id: photo.id,
+                                            source_path: PathBuf::from(&photo.file_path),
+                                            sidecar_path: photo
+                                                .sidecar_path
+                                                .as_ref()
+                                                .map(PathBuf::from),
+                                        });
+                                    }
+                                }
+
+                                match state.thumbnail_status.get(&photo.id) {
+                                    Some(ThumbnailStatus::Ready(tex)) => {
+                                        let img_aspect =
+                                            tex.size_vec2().x / tex.size_vec2().y.max(1.0);
+                                        let box_aspect = thumb_rect.width() / thumb_rect.height();
+                                        let fitted_size = if img_aspect > box_aspect {
+                                            Vec2::new(
+                                                thumb_rect.width(),
+                                                thumb_rect.width() / img_aspect,
+                                            )
+                                        } else {
+                                            Vec2::new(
+                                                thumb_rect.height() * img_aspect,
+                                                thumb_rect.height(),
+                                            )
+                                        };
+                                        let fitted_rect = egui::Rect::from_center_size(
+                                            thumb_rect.center(),
+                                            fitted_size,
+                                        );
+                                        ui.painter().rect_filled(
+                                            thumb_rect,
+                                            4.0,
+                                            Color32::from_rgb(15, 15, 18),
+                                        );
                                         ui.painter().image(
                                             tex.id(),
-                                            thumb_rect,
+                                            fitted_rect,
                                             egui::Rect::from_min_max(
                                                 egui::pos2(0.0, 0.0),
                                                 egui::pos2(1.0, 1.0),
                                             ),
                                             Color32::WHITE,
                                         );
-                                    } else {
+                                    }
+                                    Some(ThumbnailStatus::Loading) => {
                                         ui.painter().rect_filled(
                                             thumb_rect,
                                             4.0,
-                                            Color32::from_rgb(15, 15, 18),
+                                            Color32::from_rgb(20, 20, 24),
+                                        );
+                                        let mut child_ui = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(thumb_rect).layout(
+                                                egui::Layout::centered_and_justified(
+                                                    egui::Direction::TopDown,
+                                                ),
+                                            ),
+                                        );
+                                        child_ui.spinner();
+                                    }
+                                    Some(ThumbnailStatus::Failed(err)) => {
+                                        ui.painter().rect_filled(
+                                            thumb_rect,
+                                            4.0,
+                                            Color32::from_rgb(32, 18, 18),
+                                        );
+                                        let mut child_ui = ui.new_child(
+                                            egui::UiBuilder::new().max_rect(thumb_rect).layout(
+                                                egui::Layout::centered_and_justified(
+                                                    egui::Direction::TopDown,
+                                                ),
+                                            ),
+                                        );
+                                        let err_label = child_ui.add(
+                                            egui::Label::new(
+                                                RichText::new("⚠ Failed")
+                                                    .color(Color32::from_rgb(240, 100, 100))
+                                                    .size(12.0),
+                                            )
+                                            .sense(Sense::hover()),
+                                        );
+                                        err_label.on_hover_text(format!(
+                                            "Thumbnail generation failed:\n{err}"
+                                        ));
+                                    }
+                                    None => {
+                                        ui.painter().rect_filled(
+                                            thumb_rect,
+                                            4.0,
+                                            Color32::from_rgb(18, 18, 22),
                                         );
                                     }
-                                } else {
-                                    ui.painter().rect_filled(
-                                        thumb_rect,
-                                        4.0,
-                                        Color32::from_rgb(15, 15, 18),
-                                    );
                                 }
 
                                 // Filename (truncated)

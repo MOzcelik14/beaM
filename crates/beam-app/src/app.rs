@@ -1,4 +1,6 @@
-use crate::views::library::{show_library_view, LibraryAction, LibraryViewState};
+use crate::views::library::{
+    show_library_view, LibraryAction, LibraryViewState, ThumbnailRequest, ThumbnailStatus,
+};
 use crate::widgets::curve::show_tone_curve;
 use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
 use beam_core::sidecar::{EditStack, Sidecar};
@@ -7,8 +9,10 @@ use beam_gpu::{EditPipeline, GpuImage};
 use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
 use beam_media::{decode_image, DecodedImage, ImageMetadata};
 use eframe::egui::{self, Color32, MenuBar, Panel, RichText, Slider, Vec2};
-use std::path::PathBuf;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +34,15 @@ enum BackgroundMsg {
         total: usize,
         cancelled: bool,
     },
+    ThumbnailReady {
+        photo_id: i64,
+        thumb_path: String,
+        image: egui::ColorImage,
+    },
+    ThumbnailFailed {
+        photo_id: i64,
+        error: String,
+    },
 }
 
 pub struct BeamApp {
@@ -40,6 +53,7 @@ pub struct BeamApp {
     pub library_db: LibraryDb,
     pub library_state: LibraryViewState,
     pub thumbnail_cache_dir: PathBuf,
+    thumb_queue: Arc<(Mutex<VecDeque<ThumbnailRequest>>, Condvar)>,
 
     // Current decoded image and metadata
     current_image: Option<Box<DecodedImage>>,
@@ -102,6 +116,32 @@ fn default_export_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
+fn generate_and_save_thumb(
+    req: &ThumbnailRequest,
+    thumb_path: &Path,
+) -> std::result::Result<(PathBuf, egui::ColorImage), String> {
+    let edit_stack = req
+        .sidecar_path
+        .as_ref()
+        .and_then(|sp| Sidecar::load_from_file(sp).map(|sc| sc.edit_stack).ok());
+
+    let rgba_img =
+        beam_media::generate_thumbnail_with_edits(&req.source_path, edit_stack.as_ref(), 256)
+            .map_err(|e| e.to_string())?;
+
+    let size = [rgba_img.width() as usize, rgba_img.height() as usize];
+    let pixels = rgba_img.as_raw().clone();
+
+    if let Err(e) = beam_media::save_thumbnail(&rgba_img, thumb_path) {
+        log::warn!("Failed to save thumbnail to {}: {e}", thumb_path.display());
+    }
+
+    Ok((
+        thumb_path.to_path_buf(),
+        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
+    ))
+}
+
 impl BeamApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = channel();
@@ -127,11 +167,68 @@ impl BeamApp {
 
         let export_output_dir = default_export_dir();
 
+        let thumb_queue: Arc<(Mutex<VecDeque<ThumbnailRequest>>, Condvar)> =
+            Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+        let worker_queue = thumb_queue.clone();
+        let worker_tx = tx.clone();
+        let worker_thumb_dir = thumbnail_cache_dir.clone();
+
+        thread::spawn(move || {
+            let (lock, cvar) = &*worker_queue;
+            loop {
+                let req = {
+                    let mut q = lock.lock().unwrap();
+                    while q.is_empty() {
+                        q = cvar.wait(q).unwrap();
+                    }
+                    q.pop_front()
+                };
+
+                let Some(req) = req else { continue };
+
+                let thumb_path =
+                    beam_media::thumbnail_cache_path(&req.source_path, &worker_thumb_dir);
+
+                let result = if thumb_path.exists() {
+                    match image::open(&thumb_path) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let size = [rgba.width() as usize, rgba.height() as usize];
+                            Ok((
+                                thumb_path.clone(),
+                                egui::ColorImage::from_rgba_unmultiplied(size, &rgba.into_raw()),
+                            ))
+                        }
+                        Err(_) => generate_and_save_thumb(&req, &thumb_path),
+                    }
+                } else {
+                    generate_and_save_thumb(&req, &thumb_path)
+                };
+
+                match result {
+                    Ok((path, color_image)) => {
+                        let _ = worker_tx.send(BackgroundMsg::ThumbnailReady {
+                            photo_id: req.photo_id,
+                            thumb_path: path.to_string_lossy().to_string(),
+                            image: color_image,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = worker_tx.send(BackgroundMsg::ThumbnailFailed {
+                            photo_id: req.photo_id,
+                            error: e,
+                        });
+                    }
+                }
+            }
+        });
+
         Self {
             current_view: AppView::Library,
             library_db,
             library_state: LibraryViewState::default(),
             thumbnail_cache_dir,
+            thumb_queue,
             current_image: None,
             current_path: None,
             current_metadata: None,
@@ -320,6 +417,29 @@ impl BeamApp {
                     };
                     ctx.request_repaint();
                 }
+                BackgroundMsg::ThumbnailReady {
+                    photo_id,
+                    thumb_path,
+                    image,
+                } => {
+                    let tex = ctx.load_texture(
+                        format!("thumb_{photo_id}"),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.library_state
+                        .thumbnail_status
+                        .insert(photo_id, ThumbnailStatus::Ready(tex));
+                    let _ = self.library_db.update_thumbnail_path(photo_id, &thumb_path);
+                    ctx.request_repaint();
+                }
+                BackgroundMsg::ThumbnailFailed { photo_id, error } => {
+                    log::warn!("Thumbnail generation failed for photo {photo_id}: {error}");
+                    self.library_state
+                        .thumbnail_status
+                        .insert(photo_id, ThumbnailStatus::Failed(error));
+                    ctx.request_repaint();
+                }
             }
         }
     }
@@ -450,8 +570,58 @@ impl BeamApp {
                 self.sidecar_status = format!("Save error: {e}");
             } else {
                 self.sidecar_status = "Saved".to_string();
+                if let Some(photo_id) = self.library_state.selected_photo_id {
+                    self.library_state.thumbnail_status.remove(&photo_id);
+                    let new_thumb_path =
+                        beam_media::thumbnail_cache_path(path, &self.thumbnail_cache_dir);
+                    let _ = self
+                        .library_db
+                        .update_thumbnail_path(photo_id, &new_thumb_path.to_string_lossy());
+                }
             }
         }
+    }
+
+    /// Queue a batch of thumbnail generation requests, prioritizing visible items
+    pub fn queue_thumbnail_requests(&self, requests: Vec<ThumbnailRequest>) {
+        if requests.is_empty() {
+            return;
+        }
+        let (lock, cvar) = &*self.thumb_queue;
+        let mut q = lock.lock().unwrap();
+        for req in requests {
+            if !q.iter().any(|r| r.photo_id == req.photo_id) {
+                q.push_front(req);
+            }
+        }
+        cvar.notify_all();
+    }
+
+    /// Invalidate disk cache and rebuild all thumbnails from scratch
+    pub fn rebuild_thumbnails(&mut self) {
+        // 1. Clear thumbnail worker queue
+        {
+            let (lock, _) = &*self.thumb_queue;
+            let mut q = lock.lock().unwrap();
+            q.clear();
+        }
+
+        // 2. Clear disk cache files
+        if let Ok(entries) = std::fs::read_dir(&self.thumbnail_cache_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+
+        // 3. Clear SQLite thumbnail paths
+        let _ = self.library_db.clear_all_thumbnails();
+
+        // 4. Reset in-memory textures and status
+        self.library_state.thumbnail_status.clear();
+        self.library_state.needs_refresh = true;
     }
 }
 
@@ -499,6 +669,20 @@ impl eframe::App for BeamApp {
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("Library", |ui| {
+                    if ui.button("Import Folder... (Ctrl+Shift+O)").clicked() {
+                        self.import_folder_dialog();
+                    }
+                    ui.separator();
+                    if ui
+                        .button("🔄 Rebuild All Thumbnails")
+                        .on_hover_text("Regenerate thumbnail cache for all photos in the catalog")
+                        .clicked()
+                    {
+                        self.rebuild_thumbnails();
                     }
                 });
 
@@ -588,6 +772,10 @@ impl eframe::App for BeamApp {
         match self.current_view {
             AppView::Library => {
                 let action = show_library_view(ui, &mut self.library_state, &self.library_db);
+                if !self.library_state.pending_thumbnail_requests.is_empty() {
+                    let reqs = std::mem::take(&mut self.library_state.pending_thumbnail_requests);
+                    self.queue_thumbnail_requests(reqs);
+                }
                 match action {
                     LibraryAction::OpenPhoto(path) => {
                         self.load_file_path(path);
@@ -597,6 +785,9 @@ impl eframe::App for BeamApp {
                     }
                     LibraryAction::ExportPhotos(paths) => {
                         self.open_export_dialog_with_paths(paths);
+                    }
+                    LibraryAction::RebuildThumbnails => {
+                        self.rebuild_thumbnails();
                     }
                     LibraryAction::None => {}
                 }

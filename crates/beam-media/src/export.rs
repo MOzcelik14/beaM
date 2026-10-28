@@ -239,6 +239,7 @@ mod tests {
                 aperture: None,
                 focal_length: None,
                 original_dimensions: (width, height),
+                orientation: 1,
             },
         };
 

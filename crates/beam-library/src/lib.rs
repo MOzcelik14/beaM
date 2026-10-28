@@ -2,7 +2,9 @@
 
 use beam_core::error::{BeamError, Result};
 use beam_core::sidecar::{ColorLabel, Sidecar};
-use beam_media::{decode_image, generate_thumbnail, save_thumbnail, thumbnail_cache_path};
+use beam_media::{
+    decode_image, generate_thumbnail_with_edits, save_thumbnail, thumbnail_cache_path,
+};
 use rusqlite::{params, Connection, OpenFlags};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -198,11 +200,21 @@ impl LibraryDb {
         let thumb_path_str = if thumb_path.exists() {
             Some(thumb_path.to_string_lossy().to_string())
         } else {
-            match generate_thumbnail(path, 256) {
-                Ok(img) => {
-                    let _ = save_thumbnail(&img, &thumb_path);
-                    Some(thumb_path.to_string_lossy().to_string())
-                }
+            let edit_stack = if sidecar_p.exists() {
+                Sidecar::load_from_file(&sidecar_p)
+                    .map(|sc| sc.edit_stack)
+                    .ok()
+            } else {
+                None
+            };
+            match generate_thumbnail_with_edits(path, edit_stack.as_ref(), 256) {
+                Ok(img) => match save_thumbnail(&img, &thumb_path) {
+                    Ok(()) => Some(thumb_path.to_string_lossy().to_string()),
+                    Err(e) => {
+                        log::warn!("Failed to save thumbnail for {file_name}: {e}");
+                        None
+                    }
+                },
                 Err(e) => {
                     log::warn!("Failed to generate thumbnail for {file_name}: {e}");
                     None
@@ -482,6 +494,25 @@ impl LibraryDb {
 
         Ok(())
     }
+
+    /// Update the cached thumbnail path for a photo in the database.
+    pub fn update_thumbnail_path(&self, photo_id: i64, thumb_path: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE photos SET thumbnail_path = ?1 WHERE id = ?2",
+                params![thumb_path, photo_id],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Clear all thumbnail paths in the database (e.g. for rebuilding thumbnails).
+    pub fn clear_all_thumbnails(&self) -> Result<()> {
+        self.conn
+            .execute("UPDATE photos SET thumbnail_path = NULL", [])
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +586,39 @@ mod tests {
         assert_eq!(res_search[0].id, p1.id);
 
         // Cleanup
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_library_thumbnail_updates() {
+        let db = LibraryDb::open_in_memory().expect("Failed to open db");
+        let temp_dir = std::env::temp_dir().join("beam_library_thumb_test");
+        let _ = fs::create_dir_all(&temp_dir);
+
+        let img_path = temp_dir.join("photo.png");
+        let thumb_dir = temp_dir.join("thumbs");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(50, 50, Rgba([100, 100, 100, 255]));
+        img.save(&img_path).unwrap();
+
+        let photo = db.import_file(&img_path, &thumb_dir).unwrap();
+        assert!(photo.thumbnail_path.is_some());
+
+        // Update thumbnail path
+        db.update_thumbnail_path(photo.id, "/new/thumb/path.jpg")
+            .unwrap();
+        let updated = db.get_photo(photo.id).unwrap().unwrap();
+        assert_eq!(
+            updated.thumbnail_path.as_deref(),
+            Some("/new/thumb/path.jpg")
+        );
+
+        // Clear all thumbnails
+        db.clear_all_thumbnails().unwrap();
+        let cleared = db.get_photo(photo.id).unwrap().unwrap();
+        assert_eq!(cleared.thumbnail_path, None);
+
         let _ = fs::remove_dir_all(temp_dir);
     }
 }
