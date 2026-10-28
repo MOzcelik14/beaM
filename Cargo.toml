@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/beam-app",
+    "crates/beam-core",
+    "crates/beam-gpu",
+    "crates/beam-media",
+    "crates/beam-library",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+authors = ["beaM. contributors"]
+repository = "https://github.com/mozcelik/beaM"
+
+[workspace.dependencies]
+beam-core = { path = "crates/beam-core" }
+beam-gpu = { path = "crates/beam-gpu" }
+beam-media = { path = "crates/beam-media" }
+beam-library = { path = "crates/beam-library" }
+
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+egui = "0.37.0"
+egui-wgpu = { version = "0.37.0" }
+wgpu = "30.0.1"
+rawler = "0.8.0"
+rusqlite = { version = "0.33", features = ["bundled"] }
+ron = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+thiserror = "2.0"
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+log = "0.4"
+env_logger = "0.11"
+pollster = "1.0"

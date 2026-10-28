@@ -1,0 +1,24 @@
+[package]
+name = "beam-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "beam"
+path = "src/main.rs"
+
+[dependencies]
+beam-core = { workspace = true }
+beam-gpu = { workspace = true }
+beam-media = { workspace = true }
+beam-library = { workspace = true }
+
+eframe = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+rfd = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+pollster = { workspace = true }
