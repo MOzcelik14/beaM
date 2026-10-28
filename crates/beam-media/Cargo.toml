@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 beam-core = { workspace = true }
+beam-gpu = { workspace = true }
+wgpu = { workspace = true }
 rawler = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }

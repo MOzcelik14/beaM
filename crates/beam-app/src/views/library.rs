@@ -3,19 +3,21 @@
 use beam_core::sidecar::ColorLabel;
 use beam_library::{LibraryDb, LibraryFilter, PhotoRecord, SortOrder};
 use eframe::egui::{self, Color32, Panel, RichText, Sense, Stroke, Vec2};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub enum LibraryAction {
     None,
     OpenPhoto(PathBuf),
     ImportFolder,
+    ExportPhotos(Vec<PathBuf>),
 }
 
 pub struct LibraryViewState {
     pub photos: Vec<PhotoRecord>,
     pub filter: LibraryFilter,
     pub selected_photo_id: Option<i64>,
+    pub selected_photo_ids: HashSet<i64>,
     pub thumbnail_textures: HashMap<String, egui::TextureHandle>,
     pub is_importing: bool,
     pub import_status: Option<String>,
@@ -28,6 +30,7 @@ impl Default for LibraryViewState {
             photos: Vec::new(),
             filter: LibraryFilter::default(),
             selected_photo_id: None,
+            selected_photo_ids: HashSet::new(),
             thumbnail_textures: HashMap::new(),
             is_importing: false,
             import_status: None,
@@ -124,6 +127,40 @@ pub fn show_library_view(
                     .clicked()
                 {
                     action = LibraryAction::ImportFolder;
+                }
+
+                let selected_count = state.selected_photo_ids.len();
+                let export_btn_text = if selected_count > 1 {
+                    format!("📤 Export Selected ({selected_count})...")
+                } else if selected_count == 1 {
+                    "📤 Export Selected (1)...".to_string()
+                } else {
+                    format!("📤 Export All ({})...", state.photos.len())
+                };
+
+                let can_export = !state.photos.is_empty();
+                if ui
+                    .add_enabled(
+                        can_export,
+                        egui::Button::new(RichText::new(export_btn_text).size(14.0).strong()),
+                    )
+                    .clicked()
+                {
+                    let paths = if selected_count > 0 {
+                        state
+                            .photos
+                            .iter()
+                            .filter(|p| state.selected_photo_ids.contains(&p.id))
+                            .map(|p| PathBuf::from(&p.file_path))
+                            .collect()
+                    } else {
+                        state
+                            .photos
+                            .iter()
+                            .map(|p| PathBuf::from(&p.file_path))
+                            .collect()
+                    };
+                    action = LibraryAction::ExportPhotos(paths);
                 }
 
                 if state.is_importing {
@@ -312,7 +349,8 @@ pub fn show_library_view(
 
                         let photos_clone = state.photos.clone();
                         for photo in &photos_clone {
-                            let is_selected = state.selected_photo_id == Some(photo.id);
+                            let is_selected = state.selected_photo_id == Some(photo.id)
+                                || state.selected_photo_ids.contains(&photo.id);
 
                             ui.vertical(|ui| {
                                 let (rect, response) = ui.allocate_exact_size(
@@ -321,11 +359,41 @@ pub fn show_library_view(
                                 );
 
                                 if response.clicked() {
-                                    state.selected_photo_id = Some(photo.id);
+                                    let ctrl =
+                                        ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
+                                    if ctrl {
+                                        if state.selected_photo_ids.contains(&photo.id) {
+                                            state.selected_photo_ids.remove(&photo.id);
+                                            if state.selected_photo_id == Some(photo.id) {
+                                                state.selected_photo_id =
+                                                    state.selected_photo_ids.iter().next().copied();
+                                            }
+                                        } else {
+                                            state.selected_photo_ids.insert(photo.id);
+                                            state.selected_photo_id = Some(photo.id);
+                                        }
+                                    } else {
+                                        state.selected_photo_ids.clear();
+                                        state.selected_photo_ids.insert(photo.id);
+                                        state.selected_photo_id = Some(photo.id);
+                                    }
                                 }
                                 if response.double_clicked() {
                                     photo_to_open = Some(PathBuf::from(&photo.file_path));
                                 }
+
+                                response.context_menu(|ui| {
+                                    if ui.button("Open in Develop (Enter)").clicked() {
+                                        photo_to_open = Some(PathBuf::from(&photo.file_path));
+                                        ui.close();
+                                    }
+                                    if ui.button("Export Photo... (Ctrl+E)").clicked() {
+                                        action = LibraryAction::ExportPhotos(vec![PathBuf::from(
+                                            &photo.file_path,
+                                        )]);
+                                        ui.close();
+                                    }
+                                });
 
                                 // Card background and border
                                 let bg_col = if is_selected {

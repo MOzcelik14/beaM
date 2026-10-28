@@ -21,7 +21,15 @@ enum BackgroundMsg {
     Started(PathBuf),
     Success(Box<DecodedImage>),
     Error(String),
-    ImportComplete { count: usize },
+    ImportComplete {
+        count: usize,
+    },
+    ExportProgress(beam_media::BatchProgress),
+    ExportFinished {
+        success_count: usize,
+        total: usize,
+        cancelled: bool,
+    },
 }
 
 pub struct BeamApp {
@@ -63,6 +71,35 @@ pub struct BeamApp {
     error_message: Option<String>,
     show_about: bool,
     show_develop_panel: bool,
+
+    // Export dialog & process state
+    show_export_dialog: bool,
+    show_export_progress: bool,
+    export_output_dir: PathBuf,
+    export_format_is_png: bool,
+    export_jpeg_quality: u8,
+    export_suffix: String,
+    export_targets: Vec<(PathBuf, EditStack)>,
+    export_cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    export_progress_data: Option<beam_media::BatchProgress>,
+    export_is_running: bool,
+    export_status_message: Option<String>,
+}
+
+fn default_export_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let pic = PathBuf::from(home).join("Pictures");
+        if pic.exists() {
+            return pic;
+        }
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        let pic = PathBuf::from(userprofile).join("Pictures");
+        if pic.exists() {
+            return pic;
+        }
+    }
+    std::env::temp_dir()
 }
 
 impl BeamApp {
@@ -87,6 +124,8 @@ impl BeamApp {
 
         let thumbnail_cache_dir = default_thumbnail_cache_dir();
         let _ = std::fs::create_dir_all(&thumbnail_cache_dir);
+
+        let export_output_dir = default_export_dir();
 
         Self {
             current_view: AppView::Library,
@@ -114,6 +153,17 @@ impl BeamApp {
             error_message: None,
             show_about: false,
             show_develop_panel: true,
+            show_export_dialog: false,
+            show_export_progress: false,
+            export_output_dir,
+            export_format_is_png: false,
+            export_jpeg_quality: 90,
+            export_suffix: "_beam".to_string(),
+            export_targets: Vec::new(),
+            export_cancel_flag: None,
+            export_progress_data: None,
+            export_is_running: false,
+            export_status_message: None,
         }
     }
 
@@ -248,6 +298,26 @@ impl BeamApp {
                     self.library_state.import_status = None;
                     self.library_state.needs_refresh = true;
                     log::info!("Imported {count} photos into catalog");
+                    ctx.request_repaint();
+                }
+                BackgroundMsg::ExportProgress(progress) => {
+                    self.export_progress_data = Some(progress);
+                    ctx.request_repaint();
+                }
+                BackgroundMsg::ExportFinished {
+                    success_count,
+                    total,
+                    cancelled,
+                } => {
+                    self.export_is_running = false;
+                    self.export_cancel_flag = None;
+                    self.export_status_message = if cancelled {
+                        Some(format!("Export cancelled ({success_count}/{total} saved)"))
+                    } else {
+                        Some(format!(
+                            "Export complete: {success_count} of {total} photos saved"
+                        ))
+                    };
                     ctx.request_repaint();
                 }
             }
@@ -416,6 +486,17 @@ impl eframe::App for BeamApp {
                         self.open_file_dialog();
                     }
                     ui.separator();
+                    let can_export = (self.current_view == AppView::Develop
+                        && self.current_image.is_some())
+                        || (self.current_view == AppView::Library
+                            && !self.library_state.photos.is_empty());
+                    if ui
+                        .add_enabled(can_export, egui::Button::new("Export... (Ctrl+E)"))
+                        .clicked()
+                    {
+                        self.open_export_dialog();
+                    }
+                    ui.separator();
                     if ui.button("Quit").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -456,6 +537,9 @@ impl eframe::App for BeamApp {
         }
         if ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::O)) {
             self.import_folder_dialog();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::E)) {
+            self.open_export_dialog();
         }
 
         // Bottom status bar
@@ -510,6 +594,9 @@ impl eframe::App for BeamApp {
                     }
                     LibraryAction::ImportFolder => {
                         self.import_folder_dialog();
+                    }
+                    LibraryAction::ExportPhotos(paths) => {
+                        self.open_export_dialog_with_paths(paths);
                     }
                     LibraryAction::None => {}
                 }
@@ -1004,6 +1091,13 @@ impl eframe::App for BeamApp {
                                         if ui.button("💾 Save Sidecar").clicked() {
                                             self.save_sidecar();
                                         }
+
+                                        if ui
+                                            .button(RichText::new("📤 Export...").strong())
+                                            .clicked()
+                                        {
+                                            self.open_export_dialog();
+                                        }
                                     });
                                 });
                         });
@@ -1104,6 +1198,302 @@ impl eframe::App for BeamApp {
                         }
                     });
                 });
+        }
+
+        // Export dialogs
+        self.show_export_dialog_window(&ctx);
+        self.show_export_progress_window(&ctx);
+    }
+}
+
+impl BeamApp {
+    /// Open export dialog for current photo or library selection
+    pub fn open_export_dialog(&mut self) {
+        let mut targets = Vec::new();
+        match self.current_view {
+            AppView::Develop => {
+                if let Some(path) = &self.current_path {
+                    targets.push((path.clone(), self.edit_stack.clone()));
+                }
+            }
+            AppView::Library => {
+                let selected = &self.library_state.selected_photo_ids;
+                let photos: Vec<_> = if !selected.is_empty() {
+                    self.library_state
+                        .photos
+                        .iter()
+                        .filter(|p| selected.contains(&p.id))
+                        .collect()
+                } else if let Some(id) = self.library_state.selected_photo_id {
+                    self.library_state
+                        .photos
+                        .iter()
+                        .filter(|p| p.id == id)
+                        .collect()
+                } else {
+                    self.library_state.photos.iter().collect()
+                };
+
+                for photo in photos {
+                    let path = PathBuf::from(&photo.file_path);
+                    let sidecar_p = Sidecar::path_for(&path);
+                    let stack = Sidecar::load_from_file(&sidecar_p)
+                        .map(|s| s.edit_stack)
+                        .unwrap_or_default();
+                    targets.push((path, stack));
+                }
+            }
+        }
+
+        if !targets.is_empty() {
+            self.export_targets = targets;
+            self.show_export_dialog = true;
+        }
+    }
+
+    /// Open export dialog with explicitly provided photo paths
+    pub fn open_export_dialog_with_paths(&mut self, paths: Vec<PathBuf>) {
+        let mut targets = Vec::new();
+        for path in paths {
+            let sidecar_p = Sidecar::path_for(&path);
+            let stack = Sidecar::load_from_file(&sidecar_p)
+                .map(|s| s.edit_stack)
+                .unwrap_or_default();
+            targets.push((path, stack));
+        }
+        if !targets.is_empty() {
+            self.export_targets = targets;
+            self.show_export_dialog = true;
+        }
+    }
+
+    /// Launch background export thread
+    pub fn start_export(&mut self) {
+        if self.export_targets.is_empty() {
+            return;
+        }
+
+        self.show_export_dialog = false;
+        self.show_export_progress = true;
+        self.export_is_running = true;
+        self.export_status_message = None;
+        self.export_progress_data = None;
+
+        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.export_cancel_flag = Some(cancel_flag.clone());
+
+        let tx = self.tx.clone();
+        let config = beam_media::ExportConfig {
+            output_dir: self.export_output_dir.clone(),
+            format: if self.export_format_is_png {
+                beam_media::ExportFormat::Png
+            } else {
+                beam_media::ExportFormat::Jpeg {
+                    quality: self.export_jpeg_quality,
+                }
+            },
+            custom_suffix: if self.export_suffix.trim().is_empty() {
+                None
+            } else {
+                Some(self.export_suffix.clone())
+            },
+        };
+        let targets = self.export_targets.clone();
+
+        thread::spawn(move || {
+            let cancel_clone = cancel_flag.clone();
+            let tx_prog = tx.clone();
+            let results =
+                beam_media::export_batch(&targets, &config, &cancel_clone, move |progress| {
+                    let _ = tx_prog.send(BackgroundMsg::ExportProgress(progress));
+                });
+
+            let cancelled = cancel_flag.load(std::sync::atomic::Ordering::Relaxed);
+            let success_count = results.as_ref().map(|r| r.len()).unwrap_or(0);
+            let _ = tx.send(BackgroundMsg::ExportFinished {
+                success_count,
+                total: targets.len(),
+                cancelled,
+            });
+        });
+    }
+
+    /// Render export settings configuration modal
+    fn show_export_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.show_export_dialog {
+            return;
+        }
+
+        let mut start_requested = false;
+        let mut cancel_requested = false;
+
+        egui::Window::new("Export Settings")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+                ui.vertical(|ui| {
+                    ui.heading("Export Photos");
+                    ui.separator();
+
+                    let count = self.export_targets.len();
+                    ui.label(RichText::new(format!("Photos to export: {count}")).strong());
+                    ui.add_space(8.0);
+
+                    // Destination folder
+                    ui.label("Destination Folder:");
+                    ui.horizontal(|ui| {
+                        let path_str = self.export_output_dir.display().to_string();
+                        let mut text = path_str.as_str();
+                        ui.add(
+                            egui::TextEdit::singleline(&mut text)
+                                .desired_width(280.0)
+                                .interactive(false),
+                        );
+                        if ui.button("Browse...").clicked() {
+                            if let Some(folder) = rfd::FileDialog::new()
+                                .set_title("Choose Destination Folder")
+                                .set_directory(&self.export_output_dir)
+                                .pick_folder()
+                            {
+                                self.export_output_dir = folder;
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+
+                    // Format
+                    ui.label("Format:");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.export_format_is_png, false, "JPEG");
+                        ui.radio_value(&mut self.export_format_is_png, true, "PNG");
+                    });
+
+                    if !self.export_format_is_png {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("JPEG Quality:");
+                            ui.add(Slider::new(&mut self.export_jpeg_quality, 1..=100).text("%"));
+                        });
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Filename Suffix
+                    ui.horizontal(|ui| {
+                        ui.label("Filename Suffix:");
+                        ui.text_edit_singleline(&mut self.export_suffix);
+                    });
+                    ui.label(RichText::new("Example: photo_beam.jpg").weak().size(11.0));
+
+                    ui.add_space(16.0);
+                    ui.separator();
+
+                    // Dialog buttons
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("Start Export").strong().size(14.0))
+                            .clicked()
+                        {
+                            start_requested = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if start_requested {
+            self.start_export();
+        }
+        if cancel_requested {
+            self.show_export_dialog = false;
+        }
+    }
+
+    /// Render export progress modal with real-time status and cancel button
+    fn show_export_progress_window(&mut self, ctx: &egui::Context) {
+        if !self.show_export_progress {
+            return;
+        }
+
+        let mut close_requested = false;
+
+        egui::Window::new("Exporting Photos")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.vertical(|ui| {
+                    if self.export_is_running {
+                        ui.heading("Export in Progress...");
+                    } else if let Some(msg) = &self.export_status_message {
+                        ui.heading(msg);
+                    } else {
+                        ui.heading("Export Finished");
+                    }
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    if let Some(prog) = &self.export_progress_data {
+                        let frac = if prog.total > 0 {
+                            prog.current_index as f32 / prog.total as f32
+                        } else {
+                            0.0
+                        };
+                        ui.add(
+                            egui::ProgressBar::new(frac)
+                                .show_percentage()
+                                .animate(self.export_is_running),
+                        );
+                        ui.add_space(4.0);
+
+                        let fname = prog
+                            .current_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("photo");
+                        ui.label(format!(
+                            "({}/{}) Processing: {fname}",
+                            prog.current_index, prog.total
+                        ));
+
+                        if let Some(err) = &prog.error {
+                            ui.colored_label(
+                                Color32::from_rgb(255, 100, 100),
+                                format!("Error: {err}"),
+                            );
+                        }
+                    } else if self.export_is_running {
+                        ui.add(egui::ProgressBar::new(0.0).animate(true));
+                        ui.label("Starting export pipeline...");
+                    }
+
+                    ui.add_space(16.0);
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        if self.export_is_running {
+                            if ui
+                                .button(RichText::new("Cancel Export").color(Color32::LIGHT_RED))
+                                .clicked()
+                            {
+                                if let Some(flag) = &self.export_cancel_flag {
+                                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        } else if ui.button(RichText::new("Close").strong()).clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if close_requested {
+            self.show_export_progress = false;
         }
     }
 }

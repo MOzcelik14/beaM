@@ -440,6 +440,7 @@ pub struct EditPipeline {
     tone_curve_stage: StagePass<ToneCurveUniforms>,
     hsl_stage: StagePass<HslUniforms>,
     display_pipeline: DisplayPipeline,
+    export_display_pipeline: Option<DisplayPipeline>,
 
     // Ping-pong intermediate linear working textures
     ping_texture: Option<wgpu::Texture>,
@@ -558,6 +559,7 @@ impl EditPipeline {
             tone_curve_stage,
             hsl_stage,
             display_pipeline,
+            export_display_pipeline: None,
             ping_texture: None,
             ping_view: None,
             pong_texture: None,
@@ -600,18 +602,8 @@ impl EditPipeline {
         self.current_dimensions = (width, height);
     }
 
-    /// Execute the full edit stack from input texture to output display target.
-    pub fn render(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        input: &GpuImage,
-        target_view: &wgpu::TextureView,
-        edit_stack: &EditStack,
-    ) {
-        self.ensure_intermediate_textures(device, input.width, input.height);
-
-        // 1. Update uniforms from edit stack
+    /// Update uniforms for all stages from the edit stack.
+    fn update_uniforms(&mut self, queue: &wgpu::Queue, edit_stack: &EditStack) {
         let wb_gains = beam_core::color::white_balance_gains(
             edit_stack.white_balance.temperature,
             edit_stack.white_balance.tint,
@@ -702,7 +694,15 @@ impl EditPipeline {
                 _pad2: 0,
             },
         );
+    }
 
+    /// Execute intermediate shader stages (input -> pong).
+    fn render_intermediate_stages(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+    ) {
         let ping = self.ping_view.as_ref().unwrap();
         let pong = self.pong_view.as_ref().unwrap();
 
@@ -732,10 +732,150 @@ impl EditPipeline {
         self.hsl_stage.render(device, &mut encoder, ping, pong);
 
         queue.submit(std::iter::once(encoder.finish()));
+    }
 
+    /// Execute the full edit stack from input texture to output display target.
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        target_view: &wgpu::TextureView,
+        edit_stack: &EditStack,
+    ) {
+        self.ensure_intermediate_textures(device, input.width, input.height);
+        self.update_uniforms(queue, edit_stack);
+        self.render_intermediate_stages(device, queue, input);
+
+        let pong = self.pong_view.as_ref().unwrap();
         // Final Stage: Display Transform (pong -> target_view)
         self.display_pipeline
             .render_to_target(device, queue, pong, target_view);
+    }
+
+    /// Execute the complete edit stack onto an image and read back standard sRGB 8-bit RGBA pixels.
+    pub fn render_to_rgba8(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        edit_stack: &EditStack,
+    ) -> Result<Vec<u8>> {
+        let width = input.width;
+        let height = input.height;
+
+        // 1. Create target texture with Rgba8Unorm format
+        let target_desc = wgpu::TextureDescriptor {
+            label: Some("beam_export_target_texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        };
+        let target_texture = device.create_texture(&target_desc);
+        let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // 2. Render passes through pipeline
+        if self.display_pipeline.target_format() == wgpu::TextureFormat::Rgba8Unorm {
+            self.render(device, queue, input, &target_view, edit_stack);
+        } else {
+            if self.export_display_pipeline.is_none() {
+                self.export_display_pipeline = Some(DisplayPipeline::new(
+                    device,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                ));
+            }
+            self.ensure_intermediate_textures(device, width, height);
+            self.update_uniforms(queue, edit_stack);
+            self.render_intermediate_stages(device, queue, input);
+
+            let pong = self.pong_view.as_ref().unwrap();
+            self.export_display_pipeline
+                .as_ref()
+                .unwrap()
+                .render_to_target(device, queue, pong, &target_view);
+        }
+
+        // 3. Staging buffer with 256-byte row alignment
+        let bytes_per_pixel = 4u32;
+        let unaligned_bytes_per_row = width * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let bytes_per_row = (unaligned_bytes_per_row + align - 1) & !(align - 1);
+
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("beam_export_staging_buffer"),
+            size: (bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut copy_encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("beam_export_readback_encoder"),
+        });
+
+        copy_encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        queue.submit(std::iter::once(copy_encoder.finish()));
+
+        // 4. Map buffer and read back values
+        let slice = staging_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| BeamError::GpuPipeline(format!("Device poll failed: {e:?}")))?;
+
+        rx.recv()
+            .map_err(|e| BeamError::GpuPipeline(format!("Readback channel receive failed: {e}")))?
+            .map_err(|e| BeamError::GpuPipeline(format!("Buffer map failed: {e:?}")))?;
+
+        let mut output_bytes = vec![0u8; (width * height * 4) as usize];
+        {
+            let mapped = slice.get_mapped_range().map_err(|e| {
+                BeamError::GpuPipeline(format!("Failed to get mapped range: {e:?}"))
+            })?;
+            let row_len = (width * 4) as usize;
+            for row in 0..height as usize {
+                let src_start = row * (bytes_per_row as usize);
+                let src_end = src_start + row_len;
+                let dst_start = row * row_len;
+                let dst_end = dst_start + row_len;
+                output_bytes[dst_start..dst_end].copy_from_slice(&mapped[src_start..src_end]);
+            }
+        }
+        staging_buffer.unmap();
+
+        Ok(output_bytes)
     }
 }
 
@@ -1057,5 +1197,44 @@ mod tests {
             assert!(pixels[3] == 255, "Alpha channel should be 255");
         }
         staging.unmap();
+    }
+
+    #[test]
+    fn test_render_to_rgba8_export() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            println!("Skipping render_to_rgba8 test (no GPU adapter)");
+            return;
+        };
+
+        let width = 5u32; // Not a multiple of 64 (256 bytes) to verify row padding alignment!
+        let height = 3u32;
+        let input_val = 0.5f32;
+        let mut input_data = vec![input_val; (width * height * 4) as usize];
+        // Set alpha to 1.0
+        for i in 0..(width * height) as usize {
+            input_data[i * 4 + 3] = 1.0;
+        }
+
+        let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut edit_stack = EditStack::default();
+        edit_stack.exposure.ev = 0.5;
+
+        let rgba = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &input_img, &edit_stack)
+            .expect("render_to_rgba8 failed");
+
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+        // Alpha should be 255
+        for i in 0..(width * height) as usize {
+            assert_eq!(
+                rgba[i * 4 + 3],
+                255,
+                "Alpha channel should be 255 at pixel {i}"
+            );
+            assert!(rgba[i * 4] > 0, "Red channel should be positive");
+        }
     }
 }
