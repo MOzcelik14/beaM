@@ -75,6 +75,17 @@ pub enum SortOrder {
     FileNameAsc,
 }
 
+impl SortOrder {
+    pub fn translation_key(&self) -> &'static str {
+        match self {
+            Self::DateTakenDesc => "library_sort_date_desc",
+            Self::DateTakenAsc => "library_sort_date_asc",
+            Self::RatingDesc => "library_sort_rating_desc",
+            Self::FileNameAsc => "library_sort_filename_asc",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FileTypeFilter {
     #[default]
@@ -95,6 +106,17 @@ impl FileTypeFilter {
             Self::Png => "PNG",
             Self::Tiff => "TIFF",
             Self::WebP => "WebP",
+        }
+    }
+
+    pub fn translation_key(&self) -> &'static str {
+        match self {
+            Self::All => "library_format_all",
+            Self::Raw => "library_format_raw",
+            Self::Jpeg => "library_format_jpeg",
+            Self::Png => "library_format_png",
+            Self::Tiff => "library_format_tiff",
+            Self::WebP => "library_format_webp",
         }
     }
 }

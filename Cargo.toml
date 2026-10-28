@@ -35,6 +35,9 @@ rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
 moxcms = "0.9.1"
 exif = { package = "kamadak-exif", version = "0.6.1" }
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
+sys-locale = "0.3.2"
 log = "0.4"
 env_logger = "0.11"
 pollster = "1.0"

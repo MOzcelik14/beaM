@@ -1,6 +1,7 @@
 //! Photo library grid view for beaM.
 
 use beam_core::sidecar::ColorLabel;
+use beam_core::t;
 use beam_library::{LibraryDb, LibraryFilter, PhotoRecord, SortOrder};
 use eframe::egui::{self, Color32, Panel, RichText, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
@@ -135,11 +136,15 @@ pub fn show_library_view(
         .resizable(true)
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.heading("Catalog");
+                ui.heading(t!("library_catalog"));
                 ui.separator();
 
                 if ui
-                    .button(RichText::new("📂 Import Folder...").size(14.0).strong())
+                    .button(
+                        RichText::new(format!("📂 {}", t!("library_import_folder")))
+                            .size(14.0)
+                            .strong(),
+                    )
                     .clicked()
                 {
                     action = LibraryAction::ImportFolder;
@@ -147,11 +152,17 @@ pub fn show_library_view(
 
                 let selected_count = state.selected_photo_ids.len();
                 let export_btn_text = if selected_count > 1 {
-                    format!("📤 Export Selected ({selected_count})...")
+                    format!(
+                        "📤 {}",
+                        t!("library_export_selected", "count" => selected_count)
+                    )
                 } else if selected_count == 1 {
-                    "📤 Export Selected (1)...".to_string()
+                    format!("📤 {}", t!("library_export_selected_one"))
                 } else {
-                    format!("📤 Export All ({})...", state.photos.len())
+                    format!(
+                        "📤 {}",
+                        t!("library_export_all", "count" => state.photos.len())
+                    )
                 };
 
                 let can_export = !state.photos.is_empty();
@@ -181,8 +192,11 @@ pub fn show_library_view(
 
                 ui.add_space(4.0);
                 if ui
-                    .button(RichText::new("🔄 Rebuild Thumbnails").size(13.0))
-                    .on_hover_text("Regenerate all thumbnail previews from scratch")
+                    .button(
+                        RichText::new(format!("🔄 {}", t!("library_rebuild_thumbnails")))
+                            .size(13.0),
+                    )
+                    .on_hover_text(t!("library_rebuild_tooltip"))
                     .clicked()
                 {
                     action = LibraryAction::RebuildThumbnails;
@@ -195,22 +209,22 @@ pub fn show_library_view(
                         if let Some(status) = &state.import_status {
                             ui.label(RichText::new(status).weak().size(11.0));
                         } else {
-                            ui.label("Importing photos...");
+                            ui.label(t!("library_importing"));
                         }
                     });
                 }
 
                 ui.add_space(8.0);
                 ui.separator();
-                ui.strong("Filters");
+                ui.strong(t!("library_filters"));
                 ui.add_space(4.0);
 
                 // Star rating filter buttons
-                ui.label(RichText::new("Minimum Rating:").weak());
+                ui.label(RichText::new(t!("library_rating")).weak());
                 ui.horizontal_wrapped(|ui| {
                     for r in 0..=5u8 {
                         let label = if r == 0 {
-                            "All".to_string()
+                            t!("library_rating_any")
                         } else {
                             format!("★{r}+")
                         };
@@ -225,34 +239,38 @@ pub fn show_library_view(
                 ui.add_space(6.0);
 
                 // Color label filter
-                ui.label(RichText::new("Color Label:").weak());
-                const LABELS: [(Option<ColorLabel>, &str, Color32); 6] = [
-                    (None, "All", Color32::WHITE),
-                    (Some(ColorLabel::Red), "Red", Color32::from_rgb(235, 60, 60)),
+                ui.label(RichText::new(t!("library_color_label")).weak());
+                let labels: [(Option<ColorLabel>, String, Color32); 6] = [
+                    (None, t!("library_rating_any"), Color32::WHITE),
+                    (
+                        Some(ColorLabel::Red),
+                        t!(ColorLabel::Red.translation_key()),
+                        Color32::from_rgb(235, 60, 60),
+                    ),
                     (
                         Some(ColorLabel::Yellow),
-                        "Yellow",
+                        t!(ColorLabel::Yellow.translation_key()),
                         Color32::from_rgb(240, 215, 50),
                     ),
                     (
                         Some(ColorLabel::Green),
-                        "Green",
+                        t!(ColorLabel::Green.translation_key()),
                         Color32::from_rgb(60, 200, 80),
                     ),
                     (
                         Some(ColorLabel::Blue),
-                        "Blue",
+                        t!(ColorLabel::Blue.translation_key()),
                         Color32::from_rgb(65, 130, 245),
                     ),
                     (
                         Some(ColorLabel::Purple),
-                        "Purple",
+                        t!(ColorLabel::Purple.translation_key()),
                         Color32::from_rgb(160, 80, 240),
                     ),
                 ];
 
                 ui.horizontal_wrapped(|ui| {
-                    for (col, name, color) in LABELS {
+                    for (col, name, color) in labels {
                         let is_selected = state.filter.color_label == col;
                         let text = if col.is_some() {
                             RichText::new(format!("● {name}")).color(color)
@@ -269,7 +287,7 @@ pub fn show_library_view(
                 ui.add_space(6.0);
 
                 // File format filter
-                ui.label(RichText::new("Format:").weak());
+                ui.label(RichText::new(t!("library_format")).weak());
                 ui.horizontal_wrapped(|ui| {
                     for ft in [
                         beam_library::FileTypeFilter::All,
@@ -280,7 +298,10 @@ pub fn show_library_view(
                         beam_library::FileTypeFilter::WebP,
                     ] {
                         let is_selected = state.filter.file_type == ft;
-                        if ui.selectable_label(is_selected, ft.as_str()).clicked() {
+                        if ui
+                            .selectable_label(is_selected, t!(ft.translation_key()))
+                            .clicked()
+                        {
                             state.filter.file_type = ft;
                             state.needs_refresh = true;
                         }
@@ -290,7 +311,7 @@ pub fn show_library_view(
                 ui.add_space(8.0);
 
                 // Search box
-                ui.label(RichText::new("Search:").weak());
+                ui.label(RichText::new(t!("library_search")).weak());
                 let mut search_text = state.filter.search_query.clone().unwrap_or_default();
                 let resp = ui.text_edit_singleline(&mut search_text);
                 if resp.changed() {
@@ -306,42 +327,37 @@ pub fn show_library_view(
                 ui.separator();
 
                 // Sort order selector
-                ui.label(RichText::new("Sort by:").weak());
+                ui.label(RichText::new(t!("library_sort_by")).weak());
                 egui::ComboBox::from_id_salt("library_sort_order")
-                    .selected_text(match state.filter.sort_by {
-                        SortOrder::DateTakenDesc => "Date (Newest)",
-                        SortOrder::DateTakenAsc => "Date (Oldest)",
-                        SortOrder::RatingDesc => "Rating (Highest)",
-                        SortOrder::FileNameAsc => "File Name (A-Z)",
-                    })
+                    .selected_text(t!(state.filter.sort_by.translation_key()))
                     .show_ui(ui, |ui| {
                         let mut changed = false;
                         changed |= ui
                             .selectable_value(
                                 &mut state.filter.sort_by,
                                 SortOrder::DateTakenDesc,
-                                "Date (Newest)",
+                                t!(SortOrder::DateTakenDesc.translation_key()),
                             )
                             .changed();
                         changed |= ui
                             .selectable_value(
                                 &mut state.filter.sort_by,
                                 SortOrder::DateTakenAsc,
-                                "Date (Oldest)",
+                                t!(SortOrder::DateTakenAsc.translation_key()),
                             )
                             .changed();
                         changed |= ui
                             .selectable_value(
                                 &mut state.filter.sort_by,
                                 SortOrder::RatingDesc,
-                                "Rating (Highest)",
+                                t!(SortOrder::RatingDesc.translation_key()),
                             )
                             .changed();
                         changed |= ui
                             .selectable_value(
                                 &mut state.filter.sort_by,
                                 SortOrder::FileNameAsc,
-                                "File Name (A-Z)",
+                                t!(SortOrder::FileNameAsc.translation_key()),
                             )
                             .changed();
                         if changed {
@@ -351,7 +367,7 @@ pub fn show_library_view(
 
                 ui.add_space(16.0);
                 ui.label(
-                    RichText::new(format!("Showing {} photos", state.photos.len()))
+                    RichText::new(t!("library_showing_count", "count" => state.photos.len()))
                         .weak()
                         .size(11.0),
                 );
@@ -363,11 +379,14 @@ pub fn show_library_view(
         if state.photos.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading("No photos found in catalog");
+                    ui.heading(t!("library_empty_heading"));
                     ui.add_space(8.0);
-                    ui.label("Import a folder of RAW or raster photos to populate your library.");
+                    ui.label(t!("library_empty_desc"));
                     ui.add_space(12.0);
-                    if ui.button("📂 Import Folder...").clicked() {
+                    if ui
+                        .button(format!("📂 {}", t!("library_import_folder")))
+                        .clicked()
+                    {
                         action = LibraryAction::ImportFolder;
                     }
                 });
@@ -430,11 +449,11 @@ pub fn show_library_view(
                                 }
 
                                 response.context_menu(|ui| {
-                                    if ui.button("Open in Develop (Enter)").clicked() {
+                                    if ui.button(t!("library_context_open")).clicked() {
                                         photo_to_open = Some(PathBuf::from(&photo.file_path));
                                         ui.close();
                                     }
-                                    if ui.button("Export Photo... (Ctrl+E)").clicked() {
+                                    if ui.button(t!("library_context_export")).clicked() {
                                         action = LibraryAction::ExportPhotos(vec![PathBuf::from(
                                             &photo.file_path,
                                         )]);
@@ -589,15 +608,18 @@ pub fn show_library_view(
                                         );
                                         let err_label = child_ui.add(
                                             egui::Label::new(
-                                                RichText::new("⚠ Failed")
-                                                    .color(Color32::from_rgb(240, 100, 100))
-                                                    .size(12.0),
+                                                RichText::new(format!(
+                                                    "⚠ {}",
+                                                    t!("library_thumb_failed")
+                                                ))
+                                                .color(Color32::from_rgb(240, 100, 100))
+                                                .size(12.0),
                                             )
                                             .sense(Sense::hover()),
                                         );
-                                        err_label.on_hover_text(format!(
-                                            "Thumbnail generation failed:\n{err}"
-                                        ));
+                                        err_label.on_hover_text(
+                                            t!("library_thumb_failed_tooltip", "err" => err),
+                                        );
                                     }
                                     None => {
                                         ui.painter().rect_filled(
@@ -688,9 +710,9 @@ pub fn show_library_view(
                                                 )
                                                 .frame(false),
                                             )
-                                            .on_hover_text(format!(
-                                                "Color label: {:?} (click to cycle)",
-                                                photo.color_label
+                                            .on_hover_text(t!(
+                                                "library_color_cycle_tooltip",
+                                                "label" => t!(photo.color_label.translation_key())
                                             ));
 
                                         if label_btn.clicked() {

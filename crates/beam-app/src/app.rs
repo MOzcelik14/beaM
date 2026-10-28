@@ -4,7 +4,7 @@ use crate::views::library::{
 use crate::widgets::curve::show_tone_curve;
 use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
 use beam_core::sidecar::{EditStack, Sidecar};
-use beam_core::APP_NAME;
+use beam_core::{set_language, t, AppConfig, Language, APP_NAME};
 use beam_gpu::{EditPipeline, GpuImage};
 use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
 use beam_media::{decode_image, DecodedImage, ImageMetadata};
@@ -84,7 +84,9 @@ pub struct BeamApp {
     hsl_selected_band: usize,
     error_message: Option<String>,
     show_about: bool,
+    show_settings: bool,
     show_develop_panel: bool,
+    app_config: AppConfig,
 
     // Export dialog & process state
     show_export_dialog: bool,
@@ -164,6 +166,9 @@ impl BeamApp {
 
         let thumbnail_cache_dir = default_thumbnail_cache_dir();
         let _ = std::fs::create_dir_all(&thumbnail_cache_dir);
+
+        let app_config = AppConfig::load();
+        set_language(app_config.language);
 
         let export_output_dir = default_export_dir();
 
@@ -249,7 +254,9 @@ impl BeamApp {
             hsl_selected_band: 0,
             error_message: None,
             show_about: false,
+            show_settings: false,
             show_develop_panel: true,
+            app_config,
             show_export_dialog: false,
             show_export_progress: false,
             export_output_dir,
@@ -267,9 +274,10 @@ impl BeamApp {
     /// Open file dialog and spawn background thread to decode the RAW image
     pub fn open_file_dialog(&mut self) {
         let tx = self.tx.clone();
+        let dialog_title = t!("menu_file_open");
         thread::spawn(move || {
             let file = rfd::FileDialog::new()
-                .set_title("Open RAW Photo")
+                .set_title(dialog_title)
                 .add_filter(
                     "RAW & Raster Photos",
                     &[
@@ -298,11 +306,10 @@ impl BeamApp {
         let tx = self.tx.clone();
         let thumb_dir = self.thumbnail_cache_dir.clone();
         let catalog_path = default_catalog_path();
+        let dialog_title = t!("menu_file_import");
 
         thread::spawn(move || {
-            let folder = rfd::FileDialog::new()
-                .set_title("Select Photo Folder to Import")
-                .pick_folder();
+            let folder = rfd::FileDialog::new().set_title(dialog_title).pick_folder();
 
             if let Some(dir) = folder {
                 let db = match LibraryDb::open(&catalog_path) {
@@ -409,10 +416,16 @@ impl BeamApp {
                     self.export_is_running = false;
                     self.export_cancel_flag = None;
                     self.export_status_message = if cancelled {
-                        Some(format!("Export cancelled ({success_count}/{total} saved)"))
+                        Some(t!(
+                            "export_cancelled",
+                            "count" => success_count,
+                            "total" => total
+                        ))
                     } else {
-                        Some(format!(
-                            "Export complete: {success_count} of {total} photos saved"
+                        Some(t!(
+                            "export_complete",
+                            "count" => success_count,
+                            "total" => total
                         ))
                     };
                     ctx.request_repaint();
@@ -567,9 +580,9 @@ impl BeamApp {
 
             if let Err(e) = sidecar.save_to_file(sidecar_path) {
                 log::error!("Failed to save sidecar to {}: {e}", sidecar_path.display());
-                self.sidecar_status = format!("Save error: {e}");
+                self.sidecar_status = t!("status_save_error", "error" => e.to_string());
             } else {
-                self.sidecar_status = "Saved".to_string();
+                self.sidecar_status = t!("status_saved");
                 if let Some(photo_id) = self.library_state.selected_photo_id {
                     self.library_state.thumbnail_status.remove(&photo_id);
                     let new_thumb_path =
@@ -638,21 +651,27 @@ impl eframe::App for BeamApp {
 
                 // Navigation View Tabs
                 let is_lib = self.current_view == AppView::Library;
-                if ui.selectable_label(is_lib, "📷 Library (G)").clicked() {
+                if ui
+                    .selectable_label(is_lib, format!("📷 {} (G)", t!("view_library")))
+                    .clicked()
+                {
                     self.current_view = AppView::Library;
                 }
                 let is_dev = self.current_view == AppView::Develop;
-                if ui.selectable_label(is_dev, "🎨 Develop (D)").clicked() {
+                if ui
+                    .selectable_label(is_dev, format!("🎨 {} (D)", t!("view_develop")))
+                    .clicked()
+                {
                     self.current_view = AppView::Develop;
                 }
 
                 ui.separator();
 
-                ui.menu_button("File", |ui| {
-                    if ui.button("Import Folder... (Ctrl+Shift+O)").clicked() {
+                ui.menu_button(t!("menu_file"), |ui| {
+                    if ui.button(t!("menu_import_folder_shortcut")).clicked() {
                         self.import_folder_dialog();
                     }
-                    if ui.button("Open RAW Photo... (Ctrl+O)").clicked() {
+                    if ui.button(t!("menu_open_photo_shortcut")).clicked() {
                         self.open_file_dialog();
                     }
                     ui.separator();
@@ -661,48 +680,54 @@ impl eframe::App for BeamApp {
                         || (self.current_view == AppView::Library
                             && !self.library_state.photos.is_empty());
                     if ui
-                        .add_enabled(can_export, egui::Button::new("Export... (Ctrl+E)"))
+                        .add_enabled(can_export, egui::Button::new(t!("menu_export_shortcut")))
                         .clicked()
                     {
                         self.open_export_dialog();
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(t!("menu_quit")).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
 
-                ui.menu_button("Library", |ui| {
-                    if ui.button("Import Folder... (Ctrl+Shift+O)").clicked() {
+                ui.menu_button(t!("menu_edit"), |ui| {
+                    if ui.button(t!("menu_settings")).clicked() {
+                        self.show_settings = true;
+                    }
+                });
+
+                ui.menu_button(t!("menu_library"), |ui| {
+                    if ui.button(t!("menu_import_folder_shortcut")).clicked() {
                         self.import_folder_dialog();
                     }
                     ui.separator();
                     if ui
-                        .button("🔄 Rebuild All Thumbnails")
-                        .on_hover_text("Regenerate thumbnail cache for all photos in the catalog")
+                        .button(format!("🔄 {}", t!("menu_rebuild_thumbnails")))
+                        .on_hover_text(t!("menu_rebuild_thumbnails_tooltip"))
                         .clicked()
                     {
                         self.rebuild_thumbnails();
                     }
                 });
 
-                ui.menu_button("View", |ui| {
+                ui.menu_button(t!("menu_view"), |ui| {
                     ui.selectable_value(
                         &mut self.current_view,
                         AppView::Library,
-                        "Library View (G)",
+                        t!("menu_view_library"),
                     );
                     ui.selectable_value(
                         &mut self.current_view,
                         AppView::Develop,
-                        "Develop View (D)",
+                        t!("menu_view_develop"),
                     );
                     ui.separator();
-                    ui.checkbox(&mut self.show_develop_panel, "Develop Panel");
+                    ui.checkbox(&mut self.show_develop_panel, t!("menu_develop_panel"));
                 });
 
-                ui.menu_button("Help", |ui| {
-                    if ui.button(format!("About {APP_NAME}")).clicked() {
+                ui.menu_button(t!("menu_help"), |ui| {
+                    if ui.button(t!("menu_about")).clicked() {
                         self.show_about = true;
                     }
                 });
@@ -724,6 +749,9 @@ impl eframe::App for BeamApp {
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::E)) {
             self.open_export_dialog();
+        }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma)) {
+            self.show_settings = true;
         }
 
         // Bottom status bar
@@ -749,20 +777,18 @@ impl eframe::App for BeamApp {
                     }
 
                     ui.separator();
-                    ui.label(format!("Sidecar: {}", self.sidecar_status));
+                    ui.label(t!("status_sidecar", "status" => &self.sidecar_status));
                 } else {
-                    ui.label(
-                        "No image loaded. Use File -> Open RAW Photo... (Ctrl+O) to open an image.",
-                    );
+                    ui.label(t!("status_no_image_hint"));
                 }
 
                 if self.is_loading {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spinner();
                         if let Some(fname) = &self.loading_filename {
-                            ui.label(format!("Decoding {fname} with rawler..."));
+                            ui.label(t!("develop_decoding_with_name", "name" => fname));
                         } else {
-                            ui.label("Decoding...");
+                            ui.label(t!("develop_decoding"));
                         }
                     });
                 }
@@ -804,7 +830,7 @@ impl eframe::App for BeamApp {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false; 2])
                                 .show(ui, |ui| {
-                                    ui.heading("Develop");
+                                    ui.heading(t!("view_develop"));
                                     ui.separator();
 
                                     // 1. Histogram Widget
@@ -818,13 +844,13 @@ impl eframe::App for BeamApp {
                                     // 2. White Balance Section
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong("White Balance");
+                                            ui.strong(t!("develop_white_balance"));
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text("Reset White Balance")
+                                                        .on_hover_text(t!("develop_reset_wb"))
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_white_balance();
@@ -842,7 +868,7 @@ impl eframe::App for BeamApp {
 
                                         // Temperature slider
                                         ui.horizontal(|ui| {
-                                            ui.label("Temp");
+                                            ui.label(t!("develop_temp_slider"));
                                             let resp = ui.add(
                                                 Slider::new(
                                                     &mut self.edit_stack.white_balance.temperature,
@@ -855,7 +881,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Temperature (0)")
+                                                .on_hover_text(t!("develop_reset_temp"))
                                                 .clicked()
                                             {
                                                 self.edit_stack.white_balance.temperature = 0.0;
@@ -865,7 +891,7 @@ impl eframe::App for BeamApp {
 
                                         // Tint slider
                                         ui.horizontal(|ui| {
-                                            ui.label("Tint  ");
+                                            ui.label(t!("develop_tint_slider"));
                                             let resp = ui.add(
                                                 Slider::new(
                                                     &mut self.edit_stack.white_balance.tint,
@@ -878,7 +904,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Tint (0)")
+                                                .on_hover_text(t!("develop_reset_tint"))
                                                 .clicked()
                                             {
                                                 self.edit_stack.white_balance.tint = 0.0;
@@ -892,13 +918,13 @@ impl eframe::App for BeamApp {
                                     // 3. Exposure Section
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong("Exposure");
+                                            ui.strong(t!("develop_exposure"));
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text("Reset Exposure")
+                                                        .on_hover_text(t!("develop_reset_exposure"))
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_exposure();
@@ -916,7 +942,7 @@ impl eframe::App for BeamApp {
 
                                         // Exposure EV slider
                                         ui.horizontal(|ui| {
-                                            ui.label("EV    ");
+                                            ui.label(t!("develop_ev_slider"));
                                             let resp = ui.add(
                                                 Slider::new(
                                                     &mut self.edit_stack.exposure.ev,
@@ -930,7 +956,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Exposure (0)")
+                                                .on_hover_text(t!("develop_reset_exposure"))
                                                 .clicked()
                                             {
                                                 self.edit_stack.exposure.ev = 0.0;
@@ -944,13 +970,19 @@ impl eframe::App for BeamApp {
                                     // 4. Highlights & Shadows Section
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong("Highlights & Shadows");
+                                            ui.strong(format!(
+                                                "{} & {}",
+                                                t!("develop_highlights"),
+                                                t!("develop_shadows")
+                                            ));
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text("Reset Highlights & Shadows")
+                                                        .on_hover_text(t!(
+                                                            "develop_reset_highlights_shadows"
+                                                        ))
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_highlights_shadows();
@@ -971,7 +1003,7 @@ impl eframe::App for BeamApp {
 
                                         // Highlights slider
                                         ui.horizontal(|ui| {
-                                            ui.label("High  ");
+                                            ui.label(t!("develop_highlights_slider"));
                                             let resp = ui.add(
                                                 Slider::new(
                                                     &mut self
@@ -987,7 +1019,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Highlights (0)")
+                                                .on_hover_text(t!("develop_reset_highlights"))
                                                 .clicked()
                                             {
                                                 self.edit_stack.highlights_shadows.highlights = 0.0;
@@ -997,7 +1029,7 @@ impl eframe::App for BeamApp {
 
                                         // Shadows slider
                                         ui.horizontal(|ui| {
-                                            ui.label("Shad  ");
+                                            ui.label(t!("develop_shadows_slider"));
                                             let resp = ui.add(
                                                 Slider::new(
                                                     &mut self.edit_stack.highlights_shadows.shadows,
@@ -1010,7 +1042,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Shadows (0)")
+                                                .on_hover_text(t!("develop_reset_shadows"))
                                                 .clicked()
                                             {
                                                 self.edit_stack.highlights_shadows.shadows = 0.0;
@@ -1024,13 +1056,13 @@ impl eframe::App for BeamApp {
                                     // 5. Contrast Section
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong("Contrast");
+                                            ui.strong(t!("develop_contrast"));
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text("Reset Contrast")
+                                                        .on_hover_text(t!("develop_reset_contrast"))
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_contrast();
@@ -1048,7 +1080,7 @@ impl eframe::App for BeamApp {
 
                                         // Contrast factor slider
                                         ui.horizontal(|ui| {
-                                            ui.label("Level ");
+                                            ui.label(t!("develop_contrast_slider"));
                                             let resp = ui.add(
                                                 Slider::new(
                                                     &mut self.edit_stack.contrast.contrast,
@@ -1061,7 +1093,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Contrast (0)")
+                                                .on_hover_text(t!("develop_reset_contrast_val"))
                                                 .clicked()
                                             {
                                                 self.edit_stack.contrast.contrast = 0.0;
@@ -1075,13 +1107,13 @@ impl eframe::App for BeamApp {
                                     // 6. Tone Curve Section
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong("Tone Curve");
+                                            ui.strong(t!("develop_tone_curve"));
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text("Reset Tone Curve")
+                                                        .on_hover_text(t!("develop_reset_curve"))
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_tone_curve();
@@ -1106,12 +1138,10 @@ impl eframe::App for BeamApp {
 
                                         ui.add_space(2.0);
                                         ui.label(
-                                    RichText::new(
-                                        "Click to add point • Drag to move • Right-click to delete",
-                                    )
-                                    .weak()
-                                    .size(10.5),
-                                );
+                                            RichText::new(t!("develop_curve_instruction"))
+                                                .weak()
+                                                .size(10.5),
+                                        );
                                     });
 
                                     ui.add_space(6.0);
@@ -1119,13 +1149,13 @@ impl eframe::App for BeamApp {
                                     // 7. HSL / Color Section (8 Color Bands)
                                     ui.group(|ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong("HSL / Color");
+                                            ui.strong(t!("develop_hsl"));
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text("Reset All HSL Bands")
+                                                        .on_hover_text(t!("develop_reset_hsl"))
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_hsl();
@@ -1141,9 +1171,15 @@ impl eframe::App for BeamApp {
 
                                         ui.add_space(4.0);
 
-                                        const BAND_NAMES: [&str; 8] = [
-                                            "Red", "Orange", "Yellow", "Green", "Aqua", "Blue",
-                                            "Purple", "Magenta",
+                                        const BAND_KEYS: [&str; 8] = [
+                                            "develop_hsl_red",
+                                            "develop_hsl_orange",
+                                            "develop_hsl_yellow",
+                                            "develop_hsl_green",
+                                            "develop_hsl_aqua",
+                                            "develop_hsl_blue",
+                                            "develop_hsl_purple",
+                                            "develop_hsl_magenta",
                                         ];
                                         const BAND_COLORS: [Color32; 8] = [
                                             Color32::from_rgb(235, 60, 60),
@@ -1158,14 +1194,12 @@ impl eframe::App for BeamApp {
 
                                         // 8 Color Band selector
                                         ui.horizontal_wrapped(|ui| {
-                                            for (i, (&name, &col)) in BAND_NAMES
-                                                .iter()
-                                                .zip(BAND_COLORS.iter())
-                                                .enumerate()
+                                            for (i, (&key, &col)) in
+                                                BAND_KEYS.iter().zip(BAND_COLORS.iter()).enumerate()
                                             {
                                                 let is_selected = self.hsl_selected_band == i;
-                                                let text =
-                                                    RichText::new(format!("● {name}")).color(col);
+                                                let text = RichText::new(format!("● {}", t!(key)))
+                                                    .color(col);
                                                 if ui.selectable_label(is_selected, text).clicked()
                                                 {
                                                     self.hsl_selected_band = i;
@@ -1176,21 +1210,25 @@ impl eframe::App for BeamApp {
                                         ui.add_space(4.0);
 
                                         let sel = self.hsl_selected_band;
-                                        let band_name = BAND_NAMES[sel];
+                                        let localized_band_name = t!(BAND_KEYS[sel]);
                                         let band = &mut self.edit_stack.hsl.bands[sel];
 
                                         ui.horizontal(|ui| {
                                             ui.label(
-                                                RichText::new(format!("{band_name} Band:"))
-                                                    .strong(),
+                                                RichText::new(t!(
+                                                    "develop_band_label",
+                                                    "band" => &localized_band_name
+                                                ))
+                                                .strong(),
                                             );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
                                                         .button("↺")
-                                                        .on_hover_text(format!(
-                                                            "Reset {band_name} band"
+                                                        .on_hover_text(t!(
+                                                            "develop_reset_band",
+                                                            "band" => &localized_band_name
                                                         ))
                                                         .clicked()
                                                     {
@@ -1204,7 +1242,7 @@ impl eframe::App for BeamApp {
 
                                         // Hue
                                         ui.horizontal(|ui| {
-                                            ui.label("Hue ");
+                                            ui.label(t!("develop_hue_slider"));
                                             let resp = ui.add(
                                                 Slider::new(&mut band.hue, -100.0..=100.0)
                                                     .show_value(true),
@@ -1214,7 +1252,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Hue (0)")
+                                                .on_hover_text(t!("develop_reset_hue"))
                                                 .clicked()
                                             {
                                                 band.hue = 0.0;
@@ -1224,7 +1262,7 @@ impl eframe::App for BeamApp {
 
                                         // Saturation
                                         ui.horizontal(|ui| {
-                                            ui.label("Sat ");
+                                            ui.label(t!("develop_sat_slider"));
                                             let resp = ui.add(
                                                 Slider::new(&mut band.saturation, -100.0..=100.0)
                                                     .show_value(true),
@@ -1234,7 +1272,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Saturation (0)")
+                                                .on_hover_text(t!("develop_reset_sat"))
                                                 .clicked()
                                             {
                                                 band.saturation = 0.0;
@@ -1244,7 +1282,7 @@ impl eframe::App for BeamApp {
 
                                         // Luminance
                                         ui.horizontal(|ui| {
-                                            ui.label("Lum ");
+                                            ui.label(t!("develop_lum_slider"));
                                             let resp = ui.add(
                                                 Slider::new(&mut band.luminance, -100.0..=100.0)
                                                     .show_value(true),
@@ -1254,7 +1292,7 @@ impl eframe::App for BeamApp {
                                             }
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Luminance (0)")
+                                                .on_hover_text(t!("develop_reset_lum"))
                                                 .clicked()
                                             {
                                                 band.luminance = 0.0;
@@ -1269,22 +1307,34 @@ impl eframe::App for BeamApp {
                                     ui.horizontal(|ui| {
                                         if ui
                                             .button(
-                                                RichText::new("↺ Reset All")
-                                                    .color(Color32::LIGHT_RED),
+                                                RichText::new(format!(
+                                                    "↺ {}",
+                                                    t!("develop_reset_all")
+                                                ))
+                                                .color(Color32::LIGHT_RED),
                                             )
-                                            .on_hover_text("Reset all adjustments to defaults")
+                                            .on_hover_text(t!("develop_reset_all_tooltip"))
                                             .clicked()
                                         {
                                             self.edit_stack.reset_all();
                                             edits_changed = true;
                                         }
 
-                                        if ui.button("💾 Save Sidecar").clicked() {
+                                        if ui
+                                            .button(format!("💾 {}", t!("develop_save_sidecar")))
+                                            .clicked()
+                                        {
                                             self.save_sidecar();
                                         }
 
                                         if ui
-                                            .button(RichText::new("📤 Export...").strong())
+                                            .button(
+                                                RichText::new(format!(
+                                                    "📤 {}",
+                                                    t!("develop_export_btn")
+                                                ))
+                                                .strong(),
+                                            )
                                             .clicked()
                                         {
                                             self.open_export_dialog();
@@ -1306,9 +1356,12 @@ impl eframe::App for BeamApp {
                     if let Some(err) = &self.error_message {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.colored_label(Color32::RED, "⚠ Error:");
+                                ui.colored_label(
+                                    Color32::RED,
+                                    format!("⚠ {}", t!("develop_error_title")),
+                                );
                                 ui.label(RichText::new(err).color(Color32::LIGHT_RED));
-                                if ui.button("Dismiss").clicked() {
+                                if ui.button(t!("develop_dismiss")).clicked() {
                                     clear_error = true;
                                 }
                             });
@@ -1342,17 +1395,20 @@ impl eframe::App for BeamApp {
                         // Empty state
                         ui.centered_and_justified(|ui| {
                             ui.vertical_centered(|ui| {
-                        ui.add_space(available_size.y * 0.3);
-                        ui.heading(RichText::new(APP_NAME).size(32.0));
-                        ui.label("Open-source non-destructive RAW photo editor & library manager");
-                        ui.add_space(20.0);
-                        if ui
-                            .button(RichText::new("📂  Open RAW Photo (Ctrl+O)").size(16.0))
-                            .clicked()
-                        {
-                            self.open_file_dialog();
-                        }
-                    });
+                                ui.add_space(available_size.y * 0.3);
+                                ui.heading(RichText::new(APP_NAME).size(32.0));
+                                ui.label(t!("develop_empty_desc"));
+                                ui.add_space(20.0);
+                                if ui
+                                    .button(
+                                        RichText::new(format!("📂  {}", t!("develop_open_btn")))
+                                            .size(16.0),
+                                    )
+                                    .clicked()
+                                {
+                                    self.open_file_dialog();
+                                }
+                            });
                         });
                     } else {
                         // Loading state
@@ -1361,7 +1417,7 @@ impl eframe::App for BeamApp {
                                 ui.add_space(available_size.y * 0.4);
                                 ui.spinner();
                                 ui.add_space(10.0);
-                                ui.label("Decoding RAW file with pure-Rust rawler...");
+                                ui.label(t!("develop_decoding"));
                             });
                         });
                     }
@@ -1371,25 +1427,28 @@ impl eframe::App for BeamApp {
 
         // About dialog
         if self.show_about {
-            egui::Window::new(format!("About {APP_NAME}"))
+            egui::Window::new(t!("about_title"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .show(&ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.heading(RichText::new(APP_NAME).size(26.0).strong());
-                        ui.label("Version 0.1.0");
-                        ui.label("License: GNU General Public License v3.0");
+                        ui.label(t!("about_version"));
+                        ui.label(t!("about_license_text"));
                         ui.add_space(10.0);
-                        ui.label("A non-destructive RAW photo editor and library manager.");
-                        ui.label("Built with Rust, pure-Rust rawler, wgpu, and egui.");
+                        ui.label(t!("about_desc_1"));
+                        ui.label(t!("about_desc_2"));
                         ui.add_space(15.0);
-                        if ui.button("Close").clicked() {
+                        if ui.button(t!("about_close")).clicked() {
                             self.show_about = false;
                         }
                     });
                 });
         }
+
+        // Settings dialog
+        self.show_settings_dialog_window(&ctx);
 
         // Export dialogs
         self.show_export_dialog_window(&ctx);
@@ -1518,22 +1577,24 @@ impl BeamApp {
         let mut start_requested = false;
         let mut cancel_requested = false;
 
-        egui::Window::new("Export Settings")
+        egui::Window::new(t!("export_settings_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
                 ui.vertical(|ui| {
-                    ui.heading("Export Photos");
+                    ui.heading(t!("export_title"));
                     ui.separator();
 
                     let count = self.export_targets.len();
-                    ui.label(RichText::new(format!("Photos to export: {count}")).strong());
+                    ui.label(
+                        RichText::new(t!("export_photos_to_export", "count" => count)).strong(),
+                    );
                     ui.add_space(8.0);
 
                     // Destination folder
-                    ui.label("Destination Folder:");
+                    ui.label(t!("export_destination_folder"));
                     ui.horizontal(|ui| {
                         let path_str = self.export_output_dir.display().to_string();
                         let mut text = path_str.as_str();
@@ -1542,9 +1603,9 @@ impl BeamApp {
                                 .desired_width(280.0)
                                 .interactive(false),
                         );
-                        if ui.button("Browse...").clicked() {
+                        if ui.button(t!("export_browse")).clicked() {
                             if let Some(folder) = rfd::FileDialog::new()
-                                .set_title("Choose Destination Folder")
+                                .set_title(t!("export_choose_dest"))
                                 .set_directory(&self.export_output_dir)
                                 .pick_folder()
                             {
@@ -1555,7 +1616,7 @@ impl BeamApp {
                     ui.add_space(8.0);
 
                     // Format
-                    ui.label("Format:");
+                    ui.label(t!("export_format"));
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut self.export_format_is_png, false, "JPEG");
                         ui.radio_value(&mut self.export_format_is_png, true, "PNG");
@@ -1564,7 +1625,7 @@ impl BeamApp {
                     if !self.export_format_is_png {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.label("JPEG Quality:");
+                            ui.label(t!("export_jpeg_quality"));
                             ui.add(Slider::new(&mut self.export_jpeg_quality, 1..=100).text("%"));
                         });
                     }
@@ -1573,10 +1634,10 @@ impl BeamApp {
 
                     // Filename Suffix
                     ui.horizontal(|ui| {
-                        ui.label("Filename Suffix:");
+                        ui.label(t!("export_filename_suffix"));
                         ui.text_edit_singleline(&mut self.export_suffix);
                     });
-                    ui.label(RichText::new("Example: photo_beam.jpg").weak().size(11.0));
+                    ui.label(RichText::new(t!("export_suffix_example")).weak().size(11.0));
 
                     ui.add_space(16.0);
                     ui.separator();
@@ -1584,12 +1645,12 @@ impl BeamApp {
                     // Dialog buttons
                     ui.horizontal(|ui| {
                         if ui
-                            .button(RichText::new("Start Export").strong().size(14.0))
+                            .button(RichText::new(t!("export_start_btn")).strong().size(14.0))
                             .clicked()
                         {
                             start_requested = true;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t!("export_cancel")).clicked() {
                             cancel_requested = true;
                         }
                     });
@@ -1612,7 +1673,7 @@ impl BeamApp {
 
         let mut close_requested = false;
 
-        egui::Window::new("Exporting Photos")
+        egui::Window::new(t!("export_in_progress"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -1620,11 +1681,11 @@ impl BeamApp {
                 ui.set_min_width(380.0);
                 ui.vertical(|ui| {
                     if self.export_is_running {
-                        ui.heading("Export in Progress...");
+                        ui.heading(t!("export_in_progress"));
                     } else if let Some(msg) = &self.export_status_message {
                         ui.heading(msg);
                     } else {
-                        ui.heading("Export Finished");
+                        ui.heading(t!("export_finished"));
                     }
                     ui.separator();
                     ui.add_space(8.0);
@@ -1647,20 +1708,22 @@ impl BeamApp {
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("photo");
-                        ui.label(format!(
-                            "({}/{}) Processing: {fname}",
-                            prog.current_index, prog.total
+                        ui.label(t!(
+                            "export_processing",
+                            "current" => prog.current_index,
+                            "total" => prog.total,
+                            "name" => fname
                         ));
 
                         if let Some(err) = &prog.error {
                             ui.colored_label(
                                 Color32::from_rgb(255, 100, 100),
-                                format!("Error: {err}"),
+                                format!("{}: {err}", t!("develop_error_title")),
                             );
                         }
                     } else if self.export_is_running {
                         ui.add(egui::ProgressBar::new(0.0).animate(true));
-                        ui.label("Starting export pipeline...");
+                        ui.label(t!("export_starting"));
                     }
 
                     ui.add_space(16.0);
@@ -1669,14 +1732,20 @@ impl BeamApp {
                     ui.horizontal(|ui| {
                         if self.export_is_running {
                             if ui
-                                .button(RichText::new("Cancel Export").color(Color32::LIGHT_RED))
+                                .button(
+                                    RichText::new(t!("export_cancel_btn"))
+                                        .color(Color32::LIGHT_RED),
+                                )
                                 .clicked()
                             {
                                 if let Some(flag) = &self.export_cancel_flag {
                                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
                             }
-                        } else if ui.button(RichText::new("Close").strong()).clicked() {
+                        } else if ui
+                            .button(RichText::new(t!("settings_close")).strong())
+                            .clicked()
+                        {
                             close_requested = true;
                         }
                     });
@@ -1685,6 +1754,92 @@ impl BeamApp {
 
         if close_requested {
             self.show_export_progress = false;
+        }
+    }
+
+    /// Render settings modal with language switcher and catalog storage info
+    fn show_settings_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+
+        let mut close_requested = false;
+
+        egui::Window::new(t!("settings_title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.vertical(|ui| {
+                    ui.heading(t!("settings_general"));
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(t!("settings_language"));
+                        let mut current_lang = self.app_config.language;
+                        let prev_lang = current_lang;
+                        egui::ComboBox::from_id_salt("settings_lang_combo")
+                            .selected_text(current_lang.display_name())
+                            .show_ui(ui, |ui| {
+                                for lang in [Language::En, Language::Tr] {
+                                    ui.selectable_value(
+                                        &mut current_lang,
+                                        lang,
+                                        lang.display_name(),
+                                    );
+                                }
+                            });
+
+                        if current_lang != prev_lang {
+                            self.app_config.language = current_lang;
+                            beam_core::set_language(current_lang);
+                            if let Err(e) = self.app_config.save() {
+                                log::warn!("Failed to save app config: {e}");
+                            }
+                            ctx.request_repaint();
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    ui.heading(t!("settings_storage"));
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    ui.label(RichText::new(t!("settings_catalog_path")).strong());
+                    let mut db_path = default_catalog_path().display().to_string();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut db_path)
+                            .desired_width(360.0)
+                            .interactive(false),
+                    );
+
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(t!("settings_cache_path")).strong());
+                    let mut cache_path = self.thumbnail_cache_dir.display().to_string();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut cache_path)
+                            .desired_width(360.0)
+                            .interactive(false),
+                    );
+
+                    ui.add_space(16.0);
+                    ui.separator();
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new(t!("settings_close")).strong())
+                            .clicked()
+                        {
+                            close_requested = true;
+                        }
+                    });
+                });
+            });
+
+        if close_requested {
+            self.show_settings = false;
         }
     }
 }

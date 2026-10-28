@@ -118,6 +118,55 @@ cargo clippy --workspace --all-targets -- -D warnings
   - EXIF metadata extraction (orientation, ISO, shutter speed, aperture, camera make/model).
   - Library filtering by format (All, RAW, JPEG, PNG, TIFF, WebP).
 
+- [x] **Milestone 8 – Localization (English + Turkish)**:
+  - High-performance, thread-safe localization layer using Mozilla's Project Fluent (`fluent-bundle`).
+  - Full translation catalogs for English (`locales/en.ftl`) and Turkish (`locales/tr.ftl`) covering 100% of UI elements (menus, status bar, library, develop sliders, HSL, curves, export, settings, about dialog).
+  - Accurate photography terminology in Turkish (*Pozlama, Kontrast, Beyaz Dengesi, Sıcaklık, Renk Tonu, Doygunluk, Parlaklık, Işıklar, Gölgeler, Ton Eğrisi, Histogram, Dışa Aktar, Kütüphane, Geliştir, Ayarlar*).
+  - Automatic system language detection on startup with user preference stored in `~/.config/beam/config.ron` (Linux) or `%APPDATA%\beam\config.ron` (Windows).
+  - Settings dialog (`Ctrl+,`) with instant live language switching and reactive repaint.
+  - Automated compile-time key parity unit testing.
+
+---
+
+## Adding a New Language
+
+beaM. uses Mozilla's **Project Fluent** format (`.ftl`) for flexible, natural localization.
+
+To contribute a new language (e.g. German, French, Spanish):
+
+1. **Create the Catalog File**:
+   Copy `locales/en.ftl` to `locales/<lang_code>.ftl` (e.g., `locales/de.ftl`):
+   ```bash
+   cp locales/en.ftl locales/de.ftl
+   ```
+   Translate each message while keeping the identifiers and arguments (such as `{$count}` or `{$band}`) unchanged.
+
+2. **Register the Language in `beam-core`**:
+   Open `crates/beam-core/src/i18n.rs`:
+   - Add the FTL file inclusion:
+     ```rust
+     const DE_FTL: &str = include_str!("../../../locales/de.ftl");
+     ```
+   - Add the variant to the `Language` enum:
+     ```rust
+     pub enum Language {
+         En,
+         Tr,
+         De, // New language
+     }
+     ```
+   - Implement `code()` (e.g. `"de"`), `display_name()` (e.g. `"Deutsch"`), and update `from_locale_str()`.
+   - Add the bundle instantiation in `I18n::new()`.
+
+3. **Verify Catalog Parity**:
+   Run the parity test to ensure all translation keys match:
+   ```bash
+   cargo test -p beam-core test_translations_parity
+   ```
+
+4. **Register in the Settings UI**:
+   In `crates/beam-app/src/app.rs`, add the new `Language` variant to the language selection loop in `show_settings_dialog_window()`.
+
 ---
 
 ## Design Decisions
@@ -131,4 +180,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 5. **WGSL Shader Sampling & Texel Loading**: For HDR 32-bit floating point textures (`Rgba32Float`), standard hardware samplers often require vendor-specific filterable extensions. We utilize unfilterable texture bindings with direct texel loading (`textureLoad`) in the display pass, avoiding any GPU driver compatibility issues across Intel, Nvidia, AMD, and software rasterizers.
 6. **First-Class Standard Image Formats & Color Management**: Standard raster formats (JPEG, PNG, TIFF 8/16-bit, WebP) are fully supported first-class formats alongside Camera RAW. Unlike RAW files, they are display-referred: embedded ICC profiles are parsed via `moxcms` and transformed into linear Rec.2020 (falling back to sRGB transfer when absent). 16-bit TIFF/PNG channels are preserved directly into `f32` normalized values without intermediate 8-bit quantization. EXIF tags and image orientation (1..=8) are parsed natively via `kamadak-exif` and applied losslessly.
 7. **Sidecar Format**: We use human-readable [RON](https://github.com/ron-rs/ron) format with an explicit `format_version: u32` header, allowing human inspectability, git diffability, and version migration.
+8. **Internationalization & Typography**: We chose Mozilla's **Project Fluent** (`fluent-bundle`) over gettext. Fluent natively supports grammatical gender, plural rules, and natural bidirectional strings. To avoid UI spacing anomalies with desktop GUI toolkits, bundles are initialized with Unicode isolating marks disabled (`bundle.set_use_isolating(false)`). All Turkish Latin Extended-A characters (`ç`, `Ç`, `ğ`, `Ğ`, `ı`, `I`, `i`, `İ`, `ö`, `Ö`, `ş`, `Ş`, `ü`, `Ü`) are natively supported by egui's default typography without requiring auxiliary font packs.
+
 

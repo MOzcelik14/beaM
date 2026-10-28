@@ -201,6 +201,17 @@ impl ColorLabel {
         }
     }
 
+    pub fn translation_key(&self) -> &'static str {
+        match self {
+            Self::None => "library_color_none",
+            Self::Red => "library_color_red",
+            Self::Yellow => "library_color_yellow",
+            Self::Green => "library_color_green",
+            Self::Blue => "library_color_blue",
+            Self::Purple => "library_color_purple",
+        }
+    }
+
     pub fn from_str_name(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "red" => Self::Red,
