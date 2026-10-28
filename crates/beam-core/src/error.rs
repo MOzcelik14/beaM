@@ -8,6 +8,9 @@ pub enum BeamError {
     #[error("RAW decode error: {0}")]
     RawDecode(String),
 
+    #[error("Image processing error: {0}")]
+    ImageProcessing(String),
+
     #[error("Unsupported image format: {0}")]
     UnsupportedFormat(String),
 

@@ -257,6 +257,58 @@ fn decode_raster_fallback(path: &Path) -> Result<DecodedImage> {
     })
 }
 
+/// Generate an 8-bit sRGB thumbnail from an image file (RAW or raster) with max dimension.
+pub fn generate_thumbnail(path: &Path, max_dim: u32) -> Result<image::RgbaImage> {
+    let decoded = decode_image(path)?;
+    let (thumb_w, thumb_h, thumb_floats) = generate_proxy(
+        decoded.proxy_width,
+        decoded.proxy_height,
+        &decoded.proxy_data,
+        max_dim,
+    );
+
+    let mut rgba_bytes = Vec::with_capacity((thumb_w * thumb_h * 4) as usize);
+    for chunk in thumb_floats.as_chunks::<4>().0 {
+        let [sr, sg, sb] =
+            beam_core::color::rec2020_linear_to_srgb_display([chunk[0], chunk[1], chunk[2]]);
+        rgba_bytes.push((sr.clamp(0.0, 1.0) * 255.0).round() as u8);
+        rgba_bytes.push((sg.clamp(0.0, 1.0) * 255.0).round() as u8);
+        rgba_bytes.push((sb.clamp(0.0, 1.0) * 255.0).round() as u8);
+        rgba_bytes.push((chunk[3].clamp(0.0, 1.0) * 255.0).round() as u8);
+    }
+
+    image::RgbaImage::from_raw(thumb_w, thumb_h, rgba_bytes).ok_or_else(|| {
+        BeamError::ImageProcessing("Failed to construct thumbnail image buffer".to_string())
+    })
+}
+
+/// Compute persistent thumbnail path in cache directory using hash of canonical path.
+pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    image_path.to_string_lossy().hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let filename = image_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("thumb");
+    cache_dir.join(format!("{hash:016x}_{filename}.jpg"))
+}
+
+/// Save an RGBA image as a thumbnail on disk.
+pub fn save_thumbnail(image: &image::RgbaImage, target_path: &Path) -> Result<()> {
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    image
+        .save(target_path)
+        .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +350,26 @@ mod tests {
     fn test_nonexistent_file_handling() {
         let result = decode_image(Path::new("/nonexistent/file/test.ARW"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_thumbnail_generation() {
+        let temp_dir = std::env::temp_dir();
+        let test_path = temp_dir.join("beam_test_thumb_source.png");
+        let thumb_path = temp_dir.join("beam_test_thumb_output.png");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(64, 48, Rgba([100, 150, 200, 255]));
+        img.save(&test_path).expect("failed to save test image");
+
+        let thumb = generate_thumbnail(&test_path, 32).expect("failed to generate thumbnail");
+        assert_eq!(thumb.width(), 32);
+        assert_eq!(thumb.height(), 24);
+
+        save_thumbnail(&thumb, &thumb_path).expect("failed to save thumbnail");
+        assert!(thumb_path.exists());
+
+        let _ = std::fs::remove_file(test_path);
+        let _ = std::fs::remove_file(thumb_path);
     }
 }

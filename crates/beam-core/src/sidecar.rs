@@ -177,10 +177,50 @@ impl EditStack {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorLabel {
+    #[default]
+    None,
+    Red,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+}
+
+impl ColorLabel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Red => "red",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+        }
+    }
+
+    pub fn from_str_name(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "red" => Self::Red,
+            "yellow" => Self::Yellow,
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            "purple" => Self::Purple,
+            _ => Self::None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sidecar {
     pub format_version: u32,
     pub source_filename: String,
+    #[serde(default)]
+    pub rating: u8,
+    #[serde(default)]
+    pub color_label: ColorLabel,
     pub edit_stack: EditStack,
 }
 
@@ -189,8 +229,18 @@ impl Sidecar {
         Self {
             format_version: CURRENT_FORMAT_VERSION,
             source_filename: source_filename.into(),
+            rating: 0,
+            color_label: ColorLabel::None,
             edit_stack: EditStack::default(),
         }
+    }
+
+    pub fn set_rating(&mut self, rating: u8) {
+        self.rating = rating.min(5);
+    }
+
+    pub fn set_color_label(&mut self, label: ColorLabel) {
+        self.color_label = label;
     }
 
     /// Compute sidecar path next to the target image (e.g. `image.ARW.beam.ron`).
@@ -306,5 +356,36 @@ mod tests {
 
         let err = Sidecar::from_ron_str(future_ron);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_sidecar_rating_and_color_label() {
+        let mut sidecar = Sidecar::new("photo.jpg");
+        sidecar.set_rating(4);
+        sidecar.set_color_label(ColorLabel::Yellow);
+
+        let ron_str = sidecar.to_ron_string().expect("Serialization failed");
+        assert!(ron_str.contains("rating: 4"));
+        assert!(ron_str.contains("color_label: yellow"));
+
+        let loaded = Sidecar::from_ron_str(&ron_str).expect("Deserialization failed");
+        assert_eq!(loaded.rating, 4);
+        assert_eq!(loaded.color_label, ColorLabel::Yellow);
+    }
+
+    #[test]
+    fn test_sidecar_backwards_compatibility_without_rating() {
+        let sidecar = Sidecar::new("legacy.ARW");
+        let ron_str = sidecar.to_ron_string().unwrap();
+        // Strip out rating and color_label lines to simulate older sidecar files
+        let legacy_ron = ron_str
+            .lines()
+            .filter(|line| !line.contains("rating:") && !line.contains("color_label:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let loaded = Sidecar::from_ron_str(&legacy_ron).expect("Should parse legacy sidecar");
+        assert_eq!(loaded.rating, 0);
+        assert_eq!(loaded.color_label, ColorLabel::None);
     }
 }

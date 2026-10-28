@@ -1,21 +1,38 @@
+use crate::views::library::{show_library_view, LibraryAction, LibraryViewState};
 use crate::widgets::curve::show_tone_curve;
 use crate::widgets::histogram::{show_histogram, HistogramData, HistogramMode};
 use beam_core::sidecar::{EditStack, Sidecar};
 use beam_core::APP_NAME;
 use beam_gpu::{EditPipeline, GpuImage};
+use beam_library::{default_catalog_path, default_thumbnail_cache_dir, LibraryDb};
 use beam_media::{decode_image, DecodedImage, ImageMetadata};
 use eframe::egui::{self, Color32, MenuBar, Panel, RichText, Slider, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppView {
+    Library,
+    Develop,
+}
+
 enum BackgroundMsg {
     Started(PathBuf),
     Success(Box<DecodedImage>),
     Error(String),
+    ImportComplete { count: usize },
 }
 
 pub struct BeamApp {
+    // Current application view mode
+    pub current_view: AppView,
+
+    // Library catalog database and view state
+    pub library_db: LibraryDb,
+    pub library_state: LibraryViewState,
+    pub thumbnail_cache_dir: PathBuf,
+
     // Current decoded image and metadata
     current_image: Option<Box<DecodedImage>>,
     current_path: Option<PathBuf>,
@@ -57,7 +74,25 @@ impl BeamApp {
             .as_ref()
             .map(|rs| EditPipeline::new(&rs.device, wgpu::TextureFormat::Rgba8Unorm));
 
+        let catalog_path = default_catalog_path();
+        let library_db = LibraryDb::open(&catalog_path)
+            .or_else(|e| {
+                log::warn!(
+                    "Could not open persistent catalog at {}: {e}. Using in-memory database.",
+                    catalog_path.display()
+                );
+                LibraryDb::open_in_memory()
+            })
+            .expect("Failed to initialize catalog database");
+
+        let thumbnail_cache_dir = default_thumbnail_cache_dir();
+        let _ = std::fs::create_dir_all(&thumbnail_cache_dir);
+
         Self {
+            current_view: AppView::Library,
+            library_db,
+            library_state: LibraryViewState::default(),
+            thumbnail_cache_dir,
             current_image: None,
             current_path: None,
             current_metadata: None,
@@ -111,8 +146,43 @@ impl BeamApp {
         });
     }
 
+    /// Open folder dialog and recursively import all photos into the library catalog
+    pub fn import_folder_dialog(&mut self) {
+        let tx = self.tx.clone();
+        let thumb_dir = self.thumbnail_cache_dir.clone();
+        let catalog_path = default_catalog_path();
+
+        thread::spawn(move || {
+            let folder = rfd::FileDialog::new()
+                .set_title("Select Photo Folder to Import")
+                .pick_folder();
+
+            if let Some(dir) = folder {
+                let db = match LibraryDb::open(&catalog_path) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMsg::Error(format!(
+                            "Failed to open database for import: {e}"
+                        )));
+                        return;
+                    }
+                };
+
+                match db.scan_and_import_folder(&dir, &thumb_dir, true) {
+                    Ok(count) => {
+                        let _ = tx.send(BackgroundMsg::ImportComplete { count });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMsg::Error(format!("Folder import failed: {e}")));
+                    }
+                }
+            }
+        });
+    }
+
     /// Load a specific file path asynchronously
     pub fn load_file_path(&mut self, path: PathBuf) {
+        self.current_view = AppView::Develop;
         let tx = self.tx.clone();
         let _ = tx.send(BackgroundMsg::Started(path.clone()));
         thread::spawn(move || match decode_image(&path) {
@@ -125,7 +195,7 @@ impl BeamApp {
         });
     }
 
-    /// Process messages from the background decoding thread
+    /// Process messages from the background decoding and import threads
     fn check_background_messages(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -169,7 +239,15 @@ impl BeamApp {
                 BackgroundMsg::Error(err_msg) => {
                     self.is_loading = false;
                     self.loading_filename = None;
+                    self.library_state.is_importing = false;
                     self.error_message = Some(err_msg);
+                    ctx.request_repaint();
+                }
+                BackgroundMsg::ImportComplete { count } => {
+                    self.library_state.is_importing = false;
+                    self.library_state.import_status = None;
+                    self.library_state.needs_refresh = true;
+                    log::info!("Imported {count} photos into catalog");
                     ctx.request_repaint();
                 }
             }
@@ -252,6 +330,14 @@ impl BeamApp {
         self.gpu_display_texture = Some(display_texture);
         self.gpu_proxy_image = Some(gpu_proxy);
         self.current_image = Some(Box::new(decoded));
+
+        // Automatically register photo in library database
+        if let Some(path) = &self.current_path {
+            if let Ok(record) = self.library_db.import_file(path, &self.thumbnail_cache_dir) {
+                self.library_state.selected_photo_id = Some(record.id);
+            }
+            self.library_state.needs_refresh = true;
+        }
     }
 
     /// Re-render the existing proxy with updated slider values (takes <1ms on GPU)
@@ -281,6 +367,14 @@ impl BeamApp {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             let mut sidecar = Sidecar::new(filename);
             sidecar.edit_stack = self.edit_stack.clone();
+
+            if let Some(photo_id) = self.library_state.selected_photo_id {
+                if let Ok(Some(photo)) = self.library_db.get_photo(photo_id) {
+                    sidecar.set_rating(photo.rating);
+                    sidecar.set_color_label(photo.color_label);
+                }
+            }
+
             if let Err(e) = sidecar.save_to_file(sidecar_path) {
                 log::error!("Failed to save sidecar to {}: {e}", sidecar_path.display());
                 self.sidecar_status = format!("Save error: {e}");
@@ -302,7 +396,22 @@ impl eframe::App for BeamApp {
                 ui.label(RichText::new(APP_NAME).strong().size(15.0));
                 ui.separator();
 
+                // Navigation View Tabs
+                let is_lib = self.current_view == AppView::Library;
+                if ui.selectable_label(is_lib, "📷 Library (G)").clicked() {
+                    self.current_view = AppView::Library;
+                }
+                let is_dev = self.current_view == AppView::Develop;
+                if ui.selectable_label(is_dev, "🎨 Develop (D)").clicked() {
+                    self.current_view = AppView::Develop;
+                }
+
+                ui.separator();
+
                 ui.menu_button("File", |ui| {
+                    if ui.button("Import Folder... (Ctrl+Shift+O)").clicked() {
+                        self.import_folder_dialog();
+                    }
                     if ui.button("Open RAW Photo... (Ctrl+O)").clicked() {
                         self.open_file_dialog();
                     }
@@ -313,6 +422,17 @@ impl eframe::App for BeamApp {
                 });
 
                 ui.menu_button("View", |ui| {
+                    ui.selectable_value(
+                        &mut self.current_view,
+                        AppView::Library,
+                        "Library View (G)",
+                    );
+                    ui.selectable_value(
+                        &mut self.current_view,
+                        AppView::Develop,
+                        "Develop View (D)",
+                    );
+                    ui.separator();
                     ui.checkbox(&mut self.show_develop_panel, "Develop Panel");
                 });
 
@@ -324,9 +444,18 @@ impl eframe::App for BeamApp {
             });
         });
 
-        // Keyboard shortcuts
+        // Global Keyboard shortcuts
+        if ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.command && !i.modifiers.ctrl) {
+            self.current_view = AppView::Library;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::D) && !i.modifiers.command && !i.modifiers.ctrl) {
+            self.current_view = AppView::Develop;
+        }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) {
             self.open_file_dialog();
+        }
+        if ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::O)) {
+            self.import_folder_dialog();
         }
 
         // Bottom status bar
@@ -372,496 +501,562 @@ impl eframe::App for BeamApp {
             });
         });
 
-        // Right-side Develop Adjustment Panel
-        let mut edits_changed = false;
-        if self.show_develop_panel && self.current_image.is_some() {
-            Panel::right("develop_panel")
-                .resizable(true)
-                .default_size(320.0)
-                .min_size(280.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false; 2])
+        match self.current_view {
+            AppView::Library => {
+                let action = show_library_view(ui, &mut self.library_state, &self.library_db);
+                match action {
+                    LibraryAction::OpenPhoto(path) => {
+                        self.load_file_path(path);
+                    }
+                    LibraryAction::ImportFolder => {
+                        self.import_folder_dialog();
+                    }
+                    LibraryAction::None => {}
+                }
+            }
+            AppView::Develop => {
+                // Right-side Develop Adjustment Panel
+                let mut edits_changed = false;
+                if self.show_develop_panel && self.current_image.is_some() {
+                    Panel::right("develop_panel")
+                        .resizable(true)
+                        .default_size(320.0)
+                        .min_size(280.0)
                         .show(ui, |ui| {
-                            ui.heading("Develop");
-                            ui.separator();
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    ui.heading("Develop");
+                                    ui.separator();
 
-                            // 1. Histogram Widget
-                            if let Some(hist_data) = &self.histogram_data {
-                                ui.group(|ui| {
-                                    show_histogram(ui, hist_data, &mut self.histogram_mode);
-                                });
-                                ui.add_space(4.0);
-                            }
+                                    // 1. Histogram Widget
+                                    if let Some(hist_data) = &self.histogram_data {
+                                        ui.group(|ui| {
+                                            show_histogram(ui, hist_data, &mut self.histogram_mode);
+                                        });
+                                        ui.add_space(4.0);
+                                    }
 
-                            // 2. White Balance Section
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("White Balance");
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text("Reset White Balance")
-                                                .clicked()
-                                            {
-                                                self.edit_stack.reset_white_balance();
-                                                edits_changed = true;
-                                            }
-                                            ui.checkbox(
-                                                &mut self.edit_stack.white_balance.enabled,
-                                                "",
+                                    // 2. White Balance Section
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong("White Balance");
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text("Reset White Balance")
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_white_balance();
+                                                        edits_changed = true;
+                                                    }
+                                                    ui.checkbox(
+                                                        &mut self.edit_stack.white_balance.enabled,
+                                                        "",
+                                                    );
+                                                },
                                             );
-                                        },
-                                    );
-                                });
+                                        });
 
-                                ui.add_space(4.0);
+                                        ui.add_space(4.0);
 
-                                // Temperature slider
-                                ui.horizontal(|ui| {
-                                    ui.label("Temp");
-                                    let resp = ui.add(
-                                        Slider::new(
-                                            &mut self.edit_stack.white_balance.temperature,
-                                            -100.0..=100.0,
-                                        )
-                                        .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui
-                                        .button("↺")
-                                        .on_hover_text("Reset Temperature (0)")
-                                        .clicked()
-                                    {
-                                        self.edit_stack.white_balance.temperature = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-
-                                // Tint slider
-                                ui.horizontal(|ui| {
-                                    ui.label("Tint  ");
-                                    let resp = ui.add(
-                                        Slider::new(
-                                            &mut self.edit_stack.white_balance.tint,
-                                            -100.0..=100.0,
-                                        )
-                                        .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui.button("↺").on_hover_text("Reset Tint (0)").clicked() {
-                                        self.edit_stack.white_balance.tint = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-                            });
-
-                            ui.add_space(6.0);
-
-                            // 3. Exposure Section
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("Exposure");
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text("Reset Exposure")
-                                                .clicked()
-                                            {
-                                                self.edit_stack.reset_exposure();
-                                                edits_changed = true;
-                                            }
-                                            ui.checkbox(&mut self.edit_stack.exposure.enabled, "");
-                                        },
-                                    );
-                                });
-
-                                ui.add_space(4.0);
-
-                                // Exposure EV slider
-                                ui.horizontal(|ui| {
-                                    ui.label("EV    ");
-                                    let resp = ui.add(
-                                        Slider::new(&mut self.edit_stack.exposure.ev, -5.00..=5.00)
-                                            .step_by(0.05)
-                                            .custom_formatter(|v, _| format!("{:+.2} EV", v)),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui.button("↺").on_hover_text("Reset Exposure (0)").clicked()
-                                    {
-                                        self.edit_stack.exposure.ev = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-                            });
-
-                            ui.add_space(6.0);
-
-                            // 4. Highlights & Shadows Section
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("Highlights & Shadows");
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text("Reset Highlights & Shadows")
-                                                .clicked()
-                                            {
-                                                self.edit_stack.reset_highlights_shadows();
-                                                edits_changed = true;
-                                            }
-                                            ui.checkbox(
-                                                &mut self.edit_stack.highlights_shadows.enabled,
-                                                "",
+                                        // Temperature slider
+                                        ui.horizontal(|ui| {
+                                            ui.label("Temp");
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self.edit_stack.white_balance.temperature,
+                                                    -100.0..=100.0,
+                                                )
+                                                .show_value(true),
                                             );
-                                        },
-                                    );
-                                });
-
-                                ui.add_space(4.0);
-
-                                // Highlights slider
-                                ui.horizontal(|ui| {
-                                    ui.label("High  ");
-                                    let resp = ui.add(
-                                        Slider::new(
-                                            &mut self.edit_stack.highlights_shadows.highlights,
-                                            -100.0..=100.0,
-                                        )
-                                        .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui
-                                        .button("↺")
-                                        .on_hover_text("Reset Highlights (0)")
-                                        .clicked()
-                                    {
-                                        self.edit_stack.highlights_shadows.highlights = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-
-                                // Shadows slider
-                                ui.horizontal(|ui| {
-                                    ui.label("Shad  ");
-                                    let resp = ui.add(
-                                        Slider::new(
-                                            &mut self.edit_stack.highlights_shadows.shadows,
-                                            -100.0..=100.0,
-                                        )
-                                        .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui.button("↺").on_hover_text("Reset Shadows (0)").clicked()
-                                    {
-                                        self.edit_stack.highlights_shadows.shadows = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-                            });
-
-                            ui.add_space(6.0);
-
-                            // 5. Contrast Section
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("Contrast");
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text("Reset Contrast")
-                                                .clicked()
-                                            {
-                                                self.edit_stack.reset_contrast();
+                                            if resp.changed() {
                                                 edits_changed = true;
                                             }
-                                            ui.checkbox(&mut self.edit_stack.contrast.enabled, "");
-                                        },
-                                    );
-                                });
-
-                                ui.add_space(4.0);
-
-                                // Contrast factor slider
-                                ui.horizontal(|ui| {
-                                    ui.label("Level ");
-                                    let resp = ui.add(
-                                        Slider::new(
-                                            &mut self.edit_stack.contrast.contrast,
-                                            -100.0..=100.0,
-                                        )
-                                        .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui.button("↺").on_hover_text("Reset Contrast (0)").clicked()
-                                    {
-                                        self.edit_stack.contrast.contrast = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-                            });
-
-                            ui.add_space(6.0);
-
-                            // 6. Tone Curve Section
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("Tone Curve");
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
                                             if ui
                                                 .button("↺")
-                                                .on_hover_text("Reset Tone Curve")
+                                                .on_hover_text("Reset Temperature (0)")
                                                 .clicked()
                                             {
-                                                self.edit_stack.reset_tone_curve();
+                                                self.edit_stack.white_balance.temperature = 0.0;
                                                 edits_changed = true;
                                             }
-                                            ui.checkbox(
-                                                &mut self.edit_stack.tone_curve.enabled,
-                                                "",
+                                        });
+
+                                        // Tint slider
+                                        ui.horizontal(|ui| {
+                                            ui.label("Tint  ");
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self.edit_stack.white_balance.tint,
+                                                    -100.0..=100.0,
+                                                )
+                                                .show_value(true),
                                             );
-                                        },
-                                    );
-                                });
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Tint (0)")
+                                                .clicked()
+                                            {
+                                                self.edit_stack.white_balance.tint = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
+                                    });
 
-                                ui.add_space(4.0);
+                                    ui.add_space(6.0);
 
-                                if show_tone_curve(ui, &mut self.edit_stack.tone_curve.points) {
-                                    edits_changed = true;
-                                }
+                                    // 3. Exposure Section
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong("Exposure");
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text("Reset Exposure")
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_exposure();
+                                                        edits_changed = true;
+                                                    }
+                                                    ui.checkbox(
+                                                        &mut self.edit_stack.exposure.enabled,
+                                                        "",
+                                                    );
+                                                },
+                                            );
+                                        });
 
-                                ui.add_space(2.0);
-                                ui.label(
+                                        ui.add_space(4.0);
+
+                                        // Exposure EV slider
+                                        ui.horizontal(|ui| {
+                                            ui.label("EV    ");
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self.edit_stack.exposure.ev,
+                                                    -5.00..=5.00,
+                                                )
+                                                .step_by(0.05)
+                                                .custom_formatter(|v, _| format!("{:+.2} EV", v)),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Exposure (0)")
+                                                .clicked()
+                                            {
+                                                self.edit_stack.exposure.ev = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 4. Highlights & Shadows Section
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong("Highlights & Shadows");
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text("Reset Highlights & Shadows")
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_highlights_shadows();
+                                                        edits_changed = true;
+                                                    }
+                                                    ui.checkbox(
+                                                        &mut self
+                                                            .edit_stack
+                                                            .highlights_shadows
+                                                            .enabled,
+                                                        "",
+                                                    );
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(4.0);
+
+                                        // Highlights slider
+                                        ui.horizontal(|ui| {
+                                            ui.label("High  ");
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self
+                                                        .edit_stack
+                                                        .highlights_shadows
+                                                        .highlights,
+                                                    -100.0..=100.0,
+                                                )
+                                                .show_value(true),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Highlights (0)")
+                                                .clicked()
+                                            {
+                                                self.edit_stack.highlights_shadows.highlights = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
+
+                                        // Shadows slider
+                                        ui.horizontal(|ui| {
+                                            ui.label("Shad  ");
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self.edit_stack.highlights_shadows.shadows,
+                                                    -100.0..=100.0,
+                                                )
+                                                .show_value(true),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Shadows (0)")
+                                                .clicked()
+                                            {
+                                                self.edit_stack.highlights_shadows.shadows = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 5. Contrast Section
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong("Contrast");
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text("Reset Contrast")
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_contrast();
+                                                        edits_changed = true;
+                                                    }
+                                                    ui.checkbox(
+                                                        &mut self.edit_stack.contrast.enabled,
+                                                        "",
+                                                    );
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(4.0);
+
+                                        // Contrast factor slider
+                                        ui.horizontal(|ui| {
+                                            ui.label("Level ");
+                                            let resp = ui.add(
+                                                Slider::new(
+                                                    &mut self.edit_stack.contrast.contrast,
+                                                    -100.0..=100.0,
+                                                )
+                                                .show_value(true),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Contrast (0)")
+                                                .clicked()
+                                            {
+                                                self.edit_stack.contrast.contrast = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 6. Tone Curve Section
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong("Tone Curve");
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text("Reset Tone Curve")
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_tone_curve();
+                                                        edits_changed = true;
+                                                    }
+                                                    ui.checkbox(
+                                                        &mut self.edit_stack.tone_curve.enabled,
+                                                        "",
+                                                    );
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(4.0);
+
+                                        if show_tone_curve(
+                                            ui,
+                                            &mut self.edit_stack.tone_curve.points,
+                                        ) {
+                                            edits_changed = true;
+                                        }
+
+                                        ui.add_space(2.0);
+                                        ui.label(
                                     RichText::new(
                                         "Click to add point • Drag to move • Right-click to delete",
                                     )
                                     .weak()
                                     .size(10.5),
                                 );
-                            });
+                                    });
 
-                            ui.add_space(6.0);
+                                    ui.add_space(6.0);
 
-                            // 7. HSL / Color Section (8 Color Bands)
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong("HSL / Color");
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text("Reset All HSL Bands")
-                                                .clicked()
+                                    // 7. HSL / Color Section (8 Color Bands)
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong("HSL / Color");
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text("Reset All HSL Bands")
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_hsl();
+                                                        edits_changed = true;
+                                                    }
+                                                    ui.checkbox(
+                                                        &mut self.edit_stack.hsl.enabled,
+                                                        "",
+                                                    );
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(4.0);
+
+                                        const BAND_NAMES: [&str; 8] = [
+                                            "Red", "Orange", "Yellow", "Green", "Aqua", "Blue",
+                                            "Purple", "Magenta",
+                                        ];
+                                        const BAND_COLORS: [Color32; 8] = [
+                                            Color32::from_rgb(235, 60, 60),
+                                            Color32::from_rgb(245, 140, 40),
+                                            Color32::from_rgb(240, 215, 50),
+                                            Color32::from_rgb(60, 200, 80),
+                                            Color32::from_rgb(50, 210, 215),
+                                            Color32::from_rgb(65, 130, 245),
+                                            Color32::from_rgb(160, 80, 240),
+                                            Color32::from_rgb(230, 80, 180),
+                                        ];
+
+                                        // 8 Color Band selector
+                                        ui.horizontal_wrapped(|ui| {
+                                            for (i, (&name, &col)) in BAND_NAMES
+                                                .iter()
+                                                .zip(BAND_COLORS.iter())
+                                                .enumerate()
                                             {
-                                                self.edit_stack.reset_hsl();
+                                                let is_selected = self.hsl_selected_band == i;
+                                                let text =
+                                                    RichText::new(format!("● {name}")).color(col);
+                                                if ui.selectable_label(is_selected, text).clicked()
+                                                {
+                                                    self.hsl_selected_band = i;
+                                                }
+                                            }
+                                        });
+
+                                        ui.add_space(4.0);
+
+                                        let sel = self.hsl_selected_band;
+                                        let band_name = BAND_NAMES[sel];
+                                        let band = &mut self.edit_stack.hsl.bands[sel];
+
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(format!("{band_name} Band:"))
+                                                    .strong(),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text(format!(
+                                                            "Reset {band_name} band"
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        *band =
+                                                            beam_core::sidecar::HslBand::default();
+                                                        edits_changed = true;
+                                                    }
+                                                },
+                                            );
+                                        });
+
+                                        // Hue
+                                        ui.horizontal(|ui| {
+                                            ui.label("Hue ");
+                                            let resp = ui.add(
+                                                Slider::new(&mut band.hue, -100.0..=100.0)
+                                                    .show_value(true),
+                                            );
+                                            if resp.changed() {
                                                 edits_changed = true;
                                             }
-                                            ui.checkbox(&mut self.edit_stack.hsl.enabled, "");
-                                        },
-                                    );
-                                });
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Hue (0)")
+                                                .clicked()
+                                            {
+                                                band.hue = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
 
-                                ui.add_space(4.0);
+                                        // Saturation
+                                        ui.horizontal(|ui| {
+                                            ui.label("Sat ");
+                                            let resp = ui.add(
+                                                Slider::new(&mut band.saturation, -100.0..=100.0)
+                                                    .show_value(true),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Saturation (0)")
+                                                .clicked()
+                                            {
+                                                band.saturation = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
 
-                                const BAND_NAMES: [&str; 8] = [
-                                    "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple",
-                                    "Magenta",
-                                ];
-                                const BAND_COLORS: [Color32; 8] = [
-                                    Color32::from_rgb(235, 60, 60),
-                                    Color32::from_rgb(245, 140, 40),
-                                    Color32::from_rgb(240, 215, 50),
-                                    Color32::from_rgb(60, 200, 80),
-                                    Color32::from_rgb(50, 210, 215),
-                                    Color32::from_rgb(65, 130, 245),
-                                    Color32::from_rgb(160, 80, 240),
-                                    Color32::from_rgb(230, 80, 180),
-                                ];
+                                        // Luminance
+                                        ui.horizontal(|ui| {
+                                            ui.label("Lum ");
+                                            let resp = ui.add(
+                                                Slider::new(&mut band.luminance, -100.0..=100.0)
+                                                    .show_value(true),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                            }
+                                            if ui
+                                                .button("↺")
+                                                .on_hover_text("Reset Luminance (0)")
+                                                .clicked()
+                                            {
+                                                band.luminance = 0.0;
+                                                edits_changed = true;
+                                            }
+                                        });
+                                    });
 
-                                // 8 Color Band selector
-                                ui.horizontal_wrapped(|ui| {
-                                    for (i, (&name, &col)) in
-                                        BAND_NAMES.iter().zip(BAND_COLORS.iter()).enumerate()
-                                    {
-                                        let is_selected = self.hsl_selected_band == i;
-                                        let text = RichText::new(format!("● {name}")).color(col);
-                                        if ui.selectable_label(is_selected, text).clicked() {
-                                            self.hsl_selected_band = i;
+                                    ui.add_space(16.0);
+
+                                    // 8. Action Buttons
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button(
+                                                RichText::new("↺ Reset All")
+                                                    .color(Color32::LIGHT_RED),
+                                            )
+                                            .on_hover_text("Reset all adjustments to defaults")
+                                            .clicked()
+                                        {
+                                            self.edit_stack.reset_all();
+                                            edits_changed = true;
                                         }
-                                    }
+
+                                        if ui.button("💾 Save Sidecar").clicked() {
+                                            self.save_sidecar();
+                                        }
+                                    });
                                 });
+                        });
+                }
 
-                                ui.add_space(4.0);
+                // Apply edits if sliders or reset buttons were clicked
+                if edits_changed {
+                    self.re_render_edits(frame);
+                    ctx.request_repaint();
+                }
 
-                                let sel = self.hsl_selected_band;
-                                let band_name = BAND_NAMES[sel];
-                                let band = &mut self.edit_stack.hsl.bands[sel];
-
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("{band_name} Band:")).strong());
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(format!("Reset {band_name} band"))
-                                                .clicked()
-                                            {
-                                                *band = beam_core::sidecar::HslBand::default();
-                                                edits_changed = true;
-                                            }
-                                        },
-                                    );
-                                });
-
-                                // Hue
-                                ui.horizontal(|ui| {
-                                    ui.label("Hue ");
-                                    let resp = ui.add(
-                                        Slider::new(&mut band.hue, -100.0..=100.0).show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui.button("↺").on_hover_text("Reset Hue (0)").clicked() {
-                                        band.hue = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-
-                                // Saturation
-                                ui.horizontal(|ui| {
-                                    ui.label("Sat ");
-                                    let resp = ui.add(
-                                        Slider::new(&mut band.saturation, -100.0..=100.0)
-                                            .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui
-                                        .button("↺")
-                                        .on_hover_text("Reset Saturation (0)")
-                                        .clicked()
-                                    {
-                                        band.saturation = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-
-                                // Luminance
-                                ui.horizontal(|ui| {
-                                    ui.label("Lum ");
-                                    let resp = ui.add(
-                                        Slider::new(&mut band.luminance, -100.0..=100.0)
-                                            .show_value(true),
-                                    );
-                                    if resp.changed() {
-                                        edits_changed = true;
-                                    }
-                                    if ui
-                                        .button("↺")
-                                        .on_hover_text("Reset Luminance (0)")
-                                        .clicked()
-                                    {
-                                        band.luminance = 0.0;
-                                        edits_changed = true;
-                                    }
-                                });
-                            });
-
-                            ui.add_space(16.0);
-
-                            // 8. Action Buttons
+                // Central viewport panel
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let mut clear_error = false;
+                    if let Some(err) = &self.error_message {
+                        ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                if ui
-                                    .button(RichText::new("↺ Reset All").color(Color32::LIGHT_RED))
-                                    .on_hover_text("Reset all adjustments to defaults")
-                                    .clicked()
-                                {
-                                    self.edit_stack.reset_all();
-                                    edits_changed = true;
-                                }
-
-                                if ui.button("💾 Save Sidecar").clicked() {
-                                    self.save_sidecar();
+                                ui.colored_label(Color32::RED, "⚠ Error:");
+                                ui.label(RichText::new(err).color(Color32::LIGHT_RED));
+                                if ui.button("Dismiss").clicked() {
+                                    clear_error = true;
                                 }
                             });
                         });
-                });
-        }
+                        ui.add_space(8.0);
+                    }
+                    if clear_error {
+                        self.error_message = None;
+                    }
 
-        // Apply edits if sliders or reset buttons were clicked
-        if edits_changed {
-            self.re_render_edits(frame);
-            ctx.request_repaint();
-        }
+                    let available_size = ui.available_size();
 
-        // Central viewport panel
-        egui::CentralPanel::default().show(ui, |ui| {
-            let mut clear_error = false;
-            if let Some(err) = &self.error_message {
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(Color32::RED, "⚠ Error:");
-                        ui.label(RichText::new(err).color(Color32::LIGHT_RED));
-                        if ui.button("Dismiss").clicked() {
-                            clear_error = true;
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-            }
-            if clear_error {
-                self.error_message = None;
-            }
+                    if let Some(texture_id) = self.egui_texture_id {
+                        let available_aspect = available_size.x / available_size.y.max(1.0);
+                        let display_size = if available_aspect > self.texture_aspect_ratio {
+                            Vec2::new(
+                                available_size.y * self.texture_aspect_ratio,
+                                available_size.y,
+                            )
+                        } else {
+                            Vec2::new(
+                                available_size.x,
+                                available_size.x / self.texture_aspect_ratio,
+                            )
+                        };
 
-            let available_size = ui.available_size();
-
-            if let Some(texture_id) = self.egui_texture_id {
-                let available_aspect = available_size.x / available_size.y.max(1.0);
-                let display_size = if available_aspect > self.texture_aspect_ratio {
-                    Vec2::new(
-                        available_size.y * self.texture_aspect_ratio,
-                        available_size.y,
-                    )
-                } else {
-                    Vec2::new(
-                        available_size.x,
-                        available_size.x / self.texture_aspect_ratio,
-                    )
-                };
-
-                ui.centered_and_justified(|ui| {
-                    ui.image(egui::load::SizedTexture::new(texture_id, display_size));
-                });
-            } else if !self.is_loading {
-                // Empty state
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
+                        ui.centered_and_justified(|ui| {
+                            ui.image(egui::load::SizedTexture::new(texture_id, display_size));
+                        });
+                    } else if !self.is_loading {
+                        // Empty state
+                        ui.centered_and_justified(|ui| {
+                            ui.vertical_centered(|ui| {
                         ui.add_space(available_size.y * 0.3);
                         ui.heading(RichText::new(APP_NAME).size(32.0));
                         ui.label("Open-source non-destructive RAW photo editor & library manager");
@@ -873,19 +1068,21 @@ impl eframe::App for BeamApp {
                             self.open_file_dialog();
                         }
                     });
-                });
-            } else {
-                // Loading state
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(available_size.y * 0.4);
-                        ui.spinner();
-                        ui.add_space(10.0);
-                        ui.label("Decoding RAW file with pure-Rust rawler...");
-                    });
+                        });
+                    } else {
+                        // Loading state
+                        ui.centered_and_justified(|ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(available_size.y * 0.4);
+                                ui.spinner();
+                                ui.add_space(10.0);
+                                ui.label("Decoding RAW file with pure-Rust rawler...");
+                            });
+                        });
+                    }
                 });
             }
-        });
+        }
 
         // About dialog
         if self.show_about {

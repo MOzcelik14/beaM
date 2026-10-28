@@ -1,6 +1,7 @@
 //! beaM. application entry point.
 
 mod app;
+mod views;
 mod widgets;
 
 use app::BeamApp;
