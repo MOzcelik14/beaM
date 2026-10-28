@@ -8,6 +8,10 @@ pub const DISPLAY_SHADER_SRC: &str = include_str!("../../../shaders/display_tran
 pub const EXPOSURE_SHADER_SRC: &str = include_str!("../../../shaders/exposure.wgsl");
 pub const WHITE_BALANCE_SHADER_SRC: &str = include_str!("../../../shaders/white_balance.wgsl");
 pub const CONTRAST_SHADER_SRC: &str = include_str!("../../../shaders/contrast.wgsl");
+pub const HIGHLIGHTS_SHADOWS_SHADER_SRC: &str =
+    include_str!("../../../shaders/highlights_shadows.wgsl");
+pub const TONE_CURVE_SHADER_SRC: &str = include_str!("../../../shaders/tone_curve.wgsl");
+pub const HSL_SHADER_SRC: &str = include_str!("../../../shaders/hsl.wgsl");
 
 /// GPU texture container for an image in linear working space.
 pub struct GpuImage {
@@ -108,6 +112,35 @@ pub struct ContrastUniforms {
     pub midpoint: f32,
     pub enabled: u32,
     pub _pad0: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct HighlightsShadowsUniforms {
+    pub highlights: f32,
+    pub shadows: f32,
+    pub enabled: u32,
+    pub _pad0: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ToneCurveUniforms {
+    pub lut: [[f32; 4]; 64],
+    pub enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct HslUniforms {
+    pub bands: [[f32; 4]; 8],
+    pub enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
 }
 
 // ----------------------------------------------------------------------------
@@ -402,7 +435,10 @@ impl DisplayPipeline {
 pub struct EditPipeline {
     white_balance_stage: StagePass<WhiteBalanceUniforms>,
     exposure_stage: StagePass<ExposureUniforms>,
+    highlights_shadows_stage: StagePass<HighlightsShadowsUniforms>,
     contrast_stage: StagePass<ContrastUniforms>,
+    tone_curve_stage: StagePass<ToneCurveUniforms>,
+    hsl_stage: StagePass<HslUniforms>,
     display_pipeline: DisplayPipeline,
 
     // Ping-pong intermediate linear working textures
@@ -444,6 +480,19 @@ impl EditPipeline {
             working_format,
         );
 
+        let highlights_shadows_stage = StagePass::new(
+            device,
+            "hs_stage",
+            HIGHLIGHTS_SHADOWS_SHADER_SRC,
+            HighlightsShadowsUniforms {
+                highlights: 0.0,
+                shadows: 0.0,
+                enabled: 1,
+                _pad0: 0,
+            },
+            working_format,
+        );
+
         let contrast_stage = StagePass::new(
             device,
             "contrast_stage",
@@ -457,12 +506,57 @@ impl EditPipeline {
             working_format,
         );
 
+        let identity_lut = beam_core::color::generate_tone_curve_lut(&[
+            beam_core::sidecar::ToneCurvePoint { x: 0.0, y: 0.0 },
+            beam_core::sidecar::ToneCurvePoint { x: 1.0, y: 1.0 },
+        ]);
+        let mut initial_lut = [[0.0f32; 4]; 64];
+        for i in 0..64 {
+            initial_lut[i] = [
+                identity_lut[i * 4],
+                identity_lut[i * 4 + 1],
+                identity_lut[i * 4 + 2],
+                identity_lut[i * 4 + 3],
+            ];
+        }
+
+        let tone_curve_stage = StagePass::new(
+            device,
+            "tc_stage",
+            TONE_CURVE_SHADER_SRC,
+            ToneCurveUniforms {
+                lut: initial_lut,
+                enabled: 1,
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
+            },
+            working_format,
+        );
+
+        let hsl_stage = StagePass::new(
+            device,
+            "hsl_stage",
+            HSL_SHADER_SRC,
+            HslUniforms {
+                bands: [[0.0; 4]; 8],
+                enabled: 1,
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
+            },
+            working_format,
+        );
+
         let display_pipeline = DisplayPipeline::new(device, display_format);
 
         Self {
             white_balance_stage,
             exposure_stage,
+            highlights_shadows_stage,
             contrast_stage,
+            tone_curve_stage,
+            hsl_stage,
             display_pipeline,
             ping_texture: None,
             ping_view: None,
@@ -548,6 +642,20 @@ impl EditPipeline {
             },
         );
 
+        self.highlights_shadows_stage.update_uniform(
+            queue,
+            &HighlightsShadowsUniforms {
+                highlights: edit_stack.highlights_shadows.highlights,
+                shadows: edit_stack.highlights_shadows.shadows,
+                enabled: if edit_stack.highlights_shadows.enabled {
+                    1
+                } else {
+                    0
+                },
+                _pad0: 0,
+            },
+        );
+
         let contrast_slope = beam_core::color::contrast_slope(edit_stack.contrast.contrast);
         self.contrast_stage.update_uniform(
             queue,
@@ -556,6 +664,42 @@ impl EditPipeline {
                 midpoint: 0.18,
                 enabled: if edit_stack.contrast.enabled { 1 } else { 0 },
                 _pad0: 0,
+            },
+        );
+
+        let curve_lut = beam_core::color::generate_tone_curve_lut(&edit_stack.tone_curve.points);
+        let mut packed_lut = [[0.0f32; 4]; 64];
+        for i in 0..64 {
+            packed_lut[i] = [
+                curve_lut[i * 4],
+                curve_lut[i * 4 + 1],
+                curve_lut[i * 4 + 2],
+                curve_lut[i * 4 + 3],
+            ];
+        }
+        self.tone_curve_stage.update_uniform(
+            queue,
+            &ToneCurveUniforms {
+                lut: packed_lut,
+                enabled: if edit_stack.tone_curve.enabled { 1 } else { 0 },
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
+            },
+        );
+
+        let mut hsl_bands = [[0.0f32; 4]; 8];
+        for (i, band) in edit_stack.hsl.bands.iter().enumerate() {
+            hsl_bands[i] = [band.hue, band.saturation, band.luminance, 0.0];
+        }
+        self.hsl_stage.update_uniform(
+            queue,
+            &HslUniforms {
+                bands: hsl_bands,
+                enabled: if edit_stack.hsl.enabled { 1 } else { 0 },
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
             },
         );
 
@@ -573,14 +717,25 @@ impl EditPipeline {
         // Stage 2: Exposure (ping -> pong)
         self.exposure_stage.render(device, &mut encoder, ping, pong);
 
-        // Stage 3: Contrast (pong -> ping)
-        self.contrast_stage.render(device, &mut encoder, pong, ping);
+        // Stage 3: Highlights & Shadows (pong -> ping)
+        self.highlights_shadows_stage
+            .render(device, &mut encoder, pong, ping);
+
+        // Stage 4: Contrast (ping -> pong)
+        self.contrast_stage.render(device, &mut encoder, ping, pong);
+
+        // Stage 5: Tone Curve (pong -> ping)
+        self.tone_curve_stage
+            .render(device, &mut encoder, pong, ping);
+
+        // Stage 6: HSL (ping -> pong)
+        self.hsl_stage.render(device, &mut encoder, ping, pong);
 
         queue.submit(std::iter::once(encoder.finish()));
 
-        // Final Stage: Display Transform (ping -> target_view)
+        // Final Stage: Display Transform (pong -> target_view)
         self.display_pipeline
-            .render_to_target(device, queue, ping, target_view);
+            .render_to_target(device, queue, pong, target_view);
     }
 }
 
@@ -787,5 +942,120 @@ mod tests {
             );
         }
         staging_buffer.unmap();
+    }
+
+    #[test]
+    fn test_golden_pipeline_with_all_adjustments() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            println!("Skipping pipeline test (no GPU adapter)");
+            return;
+        };
+
+        let width = 4u32;
+        let height = 4u32;
+        let mut input_data = vec![0.0f32; (width * height * 4) as usize];
+        for i in 0..(width * height) as usize {
+            input_data[i * 4] = 0.35;
+            input_data[i * 4 + 1] = 0.35;
+            input_data[i * 4 + 2] = 0.35;
+            input_data[i * 4 + 3] = 1.0;
+        }
+        let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let target_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("all_adjustments_target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut edit_stack = EditStack::default();
+        edit_stack.exposure.ev = 0.5;
+        edit_stack.highlights_shadows.highlights = -30.0;
+        edit_stack.highlights_shadows.shadows = 40.0;
+        edit_stack.tone_curve.points = vec![
+            beam_core::sidecar::ToneCurvePoint { x: 0.0, y: 0.0 },
+            beam_core::sidecar::ToneCurvePoint { x: 0.5, y: 0.6 },
+            beam_core::sidecar::ToneCurvePoint { x: 1.0, y: 1.0 },
+        ];
+        edit_stack.hsl.bands[0].saturation = 25.0; // Red sat boost
+
+        pipeline.render(
+            &gpu.device,
+            &gpu.queue,
+            &input_img,
+            &target_view,
+            &edit_stack,
+        );
+
+        // Verify output can be copied and is valid
+        let bytes_per_pixel = 4u32;
+        let unaligned_bytes_per_row = width * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let bytes_per_row = (unaligned_bytes_per_row + align - 1) & !(align - 1);
+
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging"),
+            size: (bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback_encoder"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            tx.send(res).unwrap();
+        });
+        gpu.instance.poll_all(true);
+        rx.recv().unwrap().expect("Failed to map staging buffer");
+
+        {
+            let data = slice
+                .get_mapped_range()
+                .expect("Failed to get mapped range");
+            let pixels = &data[..4];
+            assert!(pixels[0] > 0, "Red channel should be non-zero");
+            assert!(pixels[3] == 255, "Alpha channel should be 255");
+        }
+        staging.unmap();
     }
 }

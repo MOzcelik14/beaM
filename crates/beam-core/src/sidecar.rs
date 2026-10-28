@@ -13,7 +13,7 @@ pub const SIDECAR_EXTENSION: &str = "beam.ron";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhiteBalanceAdjustment {
     pub enabled: bool,
-    /// Temperature offset in Kelvins (-100.0 to +100.0 or 2000K to 12000K, default 0.0)
+    /// Temperature offset in Kelvins (-100.0 to +100.0, default 0.0)
     pub temperature: f32,
     /// Tint offset (-100.0 to +100.0, default 0.0)
     pub tint: f32,
@@ -61,11 +61,86 @@ impl Default for ContrastAdjustment {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HighlightsShadowsAdjustment {
+    pub enabled: bool,
+    /// Highlights adjustment (-100.0 to +100.0, default 0.0)
+    pub highlights: f32,
+    /// Shadows adjustment (-100.0 to +100.0, default 0.0)
+    pub shadows: f32,
+}
+
+impl Default for HighlightsShadowsAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            highlights: 0.0,
+            shadows: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ToneCurvePoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToneCurveAdjustment {
+    pub enabled: bool,
+    pub points: Vec<ToneCurvePoint>,
+}
+
+impl Default for ToneCurveAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            points: vec![
+                ToneCurvePoint { x: 0.0, y: 0.0 },
+                ToneCurvePoint { x: 0.25, y: 0.25 },
+                ToneCurvePoint { x: 0.5, y: 0.5 },
+                ToneCurvePoint { x: 0.75, y: 0.75 },
+                ToneCurvePoint { x: 1.0, y: 1.0 },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct HslBand {
+    /// Hue shift (-100.0 to +100.0, default 0.0)
+    pub hue: f32,
+    /// Saturation factor (-100.0 to +100.0, default 0.0)
+    pub saturation: f32,
+    /// Luminance factor (-100.0 to +100.0, default 0.0)
+    pub luminance: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HslAdjustment {
+    pub enabled: bool,
+    /// 8 bands: [Red, Orange, Yellow, Green, Aqua, Blue, Purple, Magenta]
+    pub bands: [HslBand; 8],
+}
+
+impl Default for HslAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bands: [HslBand::default(); 8],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditStack {
     pub white_balance: WhiteBalanceAdjustment,
     pub exposure: ExposureAdjustment,
+    pub highlights_shadows: HighlightsShadowsAdjustment,
     pub contrast: ContrastAdjustment,
+    pub tone_curve: ToneCurveAdjustment,
+    pub hsl: HslAdjustment,
 }
 
 impl EditStack {
@@ -81,8 +156,20 @@ impl EditStack {
         self.exposure = ExposureAdjustment::default();
     }
 
+    pub fn reset_highlights_shadows(&mut self) {
+        self.highlights_shadows = HighlightsShadowsAdjustment::default();
+    }
+
     pub fn reset_contrast(&mut self) {
         self.contrast = ContrastAdjustment::default();
+    }
+
+    pub fn reset_tone_curve(&mut self) {
+        self.tone_curve = ToneCurveAdjustment::default();
+    }
+
+    pub fn reset_hsl(&mut self) {
+        self.hsl = HslAdjustment::default();
     }
 
     pub fn is_default(&self) -> bool {
@@ -122,7 +209,7 @@ impl Sidecar {
     /// Serialize this sidecar to pretty RON string.
     pub fn to_ron_string(&self) -> Result<String> {
         let pretty_config = ron::ser::PrettyConfig::new()
-            .depth_limit(4)
+            .depth_limit(5)
             .separate_tuple_members(true)
             .enumerate_arrays(true);
         ron::ser::to_string_pretty(self, pretty_config).map_err(BeamError::from)
@@ -157,9 +244,6 @@ impl Sidecar {
             )));
         }
 
-        // Placeholders for future version migrations (e.g. version 1 -> 2)
-        // while (self.format_version < CURRENT_FORMAT_VERSION) { ... }
-
         Ok(())
     }
 }
@@ -184,10 +268,13 @@ mod tests {
         original.edit_stack.exposure.ev = 1.35;
         original.edit_stack.white_balance.temperature = 12.0;
         original.edit_stack.contrast.contrast = 25.0;
+        original.edit_stack.highlights_shadows.highlights = -30.0;
+        original.edit_stack.highlights_shadows.shadows = 40.0;
+        original.edit_stack.hsl.bands[5].saturation = 20.0; // Boost blue saturation
 
         let ron_str = original.to_ron_string().expect("Serialization failed");
         assert!(ron_str.contains("format_version: 1"));
-        assert!(ron_str.contains("ev: 1.35"));
+        assert!(ron_str.contains("highlights: -30"));
 
         let loaded = Sidecar::from_ron_str(&ron_str).expect("Deserialization failed");
         assert_eq!(original, loaded);
@@ -201,7 +288,19 @@ mod tests {
             edit_stack: (
                 white_balance: (enabled: true, temperature: 0.0, tint: 0.0),
                 exposure: (enabled: true, ev: 0.0),
+                highlights_shadows: (enabled: true, highlights: 0.0, shadows: 0.0),
                 contrast: (enabled: true, contrast: 0.0),
+                tone_curve: (enabled: true, points: []),
+                hsl: (enabled: true, bands: [
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                    (hue: 0.0, saturation: 0.0, luminance: 0.0),
+                ]),
             )
         )"#;
 

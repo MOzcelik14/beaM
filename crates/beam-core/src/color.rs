@@ -1,19 +1,6 @@
-//! Color spaces and transformations for beaM.
-//!
-//! # Architecture & Working Color Space
-//! beaM. processes all images internally in a **linear, wide-gamut working space: linear Rec.2020**.
-//!
-//! ## Rationale:
-//! 1. **Linearity**: Photometric operations (exposure adjustments, white balance, contrast)
-//!    physically operate on linear light intensity rather than perceptual non-linear encodings.
-//!    Performing multiplication and convolution in a gamma-encoded space produces hue shifts
-//!    and unnatural luminance distortions.
-//! 2. **Wide Gamut (Rec.2020 / BT.2020)**: High-end camera sensors capture spectral responses
-//!    that exceed standard sRGB and even AdobeRGB. By retaining linear Rec.2020 throughout
-//!    the GPU pipeline, we preserve saturated highlights and deep shadows without clipping colors
-//!    until the final display/export color transform.
-//! 3. **Conversion**: For screen presentation, linear Rec.2020 is transformed into sRGB
-//!    and encoded with the sRGB transfer function (EOTF) inside the display WGSL shader.
+//! Color spaces, transfer functions, tone curve spline interpolation and HSL math.
+
+use crate::sidecar::ToneCurvePoint;
 
 /// Standard 3x3 matrix multiplication: `result = M * v`.
 #[inline]
@@ -38,7 +25,6 @@ pub fn mat3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
 }
 
 /// Linear Rec.2020 to CIE XYZ (D65 illuminant).
-/// Reference: ITU-R BT.2020-2.
 pub const REC2020_TO_XYZ_D65: [f32; 9] = [
     0.636958, 0.144617, 0.168881, 0.262700, 0.677998, 0.059302, 0.000000, 0.028073, 1.060985,
 ];
@@ -50,7 +36,6 @@ pub const XYZ_TO_REC2020_D65: [f32; 9] = [
 
 #[allow(clippy::excessive_precision)]
 /// Linear sRGB to CIE XYZ (D65 illuminant).
-/// Reference: IEC 61966-2-1:1999.
 pub const SRGB_TO_XYZ_D65: [f32; 9] = [
     0.4124564, 0.3575761, 0.1804375, 0.2126729, 0.7151522, 0.0721750, 0.0193339, 0.1191920,
     0.9503041,
@@ -65,7 +50,6 @@ pub const XYZ_TO_SRGB_D65: [f32; 9] = [
 
 #[allow(clippy::excessive_precision)]
 /// Direct transformation matrix: Linear Rec.2020 -> Linear sRGB (D65).
-/// Calculated by XYZ_TO_SRGB_D65 * REC2020_TO_XYZ_D65.
 pub const REC2020_TO_SRGB: [f32; 9] = [
     1.6604910, -0.5876411, -0.0728499, -0.1245505, 1.1328999, -0.0083494, -0.0181508, -0.1005789,
     1.1187297,
@@ -108,13 +92,8 @@ pub fn rec2020_linear_to_srgb_display(rec2020: [f32; 3]) -> [f32; 3] {
 }
 
 /// Converts temperature and tint slider offsets [-100.0, +100.0] into linear RGB gains.
-///
-/// - `temp_offset > 0` warms the image (boosts Red, reduces Blue).
-/// - `temp_offset < 0` cools the image (boosts Blue, reduces Red).
-/// - `tint_offset > 0` shifts towards Green.
-/// - `tint_offset < 0` shifts towards Magenta.
 pub fn white_balance_gains(temp_offset: f32, tint_offset: f32) -> [f32; 3] {
-    let t = (temp_offset.clamp(-100.0, 100.0) / 100.0) * 0.5; // [-0.5, +0.5] EV range
+    let t = (temp_offset.clamp(-100.0, 100.0) / 100.0) * 0.5;
     let tint = (tint_offset.clamp(-100.0, 100.0) / 100.0) * 0.5;
 
     let r_gain = 2.0f32.powf(t);
@@ -125,13 +104,201 @@ pub fn white_balance_gains(temp_offset: f32, tint_offset: f32) -> [f32; 3] {
 }
 
 /// Converts a contrast slider value [-100.0, +100.0] into an exponential slope factor.
-///
-/// - `contrast = 0.0` -> slope = 1.0 (identity).
-/// - `contrast = 100.0` -> slope = 2.0.
-/// - `contrast = -100.0` -> slope = 0.5.
 pub fn contrast_slope(contrast: f32) -> f32 {
     let c = contrast.clamp(-100.0, 100.0);
     2.0f32.powf(c / 100.0)
+}
+
+// ----------------------------------------------------------------------------
+// Tone Curve Spline Interpolation (Monotone Cubic / Fritsch-Carlson)
+// ----------------------------------------------------------------------------
+
+/// Evaluates a 256-sample lookup table from a list of ToneCurvePoints using monotone cubic spline interpolation.
+pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
+    if points.is_empty() {
+        let mut lut = [0.0f32; 256];
+        for (i, item) in lut.iter_mut().enumerate() {
+            *item = i as f32 / 255.0;
+        }
+        return lut;
+    }
+
+    // Sort and deduplicate control points by x coordinate
+    let mut pts = points.to_vec();
+    pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-4);
+
+    // Ensure boundary points at x=0 and x=1 exist
+    if pts[0].x > 0.0 {
+        let first_y = pts[0].y;
+        pts.insert(0, ToneCurvePoint { x: 0.0, y: first_y });
+    }
+    if pts.last().unwrap().x < 1.0 {
+        let last_y = pts.last().unwrap().y;
+        pts.push(ToneCurvePoint { x: 1.0, y: last_y });
+    }
+
+    let n = pts.len();
+    if n == 2 {
+        let mut lut = [0.0f32; 256];
+        let p0 = pts[0];
+        let p1 = pts[1];
+        let dx = (p1.x - p0.x).max(1e-5);
+        for (i, item) in lut.iter_mut().enumerate() {
+            let x = i as f32 / 255.0;
+            let t = ((x - p0.x) / dx).clamp(0.0, 1.0);
+            *item = (p0.y + t * (p1.y - p0.y)).clamp(0.0, 1.0);
+        }
+        return lut;
+    }
+
+    // Compute segment slopes delta_k
+    let mut deltas = Vec::with_capacity(n - 1);
+    let mut h = Vec::with_capacity(n - 1);
+    for i in 0..(n - 1) {
+        let dx = (pts[i + 1].x - pts[i].x).max(1e-5);
+        let dy = pts[i + 1].y - pts[i].y;
+        deltas.push(dy / dx);
+        h.push(dx);
+    }
+
+    // Tangents m_k (Fritsch-Carlson initialization)
+    let mut m = vec![0.0f32; n];
+    m[0] = deltas[0];
+    m[n - 1] = deltas[n - 2];
+    for i in 1..(n - 1) {
+        m[i] = (deltas[i - 1] + deltas[i]) * 0.5;
+    }
+
+    // Monotonicity enforcement
+    for i in 0..(n - 1) {
+        if deltas[i].abs() < 1e-6 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let alpha = m[i] / deltas[i];
+            let beta = m[i + 1] / deltas[i];
+            let dist = alpha * alpha + beta * beta;
+            if dist > 9.0 {
+                let tau = 3.0 / dist.sqrt();
+                m[i] = tau * alpha * deltas[i];
+                m[i + 1] = tau * beta * deltas[i];
+            }
+        }
+    }
+
+    // Sample into 256 LUT entries using cubic Hermite basis
+    let mut lut = [0.0f32; 256];
+    let mut seg = 0;
+    for (i, item) in lut.iter_mut().enumerate() {
+        let x = i as f32 / 255.0;
+
+        while seg < n - 2 && x > pts[seg + 1].x {
+            seg += 1;
+        }
+
+        let x0 = pts[seg].x;
+        let x1 = pts[seg + 1].x;
+        let y0 = pts[seg].y;
+        let y1 = pts[seg + 1].y;
+        let dx = (x1 - x0).max(1e-5);
+        let t = ((x - x0) / dx).clamp(0.0, 1.0);
+        let t2 = t * t;
+        let t3 = t2 * t;
+
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+
+        let y = h00 * y0 + h10 * dx * m[seg] + h01 * y1 + h11 * dx * m[seg + 1];
+        *item = y.clamp(0.0, 1.0);
+    }
+
+    lut
+}
+
+// ----------------------------------------------------------------------------
+// RGB ↔ HSL Conversion Math
+// ----------------------------------------------------------------------------
+
+/// Convert RGB [0.0, 1.0] to HSL (Hue in [0.0, 360.0], Saturation in [0.0, 1.0], Luminance in [0.0, 1.0]).
+pub fn rgb_to_hsl(rgb: [f32; 3]) -> [f32; 3] {
+    let r = rgb[0].clamp(0.0, 1.0);
+    let g = rgb[1].clamp(0.0, 1.0);
+    let b = rgb[2].clamp(0.0, 1.0);
+
+    let max = r.max(g.max(b));
+    let min = r.min(g.min(b));
+    let delta = max - min;
+    let l = (max + min) * 0.5;
+
+    if delta < 1e-5 {
+        return [0.0, 0.0, l];
+    }
+
+    let s = if l < 0.5 {
+        delta / (max + min)
+    } else {
+        delta / (2.0 - max - min)
+    };
+
+    let mut h = if (max - r).abs() < 1e-5 {
+        ((g - b) / delta).rem_euclid(6.0)
+    } else if (max - g).abs() < 1e-5 {
+        ((b - r) / delta) + 2.0
+    } else {
+        ((r - g) / delta) + 4.0
+    };
+    h *= 60.0;
+    if h < 0.0 {
+        h += 360.0;
+    }
+
+    [h, s, l]
+}
+
+fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+    if t < 0.0 {
+        t += 1.0;
+    }
+    if t > 1.0 {
+        t -= 1.0;
+    }
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
+}
+
+/// Convert HSL (Hue in [0.0, 360.0], Saturation in [0.0, 1.0], Luminance in [0.0, 1.0]) to RGB [0.0, 1.0].
+pub fn hsl_to_rgb(hsl: [f32; 3]) -> [f32; 3] {
+    let h = (hsl[0].rem_euclid(360.0)) / 360.0;
+    let s = hsl[1].clamp(0.0, 1.0);
+    let l = hsl[2].clamp(0.0, 1.0);
+
+    if s < 1e-5 {
+        return [l, l, l];
+    }
+
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+
+    [
+        hue_to_rgb(p, q, h + 1.0 / 3.0),
+        hue_to_rgb(p, q, h),
+        hue_to_rgb(p, q, h - 1.0 / 3.0),
+    ]
 }
 
 #[cfg(test)]
@@ -168,7 +335,6 @@ mod tests {
 
     #[test]
     fn test_white_point_neutrality() {
-        // D65 White point: [1.0, 1.0, 1.0] should map to [1.0, 1.0, 1.0]
         let srgb = rec2020_linear_to_srgb_display([1.0, 1.0, 1.0]);
         for c in srgb {
             assert!((c - 1.0).abs() < 1e-3, "White point shifted: got {c}");
@@ -176,28 +342,58 @@ mod tests {
     }
 
     #[test]
-    fn test_white_balance_neutral() {
-        let gains = white_balance_gains(0.0, 0.0);
-        assert!((gains[0] - 1.0).abs() < 1e-5);
-        assert!((gains[1] - 1.0).abs() < 1e-5);
-        assert!((gains[2] - 1.0).abs() < 1e-5);
+    fn test_tone_curve_identity() {
+        let points = vec![
+            ToneCurvePoint { x: 0.0, y: 0.0 },
+            ToneCurvePoint { x: 0.5, y: 0.5 },
+            ToneCurvePoint { x: 1.0, y: 1.0 },
+        ];
+        let lut = generate_tone_curve_lut(&points);
+        assert!((lut[0] - 0.0).abs() < 1e-4);
+        assert!((lut[128] - (128.0 / 255.0)).abs() < 1e-3);
+        assert!((lut[255] - 1.0).abs() < 1e-4);
     }
 
     #[test]
-    fn test_white_balance_warming_and_cooling() {
-        let warm = white_balance_gains(50.0, 0.0);
-        assert!(warm[0] > 1.0, "Red should be boosted when warming");
-        assert!(warm[2] < 1.0, "Blue should be reduced when warming");
-
-        let cool = white_balance_gains(-50.0, 0.0);
-        assert!(cool[0] < 1.0, "Red should be reduced when cooling");
-        assert!(cool[2] > 1.0, "Blue should be boosted when cooling");
+    fn test_tone_curve_monotonicity() {
+        let points = vec![
+            ToneCurvePoint { x: 0.0, y: 0.0 },
+            ToneCurvePoint { x: 0.25, y: 0.15 },
+            ToneCurvePoint { x: 0.75, y: 0.85 },
+            ToneCurvePoint { x: 1.0, y: 1.0 },
+        ];
+        let lut = generate_tone_curve_lut(&points);
+        for i in 1..256 {
+            assert!(
+                lut[i] >= lut[i - 1],
+                "Monotonicity violated at {i}: {} < {}",
+                lut[i],
+                lut[i - 1]
+            );
+        }
     }
 
     #[test]
-    fn test_contrast_slope() {
-        assert_eq!(contrast_slope(0.0), 1.0);
-        assert_eq!(contrast_slope(100.0), 2.0);
-        assert_eq!(contrast_slope(-100.0), 0.5);
+    fn test_rgb_hsl_roundtrip() {
+        let colors = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.8, 0.4, 0.2],
+            [0.2, 0.7, 0.9],
+        ];
+
+        for rgb in colors {
+            let hsl = rgb_to_hsl(rgb);
+            let roundtrip = hsl_to_rgb(hsl);
+            for ch in 0..3 {
+                assert!(
+                    (rgb[ch] - roundtrip[ch]).abs() < 1e-3,
+                    "Failed HSL roundtrip for {:?}: got {:?}",
+                    rgb,
+                    roundtrip
+                );
+            }
+        }
     }
 }

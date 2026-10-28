@@ -1,6 +1,7 @@
 //! beaM. application entry point.
 
 mod app;
+mod widgets;
 
 use app::BeamApp;
 use beam_core::APP_NAME;
