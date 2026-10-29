@@ -424,7 +424,7 @@ impl BeamApp {
         }
     }
 
-    /// Open file dialog and spawn background thread to decode the RAW image
+    /// Open file dialog and spawn background thread to decode the image
     pub fn open_file_dialog(&mut self) {
         let tx = self.tx.clone();
         let dialog_title = t!("menu_file_open");
@@ -432,12 +432,28 @@ impl BeamApp {
             let file = rfd::FileDialog::new()
                 .set_title(dialog_title)
                 .add_filter(
-                    "RAW & Raster Photos",
+                    "All Supported Photos",
                     &[
-                        "arw", "cr2", "cr3", "nef", "dng", "raf", "rw2", "orf", "pef", "jpg",
-                        "jpeg", "png", "tif", "tiff", "webp",
+                        // RAW formats (lowercase & camera uppercase)
+                        "arw", "cr2", "cr3", "nef", "dng", "raf", "rw2", "orf", "pef", "ARW", "CR2",
+                        "CR3", "NEF", "DNG", "RAF", "RW2", "ORF", "PEF",
+                        // JPEG formats
+                        "jpg", "jpeg", "JPG", "JPEG", // Raster formats
+                        "png", "tif", "tiff", "webp", "PNG", "TIF", "TIFF", "WEBP",
                     ],
                 )
+                .add_filter(
+                    "JPEG Photos (*.jpg, *.jpeg, *.JPG, *.JPEG)",
+                    &["jpg", "jpeg", "JPG", "JPEG"],
+                )
+                .add_filter(
+                    "RAW Photos (*.arw, *.cr2, *.nef, *.dng...)",
+                    &[
+                        "arw", "cr2", "cr3", "nef", "dng", "raf", "rw2", "orf", "pef", "ARW",
+                        "CR2", "CR3", "NEF", "DNG", "RAF", "RW2", "ORF", "PEF",
+                    ],
+                )
+                .add_filter("All Files", &["*"])
                 .pick_file();
 
             if let Some(path) = file {
@@ -449,6 +465,36 @@ impl BeamApp {
                     Err(err) => {
                         let _ = tx.send(BackgroundMsg::Error(err.to_string()));
                     }
+                }
+            }
+        });
+    }
+
+    /// Import a folder path asynchronously into the library catalog
+    pub fn import_folder_path(&mut self, dir: PathBuf) {
+        let tx = self.tx.clone();
+        let thumb_dir = self.thumbnail_cache_dir.clone();
+        let catalog_path = default_catalog_path();
+        self.library_state.is_importing = true;
+        self.library_state.import_status = Some(t!("library_importing"));
+
+        thread::spawn(move || {
+            let db = match LibraryDb::open(&catalog_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    let _ = tx.send(BackgroundMsg::Error(format!(
+                        "Failed to open database for import: {e}"
+                    )));
+                    return;
+                }
+            };
+
+            match db.scan_and_import_folder(&dir, &thumb_dir, true) {
+                Ok(count) => {
+                    let _ = tx.send(BackgroundMsg::ImportComplete { count });
+                }
+                Err(e) => {
+                    let _ = tx.send(BackgroundMsg::Error(format!("Folder import failed: {e}")));
                 }
             }
         });
@@ -1058,6 +1104,23 @@ impl eframe::App for BeamApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.check_background_messages(&ctx, frame);
+
+        // Handle drag-and-drop of photos or folders onto the window
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        if !dropped_files.is_empty() {
+            for dropped in dropped_files {
+                let path = dropped.path();
+                if !path.as_os_str().is_empty() {
+                    let path_buf = path.to_path_buf();
+                    if path_buf.is_dir() {
+                        self.import_folder_path(path_buf);
+                    } else if path_buf.is_file() {
+                        self.load_file_path(path_buf);
+                        break;
+                    }
+                }
+            }
+        }
 
         // Top menu bar
         Panel::top("menu_bar").show(ui, |ui| {

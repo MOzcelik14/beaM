@@ -357,7 +357,11 @@ pub fn extract_exif_metadata(path: &Path) -> ExifMetadata {
 pub fn extract_icc_profile(path: &Path) -> Option<Vec<u8>> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    let mut decoder = image::ImageReader::new(reader)
+    let mut image_reader = image::ImageReader::new(reader);
+    if let Ok(format) = image::ImageFormat::from_path(path) {
+        image_reader.set_format(format);
+    }
+    let mut decoder = image_reader
         .with_guessed_format()
         .ok()?
         .into_decoder()
@@ -503,7 +507,11 @@ pub fn apply_orientation_f32(
 pub fn decode_raster_image(path: &Path) -> Result<DecodedImage> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let image_reader = image::ImageReader::new(reader)
+    let mut image_reader = image::ImageReader::new(reader);
+    if let Ok(format) = image::ImageFormat::from_path(path) {
+        image_reader.set_format(format);
+    }
+    let image_reader = image_reader
         .with_guessed_format()
         .map_err(|e| BeamError::UnsupportedFormat(e.to_string()))?;
 
@@ -1119,6 +1127,21 @@ mod tests {
         let decoded_webp = decode_image(&webp_path).expect("Failed to decode WebP");
         assert_eq!(decoded_webp.width, 16);
         assert_eq!(decoded_webp.height, 16);
+
+        // 6. Camera uppercase .JPG and .JPEG
+        let camera_jpg_path = temp_dir.join("DSC01234.JPG");
+        img_rgb8.save(&camera_jpg_path).unwrap();
+        let decoded_cam_jpg =
+            decode_image(&camera_jpg_path).expect("Failed to decode camera uppercase .JPG");
+        assert_eq!(decoded_cam_jpg.width, 16);
+        assert_eq!(decoded_cam_jpg.height, 16);
+
+        let camera_jpeg_path = temp_dir.join("IMG_9999.JPEG");
+        img_rgb8.save(&camera_jpeg_path).unwrap();
+        let decoded_cam_jpeg =
+            decode_image(&camera_jpeg_path).expect("Failed to decode camera uppercase .JPEG");
+        assert_eq!(decoded_cam_jpeg.width, 16);
+        assert_eq!(decoded_cam_jpeg.height, 16);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

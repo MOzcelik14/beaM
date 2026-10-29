@@ -7,7 +7,7 @@ view_develop = Develop
 # Menus
 menu_file = File
 menu_open_photo = Open Photo...
-menu_open_photo_shortcut = Open RAW Photo... (Ctrl+O)
+menu_open_photo_shortcut = Open Photo... (Ctrl+O)
 menu_import_folder = Import Folder...
 menu_import_folder_shortcut = Import Folder... (Ctrl+Shift+O)
 menu_export = Export...
@@ -160,9 +160,9 @@ develop_fill = Fill
 develop_zoom = Zoom:
 develop_error_title = Error:
 develop_dismiss = Dismiss
-develop_empty_desc = Open-source non-destructive RAW photo editor & library manager
-develop_open_btn = Open RAW Photo (Ctrl+O)
-develop_decoding_with_name = Decoding {$name} with rawler...
+develop_empty_desc = Open-source non-destructive RAW & raster photo editor and library manager
+develop_open_btn = Open Photo (Ctrl+O)
+develop_decoding_with_name = Decoding {$name}...
 develop_decoding = Decoding...
 
 # Develop History & Before/After
@@ -304,7 +304,7 @@ status_sidecar_saved = Sidecar saved
 status_saved = Saved
 status_save_error = Save error: {$error}
 status_error = Error: {$msg}
-status_no_image_hint = No image loaded. Use File -> Open RAW Photo... (Ctrl+O) to open an image.
+status_no_image_hint = No image loaded. Use File -> Open Photo... (Ctrl+O) to open an image.
 status_sidecar = Sidecar: {$status}
 
 # Presets & Settings Sync

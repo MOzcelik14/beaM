@@ -7,7 +7,7 @@ view_develop = Geliştir
 # Menus
 menu_file = Dosya
 menu_open_photo = Fotoğraf Aç...
-menu_open_photo_shortcut = RAW Fotoğraf Aç... (Ctrl+O)
+menu_open_photo_shortcut = Fotoğraf Aç... (Ctrl+O)
 menu_import_folder = Klasör İçe Aktar...
 menu_import_folder_shortcut = Klasör İçe Aktar... (Ctrl+Shift+O)
 menu_export = Dışa Aktar...
@@ -160,9 +160,9 @@ develop_fill = Doldur
 develop_zoom = Yakınlaştırma:
 develop_error_title = Hata:
 develop_dismiss = Kapat
-develop_empty_desc = Açık kaynaklı, tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi
-develop_open_btn = RAW Fotoğraf Aç (Ctrl+O)
-develop_decoding_with_name = {$name} rawler ile çözümleniyor...
+develop_empty_desc = Açık kaynaklı, tahribatsız RAW ve raster fotoğraf düzenleyici ve kütüphane yöneticisi
+develop_open_btn = Fotoğraf Aç (Ctrl+O)
+develop_decoding_with_name = {$name} çözümleniyor...
 develop_decoding = Çözümleniyor...
 
 # Develop History & Before/After
@@ -304,7 +304,7 @@ status_sidecar_saved = Ayar dosyası kaydedildi
 status_saved = Kaydedildi
 status_save_error = Kaydetme hatası: {$error}
 status_error = Hata: {$msg}
-status_no_image_hint = Görüntü yüklenmedi. Bir görüntü açmak için Dosya -> RAW Fotoğraf Aç... (Ctrl+O) seçeneğini kullanın.
+status_no_image_hint = Görüntü yüklenmedi. Bir fotoğraf açmak için Dosya -> Fotoğraf Aç... (Ctrl+O) seçeneğini kullanın.
 status_sidecar = Ayar dosyası: {$status}
 
 # Presets & Settings Sync
