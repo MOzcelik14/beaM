@@ -144,7 +144,7 @@ pub fn show_library_view(
 
                 if ui
                     .button(
-                        RichText::new(format!("📂 {}", t!("library_import_folder")))
+                        RichText::new(t!("library_import_folder"))
                             .size(14.0)
                             .strong(),
                     )
@@ -155,17 +155,11 @@ pub fn show_library_view(
 
                 let selected_count = state.selected_photo_ids.len();
                 let export_btn_text = if selected_count > 1 {
-                    format!(
-                        "📤 {}",
-                        t!("library_export_selected", "count" => selected_count)
-                    )
+                    t!("library_export_selected", "count" => selected_count)
                 } else if selected_count == 1 {
-                    format!("📤 {}", t!("library_export_selected_one"))
+                    t!("library_export_selected_one")
                 } else {
-                    format!(
-                        "📤 {}",
-                        t!("library_export_all", "count" => state.photos.len())
-                    )
+                    t!("library_export_all", "count" => state.photos.len())
                 };
 
                 let can_export = !state.photos.is_empty();
@@ -197,7 +191,7 @@ pub fn show_library_view(
                     ui.add_space(4.0);
                     if ui
                         .button(
-                            RichText::new(format!("⚙ {}", t!("library_sync_settings")))
+                            RichText::new(t!("library_sync_settings"))
                                 .size(13.0)
                                 .strong(),
                         )
@@ -210,10 +204,7 @@ pub fn show_library_view(
 
                 ui.add_space(4.0);
                 if ui
-                    .button(
-                        RichText::new(format!("🔄 {}", t!("library_rebuild_thumbnails")))
-                            .size(13.0),
-                    )
+                    .button(RichText::new(t!("library_rebuild_thumbnails")).size(13.0))
                     .on_hover_text(t!("library_rebuild_tooltip"))
                     .clicked()
                 {
@@ -408,10 +399,7 @@ pub fn show_library_view(
                     ui.add_space(8.0);
                     ui.label(t!("library_empty_desc"));
                     ui.add_space(12.0);
-                    if ui
-                        .button(format!("📂 {}", t!("library_import_folder")))
-                        .clicked()
-                    {
+                    if ui.button(t!("library_import_folder")).clicked() {
                         action = LibraryAction::ImportFolder;
                     }
                 });
@@ -633,12 +621,9 @@ pub fn show_library_view(
                                         );
                                         let err_label = child_ui.add(
                                             egui::Label::new(
-                                                RichText::new(format!(
-                                                    "⚠ {}",
-                                                    t!("library_thumb_failed")
-                                                ))
-                                                .color(Color32::from_rgb(240, 100, 100))
-                                                .size(12.0),
+                                                RichText::new(t!("library_thumb_failed"))
+                                                    .color(Color32::from_rgb(240, 100, 100))
+                                                    .size(12.0),
                                             )
                                             .sense(Sense::hover()),
                                         );

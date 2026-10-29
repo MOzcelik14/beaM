@@ -1073,14 +1073,14 @@ impl eframe::App for BeamApp {
                 // Navigation View Tabs
                 let is_lib = self.current_view == AppView::Library;
                 if ui
-                    .selectable_label(is_lib, format!("📷 {} (G)", t!("view_library")))
+                    .selectable_label(is_lib, format!("{} (G)", t!("view_library")))
                     .clicked()
                 {
                     self.current_view = AppView::Library;
                 }
                 let is_dev = self.current_view == AppView::Develop;
                 if ui
-                    .selectable_label(is_dev, format!("🎨 {} (D)", t!("view_develop")))
+                    .selectable_label(is_dev, format!("{} (D)", t!("view_develop")))
                     .clicked()
                 {
                     self.current_view = AppView::Develop;
@@ -1166,7 +1166,7 @@ impl eframe::App for BeamApp {
                     }
                     ui.separator();
                     if ui
-                        .button(format!("🔄 {}", t!("menu_rebuild_thumbnails")))
+                        .button(t!("menu_rebuild_thumbnails"))
                         .on_hover_text(t!("menu_rebuild_thumbnails_tooltip"))
                         .clicked()
                     {
@@ -1430,9 +1430,9 @@ impl eframe::App for BeamApp {
                 } else if self.current_view == AppView::Develop {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let filmstrip_text = if self.filmstrip_visible {
-                            format!("🎞 {}", t!("develop_filmstrip"))
+                            t!("develop_filmstrip")
                         } else {
-                            format!("🎞 {} (▲)", t!("develop_filmstrip"))
+                            format!("{} (▲)", t!("develop_filmstrip"))
                         };
                         if ui
                             .selectable_label(self.filmstrip_visible, filmstrip_text)
@@ -1504,12 +1504,12 @@ impl eframe::App for BeamApp {
                                 ui.selectable_value(
                                     &mut self.left_panel_tab,
                                     LeftPanelTab::Presets,
-                                    format!("🎨 {}", t!("develop_presets")),
+                                    t!("develop_presets"),
                                 );
                                 ui.selectable_value(
                                     &mut self.left_panel_tab,
                                     LeftPanelTab::History,
-                                    format!("📜 {}", t!("develop_history")),
+                                    t!("develop_history"),
                                 );
                             });
                             ui.separator();
@@ -1518,17 +1518,14 @@ impl eframe::App for BeamApp {
                                 LeftPanelTab::Presets => {
                                     ui.horizontal(|ui| {
                                         if ui
-                                            .button(format!("➕ {}", t!("preset_save_btn")))
+                                            .button(format!("+ {}", t!("preset_save_btn")))
                                             .clicked()
                                         {
                                             self.show_new_preset_dialog = true;
                                             self.new_preset_name = String::new();
                                             self.new_preset_mask = PresetGroupMask::default();
                                         }
-                                        if ui
-                                            .button(format!("📥 {}", t!("preset_import_btn")))
-                                            .clicked()
-                                        {
+                                        if ui.button(t!("preset_import_btn")).clicked() {
                                             self.import_preset_dialog();
                                         }
                                     });
@@ -1650,7 +1647,7 @@ impl eframe::App for BeamApp {
                                                             ),
                                                             |ui| {
                                                                 if ui
-                                                                    .small_button("🗑")
+                                                                    .small_button("✕")
                                                                     .on_hover_text(t!(
                                                                         "preset_delete_btn"
                                                                     ))
@@ -1660,7 +1657,7 @@ impl eframe::App for BeamApp {
                                                                         Some(preset.id.clone());
                                                                 }
                                                                 if ui
-                                                                    .small_button("📤")
+                                                                    .small_button("↗")
                                                                     .on_hover_text(t!(
                                                                         "preset_export_btn"
                                                                     ))
@@ -1875,9 +1872,9 @@ impl eframe::App for BeamApp {
 
                                                     // Toggle Crop Tool button
                                                     let btn_text = if self.crop_mode_active {
-                                                        format!("✔ {}", t!("develop_crop_done"))
+                                                        t!("develop_crop_done")
                                                     } else {
-                                                        format!("⛶ {}", t!("develop_crop_btn"))
+                                                        t!("develop_crop_btn")
                                                     };
                                                     let resp = ui.selectable_label(self.crop_mode_active, btn_text);
                                                     if resp.clicked() {
@@ -2689,20 +2686,13 @@ impl eframe::App for BeamApp {
                                             action_label = Some(t!("history_reset_all"));
                                         }
 
-                                        if ui
-                                            .button(format!("💾 {}", t!("develop_save_sidecar")))
-                                            .clicked()
-                                        {
+                                        if ui.button(t!("develop_save_sidecar")).clicked() {
                                             self.save_sidecar();
                                         }
 
                                         if ui
                                             .button(
-                                                RichText::new(format!(
-                                                    "📤 {}",
-                                                    t!("develop_export_btn")
-                                                ))
-                                                .strong(),
+                                                RichText::new(t!("develop_export_btn")).strong(),
                                             )
                                             .clicked()
                                         {
@@ -2780,10 +2770,7 @@ impl eframe::App for BeamApp {
                     if let Some(err) = &self.error_message {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                ui.colored_label(
-                                    Color32::RED,
-                                    format!("⚠ {}", t!("develop_error_title")),
-                                );
+                                ui.colored_label(Color32::RED, t!("develop_error_title"));
                                 ui.label(RichText::new(err).color(Color32::LIGHT_RED));
                                 if ui.button(t!("develop_dismiss")).clicked() {
                                     clear_error = true;
@@ -3258,10 +3245,7 @@ impl eframe::App for BeamApp {
                                 ui.label(t!("develop_empty_desc"));
                                 ui.add_space(20.0);
                                 if ui
-                                    .button(
-                                        RichText::new(format!("📂  {}", t!("develop_open_btn")))
-                                            .size(16.0),
-                                    )
+                                    .button(RichText::new(t!("develop_open_btn")).size(16.0))
                                     .clicked()
                                 {
                                     self.open_file_dialog();
@@ -4471,13 +4455,6 @@ impl BeamApp {
                                             rect,
                                             2.0,
                                             Color32::from_rgb(30, 30, 35),
-                                        );
-                                        ui.painter().text(
-                                            rect.center(),
-                                            Align2::CENTER_CENTER,
-                                            "📷",
-                                            FontId::proportional(16.0),
-                                            Color32::GRAY,
                                         );
                                         resp
                                     }

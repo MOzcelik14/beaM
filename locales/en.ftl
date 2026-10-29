@@ -206,7 +206,7 @@ history_reset_crop = Reset Crop
 
 # Crop & Straighten Tool
 develop_crop_tool = Crop & Straighten
-develop_crop_btn = ✂ Crop (C)
+develop_crop_btn = Crop (C)
 develop_crop_aspect = Aspect Ratio:
 develop_crop_aspect_original = Original
 develop_crop_aspect_1_1 = 1:1 Square

@@ -206,7 +206,7 @@ history_reset_crop = Kırpmayı Sıfırla
 
 # Crop & Straighten Tool
 develop_crop_tool = Kırpma ve Düzeltme
-develop_crop_btn = ✂ Kırp (C)
+develop_crop_btn = Kırp (C)
 develop_crop_aspect = En Boy Oranı:
 develop_crop_aspect_original = Orijinal
 develop_crop_aspect_1_1 = 1:1 Kare
