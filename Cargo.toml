@@ -13,7 +13,7 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
 authors = ["beaM. contributors"]
-repository = "https://github.com/mozcelik/beaM"
+repository = "https://github.com/MOzcelik14/beaM"
 
 [workspace.dependencies]
 beam-core = { path = "crates/beam-core" }
