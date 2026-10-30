@@ -8,6 +8,12 @@ view_develop = Geliştir
 menu_file = Dosya
 menu_open_photo = Fotoğraf Aç...
 menu_open_photo_shortcut = Fotoğraf Aç... (Ctrl+O)
+menu_open_project = Projeyi Aç...
+menu_open_project_shortcut = Projeyi Aç...
+menu_save_project = Projeyi Kaydet
+menu_save_project_shortcut = Projeyi Kaydet (Ctrl+S)
+menu_save_project_as = Projeyi Farklı Kaydet...
+menu_save_project_as_shortcut = Projeyi Farklı Kaydet... (Ctrl+Shift+S)
 menu_import_folder = Klasör İçe Aktar...
 menu_import_folder_shortcut = Klasör İçe Aktar... (Ctrl+Shift+O)
 menu_export = Dışa Aktar...
@@ -306,6 +312,9 @@ status_save_error = Kaydetme hatası: {$error}
 status_error = Hata: {$msg}
 status_no_image_hint = Görüntü yüklenmedi. Bir fotoğraf açmak için Dosya -> Fotoğraf Aç... (Ctrl+O) seçeneğini kullanın.
 status_sidecar = Ayar dosyası: {$status}
+project_load_error = Proje dosyası yüklenemedi
+project_image_not_found = Proje fotoğrafı bulunamadı: {$path}
+project_saved = Proje kaydedildi
 
 # Presets & Settings Sync
 develop_presets = Hazır Ayarlar

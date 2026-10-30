@@ -8,6 +8,12 @@ view_develop = Develop
 menu_file = File
 menu_open_photo = Open Photo...
 menu_open_photo_shortcut = Open Photo... (Ctrl+O)
+menu_open_project = Open Project...
+menu_open_project_shortcut = Open Project...
+menu_save_project = Save Project
+menu_save_project_shortcut = Save Project (Ctrl+S)
+menu_save_project_as = Save Project As...
+menu_save_project_as_shortcut = Save Project As... (Ctrl+Shift+S)
 menu_import_folder = Import Folder...
 menu_import_folder_shortcut = Import Folder... (Ctrl+Shift+O)
 menu_export = Export...
@@ -306,6 +312,9 @@ status_save_error = Save error: {$error}
 status_error = Error: {$msg}
 status_no_image_hint = No image loaded. Use File -> Open Photo... (Ctrl+O) to open an image.
 status_sidecar = Sidecar: {$status}
+project_load_error = Failed to load project file
+project_image_not_found = Project photo could not be found: {$path}
+project_saved = Project saved
 
 # Presets & Settings Sync
 develop_presets = Presets

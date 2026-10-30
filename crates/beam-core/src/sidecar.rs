@@ -8,7 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
-pub const SIDECAR_EXTENSION: &str = "beam.ron";
+pub const SIDECAR_EXTENSION: &str = "beam";
+pub const LEGACY_SIDECAR_EXTENSION: &str = "beam.ron";
+
+/// Alias representing a standalone beaM project file.
+pub type BeamProject = Sidecar;
+/// Alias representing a standalone beaM project file.
+pub type Project = Sidecar;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhiteBalanceAdjustment {
@@ -462,7 +468,7 @@ impl Sidecar {
         }
     }
 
-    /// Compute sidecar path next to the target image (e.g. `image.ARW.beam.ron`).
+    /// Compute primary sidecar path next to the target image (e.g. `image.ARW.beam`).
     pub fn path_for(image_path: &Path) -> PathBuf {
         let filename = image_path
             .file_name()
@@ -473,6 +479,55 @@ impl Sidecar {
             Some(parent) => parent.join(sidecar_name),
             None => PathBuf::from(sidecar_name),
         }
+    }
+
+    /// Search for an existing sidecar file on disk, checking `.beam` first,
+    /// then legacy `.beam.ron`.
+    pub fn find_sidecar_for(image_path: &Path) -> Option<PathBuf> {
+        let parent = image_path.parent();
+        let filename = image_path.file_name()?.to_str()?;
+
+        // 1. Primary: filename.beam (e.g. DSC00123.ARW.beam)
+        let p1 = match parent {
+            Some(dir) => dir.join(format!("{filename}.{SIDECAR_EXTENSION}")),
+            None => PathBuf::from(format!("{filename}.{SIDECAR_EXTENSION}")),
+        };
+        if p1.is_file() {
+            return Some(p1);
+        }
+
+        // 2. Alternative: stem.beam (e.g. DSC00123.beam)
+        if let Some(stem) = image_path.file_stem().and_then(|s| s.to_str()) {
+            let p2 = match parent {
+                Some(dir) => dir.join(format!("{stem}.{SIDECAR_EXTENSION}")),
+                None => PathBuf::from(format!("{stem}.{SIDECAR_EXTENSION}")),
+            };
+            if p2.is_file() {
+                return Some(p2);
+            }
+        }
+
+        // 3. Legacy: filename.beam.ron (e.g. DSC00123.ARW.beam.ron)
+        let p3 = match parent {
+            Some(dir) => dir.join(format!("{filename}.{LEGACY_SIDECAR_EXTENSION}")),
+            None => PathBuf::from(format!("{filename}.{LEGACY_SIDECAR_EXTENSION}")),
+        };
+        if p3.is_file() {
+            return Some(p3);
+        }
+
+        // 4. Legacy alternative: stem.beam.ron (e.g. DSC00123.beam.ron)
+        if let Some(stem) = image_path.file_stem().and_then(|s| s.to_str()) {
+            let p4 = match parent {
+                Some(dir) => dir.join(format!("{stem}.{LEGACY_SIDECAR_EXTENSION}")),
+                None => PathBuf::from(format!("{stem}.{LEGACY_SIDECAR_EXTENSION}")),
+            };
+            if p4.is_file() {
+                return Some(p4);
+            }
+        }
+
+        None
     }
 
     /// Serialize this sidecar to pretty RON string.
@@ -532,8 +587,63 @@ mod tests {
         let sidecar_path = Sidecar::path_for(img);
         assert_eq!(
             sidecar_path,
-            PathBuf::from("/photos/landscape/DSC00123.ARW.beam.ron")
+            PathBuf::from("/photos/landscape/DSC00123.ARW.beam")
         );
+    }
+
+    #[test]
+    fn test_find_sidecar_backward_compatibility() {
+        let temp_dir = std::env::temp_dir().join("beam_test_sidecar_find");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let img_path = temp_dir.join("photo.arw");
+        let _ = std::fs::write(&img_path, b"test image content");
+
+        // 1. When no sidecar exists
+        assert_eq!(Sidecar::find_sidecar_for(&img_path), None);
+
+        // 2. When legacy .beam.ron exists
+        let legacy_p = temp_dir.join("photo.arw.beam.ron");
+        let _ = std::fs::write(&legacy_p, b"legacy sidecar");
+        assert_eq!(Sidecar::find_sidecar_for(&img_path), Some(legacy_p.clone()));
+
+        // 3. When new .beam exists, it takes precedence over legacy
+        let modern_p = temp_dir.join("photo.arw.beam");
+        let _ = std::fs::write(&modern_p, b"modern sidecar");
+        assert_eq!(Sidecar::find_sidecar_for(&img_path), Some(modern_p.clone()));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_beam_project_standalone_save_and_load() {
+        let temp_dir = std::env::temp_dir().join("beam_test_project_save");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let project_path = temp_dir.join("custom_landscape.beam");
+        let mut project = BeamProject::new("mountain.ARW");
+        project.set_rating(5);
+        project.set_color_label(ColorLabel::Purple);
+        project.edit_stack.exposure.ev = 2.0;
+        project.edit_stack.contrast.contrast = 35.0;
+        project.push_history_step("Boost exposure", project.edit_stack.clone());
+
+        project
+            .save_to_file(&project_path)
+            .expect("Failed to save .beam project");
+        assert!(project_path.exists());
+
+        let loaded =
+            BeamProject::load_from_file(&project_path).expect("Failed to load .beam project");
+        assert_eq!(loaded.source_filename, "mountain.ARW");
+        assert_eq!(loaded.rating, 5);
+        assert_eq!(loaded.color_label, ColorLabel::Purple);
+        assert_eq!(loaded.edit_stack.exposure.ev, 2.0);
+        assert_eq!(loaded.edit_stack.contrast.contrast, 35.0);
+        assert_eq!(loaded.history.len(), 2);
+        assert_eq!(loaded.history[1].name, "Boost exposure");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

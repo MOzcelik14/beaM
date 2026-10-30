@@ -841,7 +841,8 @@ pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
     }
 
     // Hash sidecar file size and modification time if present
-    let sidecar_p = Sidecar::path_for(image_path);
+    let sidecar_p =
+        Sidecar::find_sidecar_for(image_path).unwrap_or_else(|| Sidecar::path_for(image_path));
     if let Ok(sc_meta) = std::fs::metadata(&sidecar_p) {
         sc_meta.len().hash(&mut hasher);
         if let Ok(sc_mtime) = sc_meta.modified() {

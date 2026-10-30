@@ -44,7 +44,16 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             let mut app = BeamApp::new(cc);
             if let Some(path) = initial_file {
-                app.load_file_path(path);
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if ext == "beam" || path.to_string_lossy().ends_with(".beam.ron") {
+                    app.load_project_file(path);
+                } else {
+                    app.load_file_path(path);
+                }
             }
             Ok(Box::new(app))
         }),

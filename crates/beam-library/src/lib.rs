@@ -226,7 +226,7 @@ impl LibraryDb {
             .map(|d| d.as_secs().to_string());
 
         // Check if sidecar already exists on disk
-        let sidecar_p = Sidecar::path_for(path);
+        let sidecar_p = Sidecar::find_sidecar_for(path).unwrap_or_else(|| Sidecar::path_for(path));
         let sidecar_path_str = if sidecar_p.exists() {
             Some(sidecar_p.to_string_lossy().to_string())
         } else {
@@ -528,7 +528,8 @@ impl LibraryDb {
 
         if let Ok(Some(photo)) = self.get_photo(photo_id) {
             let img_p = Path::new(&photo.file_path);
-            let sidecar_p = Sidecar::path_for(img_p);
+            let sidecar_p =
+                Sidecar::find_sidecar_for(img_p).unwrap_or_else(|| Sidecar::path_for(img_p));
             let mut sidecar = if sidecar_p.exists() {
                 Sidecar::load_from_file(&sidecar_p)
                     .unwrap_or_else(|_| Sidecar::new(&photo.file_name))
@@ -553,7 +554,8 @@ impl LibraryDb {
 
         if let Ok(Some(photo)) = self.get_photo(photo_id) {
             let img_p = Path::new(&photo.file_path);
-            let sidecar_p = Sidecar::path_for(img_p);
+            let sidecar_p =
+                Sidecar::find_sidecar_for(img_p).unwrap_or_else(|| Sidecar::path_for(img_p));
             let mut sidecar = if sidecar_p.exists() {
                 Sidecar::load_from_file(&sidecar_p)
                     .unwrap_or_else(|_| Sidecar::new(&photo.file_name))

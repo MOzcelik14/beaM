@@ -20,7 +20,7 @@
 
 ## Key Features & Core Principles
 
-1. **Non-destructive Editing**: The original RAW file is never altered. Edits are recorded in human-readable RON sidecar files (`<filename>.beam.ron`) with schema versioning for future backward-compatible migrations.
+1. **Non-destructive Editing**: The original RAW file is never altered. Edits are recorded in human-readable sidecar files (`<filename>.beam` and standalone `.beam` projects, with backward-compatible support for legacy `<filename>.beam.ron`).
 2. **GPU Pipeline**: Modular WGSL shaders executing discrete adjustment stages over linear floating-point textures.
 3. **Color Correctness**: Operates internally in a wide-gamut, linear working space (**linear Rec.2020**), transforming to sRGB for SDR display presentation and export.
 4. **Pure Rust Decoding**: Decodes camera RAW formats natively without LibRaw or C++ dependencies using the `rawler` crate.
@@ -153,7 +153,7 @@ cargo clippy --workspace --all-targets -- -D warnings
   - Linear undo/redo stack (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`, Edit menu) supporting up to 50 operations.
   - Intelligent grouping semantics: continuous slider drags and curve point movements group into a single commit on pointer release, while discrete actions (resets, checkboxes, Reset All) commit immediately.
   - Collapsible History panel on the left side of the Develop view with jump-to-any-step on click, past/future visual indicators, and persistent step numbering.
-  - Sidecar persistence: history stack and active history index are serialized to and restored from `.beam.ron`.
+  - Sidecar persistence: history stack and active history index are serialized to and restored from `.beam` (with backward compatibility for `.beam.ron`).
   - Zero-latency Before/After comparison modes powered by cached original unedited proxy texture:
     - **Toggle Mode (`\`)**: Rapidly switch between edited image and original with a subtle `BEFORE` badge overlay.
     - **Split View Mode**: Interactive split screen with draggable divider bar (`↔` handle) and zero-seam UV slicing in the viewport painter.

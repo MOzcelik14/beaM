@@ -189,6 +189,7 @@ pub struct BeamApp {
     export_is_running: bool,
     export_status_message: Option<String>,
     logo_texture: egui::TextureHandle,
+    pending_project_sidecar: Option<(PathBuf, Sidecar)>,
 }
 
 fn default_export_dir() -> PathBuf {
@@ -421,6 +422,7 @@ impl BeamApp {
             export_is_running: false,
             export_status_message: None,
             logo_texture,
+            pending_project_sidecar: None,
         }
     }
 
@@ -535,6 +537,16 @@ impl BeamApp {
 
     /// Load a specific file path asynchronously
     pub fn load_file_path(&mut self, path: PathBuf) {
+        self.load_file_path_with_sidecar(path, None);
+    }
+
+    /// Load a specific file path asynchronously with optional preloaded project/sidecar
+    pub fn load_file_path_with_sidecar(
+        &mut self,
+        path: PathBuf,
+        project_sidecar: Option<(PathBuf, Sidecar)>,
+    ) {
+        self.pending_project_sidecar = project_sidecar;
         self.current_view = AppView::Develop;
         let tx = self.tx.clone();
         let _ = tx.send(BackgroundMsg::Started(path.clone()));
@@ -546,6 +558,129 @@ impl BeamApp {
                 let _ = tx.send(BackgroundMsg::Error(err.to_string()));
             }
         });
+    }
+
+    /// Load a .beam project file
+    pub fn load_project_file(&mut self, project_path: PathBuf) {
+        let sidecar = match Sidecar::load_from_file(&project_path) {
+            Ok(sc) => sc,
+            Err(e) => {
+                self.error_message = Some(format!("{}: {e}", t!("project_load_error")));
+                return;
+            }
+        };
+
+        // Resolve original photo path
+        let mut resolved_image_path = None;
+        let direct = PathBuf::from(&sidecar.source_filename);
+        if direct.is_file() {
+            resolved_image_path = Some(direct);
+        } else if let Some(parent) = project_path.parent() {
+            let candidate = parent.join(&sidecar.source_filename);
+            if candidate.is_file() {
+                resolved_image_path = Some(candidate);
+            } else if let Ok(entries) = std::fs::read_dir(parent) {
+                let target_lower = sidecar.source_filename.to_ascii_lowercase();
+                let target_stem = Path::new(&sidecar.source_filename)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_ascii_lowercase());
+
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                        if fname.to_ascii_lowercase() == target_lower {
+                            resolved_image_path = Some(p);
+                            break;
+                        }
+                        if let Some(ref stem) = target_stem {
+                            if let Some(p_stem) = p.file_stem().and_then(|s| s.to_str()) {
+                                if p_stem.to_ascii_lowercase() == *stem
+                                    && beam_library::is_supported_image(&p)
+                                {
+                                    resolved_image_path = Some(p);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(img_path) = resolved_image_path {
+            self.load_file_path_with_sidecar(img_path, Some((project_path, sidecar)));
+        } else {
+            self.error_message = Some(t!(
+                "project_image_not_found",
+                "path" => sidecar.source_filename
+            ));
+        }
+    }
+
+    /// Save current project / sidecar
+    pub fn save_project(&mut self) {
+        if self.current_image.is_some() {
+            self.save_sidecar();
+        }
+    }
+
+    /// Save current project as a standalone .beam project file
+    pub fn save_project_as_dialog(&mut self) {
+        if let Some(path) = &self.current_path {
+            let suggested_name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("project");
+            let default_name = format!("{suggested_name}.beam");
+            let dialog = rfd::FileDialog::new()
+                .set_title(t!("menu_save_project_as"))
+                .set_file_name(&default_name)
+                .add_filter("beaM Project (*.beam)", &["beam", "BEAM"]);
+
+            let target = if let Some(parent) = path.parent() {
+                dialog.set_directory(parent).save_file()
+            } else {
+                dialog.save_file()
+            };
+
+            if let Some(save_path) = target {
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
+                let mut sidecar = Sidecar::new(filename);
+                sidecar.edit_stack = self.edit_stack.clone();
+                sidecar.history = self.history.clone();
+                sidecar.history_index = self.history_index;
+                if let Some(photo_id) = self.library_state.selected_photo_id {
+                    if let Ok(Some(photo)) = self.library_db.get_photo(photo_id) {
+                        sidecar.set_rating(photo.rating);
+                        sidecar.set_color_label(photo.color_label);
+                    }
+                }
+                if let Err(e) = sidecar.save_to_file(&save_path) {
+                    log::error!("Failed to save project to {}: {e}", save_path.display());
+                    self.error_message = Some(format!("Failed to save project: {e}"));
+                } else {
+                    self.sidecar_path = Some(save_path.clone());
+                    self.sidecar_status = t!("project_saved");
+                    log::info!("Project saved to {}", save_path.display());
+                }
+            }
+        }
+    }
+
+    /// Open project dialog to select and open a .beam project
+    pub fn open_project_dialog(&mut self) {
+        let dialog_title = t!("menu_open_project");
+        let file = rfd::FileDialog::new()
+            .set_title(dialog_title)
+            .add_filter("beaM Project (*.beam)", &["beam", "BEAM", "beam.ron"])
+            .add_filter("All Files", &["*"])
+            .pick_file();
+
+        if let Some(path) = file {
+            self.load_project_file(path);
+        }
     }
 
     /// Process messages from the background decoding and import threads
@@ -562,26 +697,21 @@ impl BeamApp {
                     self.error_message = None;
 
                     // Compute sidecar path and load existing edits if present
-                    let sidecar_p = Sidecar::path_for(&path);
-                    if sidecar_p.exists() {
-                        match Sidecar::load_from_file(&sidecar_p) {
-                            Ok(sidecar) => {
-                                self.edit_stack = sidecar.edit_stack;
-                                self.history = sidecar.history;
-                                self.history_index = sidecar.history_index;
-                                self.sidecar_status = "Loaded from disk".to_string();
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to read existing sidecar: {e}");
-                                self.edit_stack = EditStack::default();
-                                self.history = vec![HistoryStep::new(
-                                    t!("history_initial"),
-                                    EditStack::default(),
-                                )];
-                                self.history_index = 0;
-                                self.sidecar_status = "Failed to parse sidecar".to_string();
-                            }
-                        }
+                    let (sidecar_p, loaded_sidecar) =
+                        if let Some((proj_p, sc)) = self.pending_project_sidecar.take() {
+                            (proj_p, Some(sc))
+                        } else if let Some(existing_p) = Sidecar::find_sidecar_for(&path) {
+                            let sc = Sidecar::load_from_file(&existing_p).ok();
+                            (Sidecar::path_for(&path), sc)
+                        } else {
+                            (Sidecar::path_for(&path), None)
+                        };
+
+                    if let Some(sidecar) = loaded_sidecar {
+                        self.edit_stack = sidecar.edit_stack;
+                        self.history = sidecar.history;
+                        self.history_index = sidecar.history_index;
+                        self.sidecar_status = t!("status_ready");
                     } else {
                         self.edit_stack = EditStack::default();
                         self.history = vec![HistoryStep::new(
@@ -589,7 +719,7 @@ impl BeamApp {
                             EditStack::default(),
                         )];
                         self.history_index = 0;
-                        self.sidecar_status = "New sidecar".to_string();
+                        self.sidecar_status = t!("status_ready");
                     }
                     self.slider_drag_start_stack = None;
                     self.slider_drag_action_name = None;
@@ -1115,7 +1245,16 @@ impl eframe::App for BeamApp {
                     if path_buf.is_dir() {
                         self.import_folder_path(path_buf);
                     } else if path_buf.is_file() {
-                        self.load_file_path(path_buf);
+                        let ext = path_buf
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if ext == "beam" || path_buf.to_string_lossy().ends_with(".beam.ron") {
+                            self.load_project_file(path_buf);
+                        } else {
+                            self.load_file_path(path_buf);
+                        }
                         break;
                     }
                 }
@@ -1157,6 +1296,29 @@ impl eframe::App for BeamApp {
                     }
                     if ui.button(t!("menu_open_photo_shortcut")).clicked() {
                         self.open_file_dialog();
+                    }
+                    if ui.button(t!("menu_open_project_shortcut")).clicked() {
+                        self.open_project_dialog();
+                    }
+                    ui.separator();
+                    let can_save = self.current_image.is_some();
+                    if ui
+                        .add_enabled(
+                            can_save,
+                            egui::Button::new(t!("menu_save_project_shortcut")),
+                        )
+                        .clicked()
+                    {
+                        self.save_project();
+                    }
+                    if ui
+                        .add_enabled(
+                            can_save,
+                            egui::Button::new(t!("menu_save_project_as_shortcut")),
+                        )
+                        .clicked()
+                    {
+                        self.save_project_as_dialog();
                     }
                     ui.separator();
                     let can_export = (self.current_view == AppView::Develop
@@ -1345,6 +1507,13 @@ impl eframe::App for BeamApp {
         }
         if ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::O)) {
             self.import_folder_dialog();
+        }
+        if ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S)) {
+            self.save_project_as_dialog();
+        } else if ctx
+            .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S))
+        {
+            self.save_project();
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::E)) {
             self.open_export_dialog();
