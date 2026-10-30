@@ -296,7 +296,7 @@ settings_close = Close
 # About Dialog
 about_title = About beaM.
 about_description = A modern, non-destructive RAW photo editor and library manager for Linux and Windows.
-about_version = Version 0.1.0
+about_version = Version 0.1.1
 about_license = Licensed under GNU General Public License v3.0 (GPL-3.0).
 about_license_text = License: GNU General Public License v3.0 (GPL-3.0)
 about_desc_1 = A non-destructive RAW photo editor and library manager.

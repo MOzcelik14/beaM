@@ -296,7 +296,7 @@ settings_close = Kapat
 # About Dialog
 about_title = beaM. Hakkında
 about_description = Linux ve Windows için modern, tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi.
-about_version = Sürüm 0.1.0
+about_version = Sürüm 0.1.1
 about_license = GNU Genel Kamu Lisansı v3.0 (GPL-3.0) kapsamında lisanslanmıştır.
 about_license_text = Lisans: GNU Genel Kamu Lisansı v3.0 (GPL-3.0)
 about_desc_1 = Tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi.
