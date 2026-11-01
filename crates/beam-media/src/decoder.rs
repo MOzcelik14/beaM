@@ -970,7 +970,10 @@ pub fn save_thumbnail(image: &image::RgbaImage, target_path: &Path) -> Result<()
             if ext.is_empty() {
                 target_path.with_file_name(format!("{}.{pid}_{nonce}.tmp", name.to_string_lossy()))
             } else {
-                target_path.with_file_name(format!("{}.{pid}_{nonce}.tmp.{ext}", name.to_string_lossy()))
+                target_path.with_file_name(format!(
+                    "{}.{pid}_{nonce}.tmp.{ext}",
+                    name.to_string_lossy()
+                ))
             }
         }
         None => target_path.with_extension("tmp"),

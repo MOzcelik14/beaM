@@ -506,14 +506,14 @@ mod tests {
             b in 0.0f32..=1.0f32,
         ) {
             let [h, s, l] = rgb_to_hsl([r, g, b]);
-            proptest::prop_assert!(h.is_finite() && h >= 0.0 && h <= 360.0);
-            proptest::prop_assert!(s.is_finite() && s >= 0.0 && s <= 1.0);
-            proptest::prop_assert!(l.is_finite() && l >= 0.0 && l <= 1.0);
+            proptest::prop_assert!(h.is_finite() && (0.0..=360.0).contains(&h));
+            proptest::prop_assert!(s.is_finite() && (0.0..=1.0).contains(&s));
+            proptest::prop_assert!(l.is_finite() && (0.0..=1.0).contains(&l));
 
             let [r2, g2, b2] = hsl_to_rgb([h, s, l]);
-            proptest::prop_assert!(r2.is_finite() && r2 >= 0.0 && r2 <= 1.0);
-            proptest::prop_assert!(g2.is_finite() && g2 >= 0.0 && g2 <= 1.0);
-            proptest::prop_assert!(b2.is_finite() && b2 >= 0.0 && b2 <= 1.0);
+            proptest::prop_assert!(r2.is_finite() && (0.0..=1.0).contains(&r2));
+            proptest::prop_assert!(g2.is_finite() && (0.0..=1.0).contains(&g2));
+            proptest::prop_assert!(b2.is_finite() && (0.0..=1.0).contains(&b2));
         }
     }
 }

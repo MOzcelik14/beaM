@@ -532,12 +532,20 @@ pub fn show_library_view(
                                             Path::new(thumb_p),
                                         ) {
                                             Ok(tex) => {
-                                                state.insert_thumbnail(photo.id, ThumbnailStatus::Ready(tex));
+                                                state.insert_thumbnail(
+                                                    photo.id,
+                                                    ThumbnailStatus::Ready(tex),
+                                                );
                                                 ctx.request_repaint();
                                             }
                                             Err(_) => {
-                                                state.insert_thumbnail(photo.id, ThumbnailStatus::Loading);
-                                                if state.pending_thumbnail_requests.len() < MAX_PENDING_THUMBNAILS {
+                                                state.insert_thumbnail(
+                                                    photo.id,
+                                                    ThumbnailStatus::Loading,
+                                                );
+                                                if state.pending_thumbnail_requests.len()
+                                                    < MAX_PENDING_THUMBNAILS
+                                                {
                                                     state.pending_thumbnail_requests.push(
                                                         ThumbnailRequest {
                                                             photo_id: photo.id,
@@ -555,15 +563,19 @@ pub fn show_library_view(
                                         }
                                     } else {
                                         state.insert_thumbnail(photo.id, ThumbnailStatus::Loading);
-                                        if state.pending_thumbnail_requests.len() < MAX_PENDING_THUMBNAILS {
-                                            state.pending_thumbnail_requests.push(ThumbnailRequest {
-                                                photo_id: photo.id,
-                                                source_path: PathBuf::from(&photo.file_path),
-                                                sidecar_path: photo
-                                                    .sidecar_path
-                                                    .as_ref()
-                                                    .map(PathBuf::from),
-                                            });
+                                        if state.pending_thumbnail_requests.len()
+                                            < MAX_PENDING_THUMBNAILS
+                                        {
+                                            state.pending_thumbnail_requests.push(
+                                                ThumbnailRequest {
+                                                    photo_id: photo.id,
+                                                    source_path: PathBuf::from(&photo.file_path),
+                                                    sidecar_path: photo
+                                                        .sidecar_path
+                                                        .as_ref()
+                                                        .map(PathBuf::from),
+                                                },
+                                            );
                                         }
                                     }
                                 }

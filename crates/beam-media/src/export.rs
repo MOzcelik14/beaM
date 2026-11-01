@@ -574,9 +574,10 @@ pub fn export_decoded_image(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmp_path = match output_path.file_name() {
-        Some(name) => {
-            output_path.with_file_name(format!("{}.{pid}_{nonce}.tmp.partial", name.to_string_lossy()))
-        }
+        Some(name) => output_path.with_file_name(format!(
+            "{}.{pid}_{nonce}.tmp.partial",
+            name.to_string_lossy()
+        )),
         None => output_path.with_extension("tmp.partial"),
     };
 
@@ -1127,12 +1128,21 @@ mod tests {
     fn test_filename_template_security_sanitization() {
         // Traversal attempt
         let s1 = expand_filename_template("../../../etc/passwd", "photo", None, 1, 5);
-        assert!(!s1.contains(".."), "Must not contain directory traversal sequences: {s1}");
-        assert!(!s1.contains('/'), "Must not contain directory separators: {s1}");
+        assert!(
+            !s1.contains(".."),
+            "Must not contain directory traversal sequences: {s1}"
+        );
+        assert!(
+            !s1.contains('/'),
+            "Must not contain directory separators: {s1}"
+        );
 
         // Control characters
         let s2 = expand_filename_template("foo\x00bar\x1fbaz", "photo", None, 1, 5);
-        assert!(!s2.contains('\x00') && !s2.contains('\x1f'), "Must strip control characters");
+        assert!(
+            !s2.contains('\x00') && !s2.contains('\x1f'),
+            "Must strip control characters"
+        );
 
         // Windows reserved names
         let s_con = expand_filename_template("CON", "photo", None, 1, 5);
@@ -1148,7 +1158,10 @@ mod tests {
         // Length bounding
         let long_template = "a".repeat(500);
         let s_long = expand_filename_template(&long_template, "photo", None, 1, 5);
-        assert!(s_long.len() <= 200, "Filename stem must be capped at 200 chars");
+        assert!(
+            s_long.len() <= 200,
+            "Filename stem must be capped at 200 chars"
+        );
     }
 
     proptest::proptest! {
@@ -1177,5 +1190,3 @@ mod tests {
         }
     }
 }
-
-

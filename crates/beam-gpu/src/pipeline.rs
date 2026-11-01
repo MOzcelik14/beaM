@@ -41,9 +41,7 @@ impl GpuImage {
         let expected_len = (width as usize)
             .checked_mul(height as usize)
             .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| {
-                BeamError::GpuPipeline("Pixel count calculation overflowed".into())
-            })?;
+            .ok_or_else(|| BeamError::GpuPipeline("Pixel count calculation overflowed".into()))?;
 
         if data.len() != expected_len {
             return Err(BeamError::GpuPipeline(format!(

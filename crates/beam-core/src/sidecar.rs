@@ -322,7 +322,9 @@ impl EditStack {
         sanitize_float(&mut self.contrast.contrast, -100.0, 100.0, 0.0);
 
         // 5. Tone curve
-        self.tone_curve.points.retain(|p| p.x.is_finite() && p.y.is_finite());
+        self.tone_curve
+            .points
+            .retain(|p| p.x.is_finite() && p.y.is_finite());
         for p in &mut self.tone_curve.points {
             p.x = p.x.clamp(0.0, 1.0);
             p.y = p.y.clamp(0.0, 1.0);
@@ -1005,13 +1007,19 @@ mod tests {
         stack.validate_and_sanitize();
 
         assert_eq!(stack.exposure.ev, 0.0, "NaN EV must reset to 0.0");
-        assert_eq!(stack.white_balance.temperature, 0.0, "Inf temp must reset to 0.0");
+        assert_eq!(
+            stack.white_balance.temperature, 0.0,
+            "Inf temp must reset to 0.0"
+        );
         assert_eq!(stack.white_balance.tint, 0.0, "-Inf tint must reset to 0.0");
         assert_eq!(stack.crop.x, 0.0);
         assert!((stack.crop.y + stack.crop.height - 1.0).abs() < 1e-4);
         assert!(stack.crop.width <= 1.0);
         assert!(stack.crop.height >= 0.001);
-        assert_eq!(stack.crop.rotation, 90, "Rotation must normalize to multiples of 90");
+        assert_eq!(
+            stack.crop.rotation, 90,
+            "Rotation must normalize to multiples of 90"
+        );
         assert_eq!(stack.crop.straighten, 45.0, "Straighten must clamp to 45.0");
     }
 
@@ -1030,7 +1038,9 @@ mod tests {
         let sidecar_p = temp_dir.join("photo.beam");
 
         let sidecar = Sidecar::new("photo.jpg");
-        sidecar.save_to_file(&sidecar_p).expect("Must save atomically");
+        sidecar
+            .save_to_file(&sidecar_p)
+            .expect("Must save atomically");
 
         assert!(sidecar_p.is_file());
         let loaded = Sidecar::load_from_file(&sidecar_p).expect("Must load cleanly");
@@ -1039,7 +1049,10 @@ mod tests {
         // Verify no orphaned .tmp files in temp_dir
         for entry in fs::read_dir(&temp_dir).unwrap().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            assert!(!name.ends_with(".tmp"), "No temporary files should linger: {name}");
+            assert!(
+                !name.ends_with(".tmp"),
+                "No temporary files should linger: {name}"
+            );
         }
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -1071,14 +1084,14 @@ mod tests {
 
             stack.validate_and_sanitize();
 
-            proptest::prop_assert!(stack.crop.x.is_finite() && stack.crop.x >= 0.0 && stack.crop.x <= 1.0);
-            proptest::prop_assert!(stack.crop.y.is_finite() && stack.crop.y >= 0.0 && stack.crop.y <= 1.0);
-            proptest::prop_assert!(stack.crop.width.is_finite() && stack.crop.width >= 0.001 && stack.crop.width <= 1.0);
-            proptest::prop_assert!(stack.crop.height.is_finite() && stack.crop.height >= 0.001 && stack.crop.height <= 1.0);
+            proptest::prop_assert!(stack.crop.x.is_finite() && (0.0..=1.0).contains(&stack.crop.x));
+            proptest::prop_assert!(stack.crop.y.is_finite() && (0.0..=1.0).contains(&stack.crop.y));
+            proptest::prop_assert!(stack.crop.width.is_finite() && (0.001..=1.0).contains(&stack.crop.width));
+            proptest::prop_assert!(stack.crop.height.is_finite() && (0.001..=1.0).contains(&stack.crop.height));
             proptest::prop_assert!(stack.crop.x + stack.crop.width <= 1.0001);
             proptest::prop_assert!(stack.crop.y + stack.crop.height <= 1.0001);
-            proptest::prop_assert!(stack.crop.rotation % 90 == 0);
-            proptest::prop_assert!(stack.crop.straighten.is_finite() && stack.crop.straighten >= -45.0 && stack.crop.straighten <= 45.0);
+            proptest::prop_assert!(stack.crop.rotation.is_multiple_of(90));
+            proptest::prop_assert!(stack.crop.straighten.is_finite() && (-45.0..=45.0).contains(&stack.crop.straighten));
         }
     }
 }

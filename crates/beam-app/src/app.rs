@@ -296,7 +296,10 @@ impl BeamApp {
                                 let size = [rgba.width() as usize, rgba.height() as usize];
                                 Ok((
                                     thumb_path.clone(),
-                                    egui::ColorImage::from_rgba_unmultiplied(size, &rgba.into_raw()),
+                                    egui::ColorImage::from_rgba_unmultiplied(
+                                        size,
+                                        &rgba.into_raw(),
+                                    ),
                                 ))
                             }
                             Err(_) => generate_and_save_thumb(&req, &thumb_path),
@@ -321,7 +324,9 @@ impl BeamApp {
                         });
                     }
                     Err(panic_err) => {
-                        log::error!("Thumbnail worker caught panic for photo {req_id}: {panic_err:?}");
+                        log::error!(
+                            "Thumbnail worker caught panic for photo {req_id}: {panic_err:?}"
+                        );
                         let _ = worker_tx.send(BackgroundMsg::ThumbnailFailed {
                             photo_id: req_id,
                             error: "Thumbnail generation panicked".to_string(),
@@ -476,9 +481,8 @@ impl BeamApp {
 
             if let Some(path) = file {
                 let _ = tx.send(BackgroundMsg::Started(path.clone()));
-                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    decode_image(&path)
-                }));
+                let res =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_image(&path)));
                 match res {
                     Ok(Ok(decoded)) => {
                         let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));
@@ -488,7 +492,8 @@ impl BeamApp {
                     }
                     Err(panic_err) => {
                         log::error!("Image decoding worker panicked: {panic_err:?}");
-                        let _ = tx.send(BackgroundMsg::Error("Image decoding panicked".to_string()));
+                        let _ =
+                            tx.send(BackgroundMsg::Error("Image decoding panicked".to_string()));
                     }
                 }
             }
@@ -590,9 +595,8 @@ impl BeamApp {
         let tx = self.tx.clone();
         let _ = tx.send(BackgroundMsg::Started(path.clone()));
         thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                decode_image(&path)
-            }));
+            let res =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_image(&path)));
             match res {
                 Ok(Ok(decoded)) => {
                     let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));

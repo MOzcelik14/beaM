@@ -419,7 +419,10 @@ impl LibraryDb {
 
                 let path = entry.path();
                 let file_type = entry.file_type().ok();
-                let is_symlink = file_type.as_ref().map(|ft| ft.is_symlink()).unwrap_or(false);
+                let is_symlink = file_type
+                    .as_ref()
+                    .map(|ft| ft.is_symlink())
+                    .unwrap_or(false);
 
                 if recursive && depth < Self::MAX_IMPORT_DEPTH && !is_symlink && path.is_dir() {
                     let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -851,7 +854,8 @@ mod tests {
         fs::create_dir_all(&sub_dir).unwrap();
 
         let img_path = temp_dir.join("test.png");
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
         img.save(&img_path).unwrap();
 
         #[cfg(unix)]
@@ -862,8 +866,13 @@ mod tests {
 
         let db = LibraryDb::open_in_memory().unwrap();
         let thumb_dir = temp_dir.join("thumbs");
-        let count = db.scan_and_import_folder(&temp_dir, &thumb_dir, true).unwrap();
-        assert_eq!(count, 1, "Must import exactly 1 image despite symlink cycle");
+        let count = db
+            .scan_and_import_folder(&temp_dir, &thumb_dir, true)
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "Must import exactly 1 image despite symlink cycle"
+        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }
