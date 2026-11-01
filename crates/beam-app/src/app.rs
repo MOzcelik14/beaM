@@ -190,6 +190,9 @@ pub struct BeamApp {
     export_status_message: Option<String>,
     logo_texture: egui::TextureHandle,
     pending_project_sidecar: Option<(PathBuf, Sidecar)>,
+    last_saved_stack: Option<EditStack>,
+    show_unsaved_changes_dialog: bool,
+    allow_close: bool,
 }
 
 fn default_export_dir() -> PathBuf {
@@ -423,6 +426,9 @@ impl BeamApp {
             export_status_message: None,
             logo_texture,
             pending_project_sidecar: None,
+            last_saved_stack: None,
+            show_unsaved_changes_dialog: false,
+            allow_close: false,
         }
     }
 
@@ -661,6 +667,7 @@ impl BeamApp {
                     log::error!("Failed to save project to {}: {e}", save_path.display());
                     self.error_message = Some(format!("Failed to save project: {e}"));
                 } else {
+                    self.last_saved_stack = Some(self.edit_stack.clone());
                     self.sidecar_path = Some(save_path.clone());
                     self.sidecar_status = t!("project_saved");
                     log::info!("Project saved to {}", save_path.display());
@@ -724,6 +731,7 @@ impl BeamApp {
                     self.slider_drag_start_stack = None;
                     self.slider_drag_action_name = None;
                     self.sidecar_path = Some(sidecar_p);
+                    self.last_saved_stack = Some(self.edit_stack.clone());
                     ctx.request_repaint();
                 }
                 BackgroundMsg::Success(decoded) => {
@@ -1170,6 +1178,7 @@ impl BeamApp {
                 log::error!("Failed to save sidecar to {}: {e}", sidecar_path.display());
                 self.sidecar_status = t!("status_save_error", "error" => e.to_string());
             } else {
+                self.last_saved_stack = Some(self.edit_stack.clone());
                 self.sidecar_status = t!("status_saved");
                 if let Some(photo_id) = self.library_state.selected_photo_id {
                     self.library_state.thumbnail_status.remove(&photo_id);
@@ -1233,6 +1242,16 @@ impl eframe::App for BeamApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // Intercept window close request if there are unsaved changes
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.allow_close
+            && self.has_unsaved_changes()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_unsaved_changes_dialog = true;
+        }
+
         self.check_background_messages(&ctx, frame);
 
         // Handle drag-and-drop of photos or folders onto the window
@@ -1333,7 +1352,11 @@ impl eframe::App for BeamApp {
                     }
                     ui.separator();
                     if ui.button(t!("menu_quit")).clicked() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        if self.has_unsaved_changes() {
+                            self.show_unsaved_changes_dialog = true;
+                        } else {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 });
 
@@ -3538,6 +3561,9 @@ impl eframe::App for BeamApp {
         // Export dialogs
         self.show_export_dialog_window(&ctx);
         self.show_export_progress_window(&ctx);
+
+        // Unsaved changes dialog
+        self.show_unsaved_changes_dialog_window(&ctx);
     }
 }
 
@@ -4712,6 +4738,98 @@ impl BeamApp {
 
         if let Some(target_path) = clicked_photo {
             self.load_file_path(PathBuf::from(target_path));
+        }
+    }
+
+    /// Check if current image has unsaved edits
+    pub fn has_unsaved_changes(&self) -> bool {
+        if self.current_image.is_none() {
+            return false;
+        }
+        match &self.last_saved_stack {
+            Some(saved) => *saved != self.edit_stack,
+            None => false,
+        }
+    }
+
+    /// Render unsaved changes confirmation modal when attempting to exit with modified edits
+    fn show_unsaved_changes_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.show_unsaved_changes_dialog {
+            return;
+        }
+
+        let mut action_save_and_exit = false;
+        let mut action_discard_and_exit = false;
+        let mut action_cancel = false;
+
+        egui::Window::new(t!("unsaved_dialog_title"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.vertical(|ui| {
+                    ui.heading(t!("unsaved_dialog_title"));
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    ui.label(t!("unsaved_dialog_message"));
+
+                    if let Some(path) = &self.current_path {
+                        if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                            ui.add_space(4.0);
+                            ui.colored_label(Color32::from_rgb(180, 200, 240), fname);
+                        }
+                    }
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new(t!("unsaved_save_and_exit")).strong())
+                            .clicked()
+                        {
+                            action_save_and_exit = true;
+                        }
+
+                        if ui
+                            .button(
+                                RichText::new(t!("unsaved_discard_and_exit"))
+                                    .color(Color32::LIGHT_RED),
+                            )
+                            .clicked()
+                        {
+                            action_discard_and_exit = true;
+                        }
+
+                        if ui.button(t!("unsaved_cancel")).clicked() {
+                            action_cancel = true;
+                        }
+                    });
+
+                    // Keyboard shortcuts in dialog: Escape cancels, Enter saves and exits
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        action_cancel = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        action_save_and_exit = true;
+                    }
+                });
+            });
+
+        if action_save_and_exit {
+            self.save_project();
+            self.allow_close = true;
+            self.show_unsaved_changes_dialog = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if action_discard_and_exit {
+            self.allow_close = true;
+            self.show_unsaved_changes_dialog = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if action_cancel {
+            self.show_unsaved_changes_dialog = false;
         }
     }
 }

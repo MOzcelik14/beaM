@@ -397,3 +397,9 @@ settings_shortcut_fullscreen = Tam Ekran Modu (F11 / F)
 settings_shortcut_zoom = %100 / Sığdır Yakınlaştırma (Z)
 settings_shortcut_clipping = Kırpılma Uyarıları (J)
 
+# Kaydedilmemiş Değişiklikler İletişim Kutusu
+unsaved_dialog_title = Kaydedilmemiş Değişiklikler
+unsaved_dialog_message = Mevcut fotoğrafta kaydedilmemiş değişiklikler var. Çıkmadan önce kaydetmek istiyor musunuz?
+unsaved_save_and_exit = Kaydet ve Çık
+unsaved_discard_and_exit = Kaydetmeden Çık
+unsaved_cancel = İptal

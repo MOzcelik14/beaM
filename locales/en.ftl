@@ -397,3 +397,9 @@ settings_shortcut_fullscreen = Fullscreen Mode (F11 / F)
 settings_shortcut_zoom = Zoom to 100% / Fit (Z)
 settings_shortcut_clipping = Clipping Overlays Toggle (J)
 
+# Unsaved Changes Dialog
+unsaved_dialog_title = Unsaved Changes
+unsaved_dialog_message = You have unsaved changes in the current photo. Do you want to save before closing?
+unsaved_save_and_exit = Save & Exit
+unsaved_discard_and_exit = Discard & Exit
+unsaved_cancel = Cancel

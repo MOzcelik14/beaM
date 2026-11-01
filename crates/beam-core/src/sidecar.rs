@@ -859,4 +859,27 @@ mod tests {
         assert_eq!(legacy_loaded.edit_stack.crop, CropAdjustment::default());
         assert!(!legacy_loaded.edit_stack.crop.enabled);
     }
+
+    #[test]
+    fn test_edit_stack_equality_for_unsaved_changes_detection() {
+        let saved = EditStack::default();
+        let mut current = EditStack::default();
+        assert_eq!(saved, current);
+
+        // Modify exposure
+        current.exposure.ev = 0.5;
+        assert_ne!(saved, current);
+
+        // Reset back to saved value
+        current.exposure.ev = 0.0;
+        assert_eq!(saved, current);
+
+        // Modify crop
+        current.crop.rotation = 90;
+        assert_ne!(saved, current);
+
+        // Reset all
+        current.reset_all();
+        assert_eq!(saved, current);
+    }
 }
