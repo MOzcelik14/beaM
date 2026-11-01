@@ -5,7 +5,8 @@ use beam_core::sidecar::{ColorLabel, Sidecar};
 use beam_media::{
     decode_image, generate_thumbnail_with_edits, save_thumbnail, thumbnail_cache_path,
 };
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -162,6 +163,10 @@ impl LibraryDb {
         Ok(db)
     }
 
+    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+    pub const MAX_IMPORT_DEPTH: usize = 32;
+    pub const MAX_FOLDER_IMPORT_COUNT: usize = 100_000;
+
     /// Apply schema migrations for the library catalog.
     fn migrate(&self) -> Result<()> {
         self.conn
@@ -197,6 +202,36 @@ impl LibraryDb {
             "#,
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        let version: Option<u32> = self
+            .conn
+            .query_row(
+                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        match version {
+            Some(v) if v > Self::CURRENT_SCHEMA_VERSION => {
+                return Err(BeamError::Database(format!(
+                    "Unsupported database schema version {v}. Maximum supported version is {}.",
+                    Self::CURRENT_SCHEMA_VERSION
+                )));
+            }
+            Some(_v) => {
+                // Schema version is current
+            }
+            None => {
+                self.conn
+                    .execute(
+                        "INSERT INTO schema_version (version) VALUES (?1)",
+                        params![Self::CURRENT_SCHEMA_VERSION],
+                    )
+                    .map_err(|e| BeamError::Database(e.to_string()))?;
+            }
+        }
 
         Ok(())
     }
@@ -341,6 +376,7 @@ impl LibraryDb {
     }
 
     /// Recursively scan a folder and import all supported photos.
+    /// Safely prevents symlink loops, caps traversal depth, and bounds maximum imported items.
     pub fn scan_and_import_folder(
         &self,
         folder: &Path,
@@ -348,9 +384,26 @@ impl LibraryDb {
         recursive: bool,
     ) -> Result<usize> {
         let mut count = 0;
-        let mut stack = vec![folder.to_path_buf()];
+        let mut visited_dirs = HashSet::new();
 
-        while let Some(dir) = stack.pop() {
+        if let Ok(canonical_root) = folder.canonicalize() {
+            visited_dirs.insert(canonical_root);
+        } else {
+            visited_dirs.insert(folder.to_path_buf());
+        }
+
+        // Stack contains (directory_path, current_depth)
+        let mut stack = vec![(folder.to_path_buf(), 0usize)];
+
+        while let Some((dir, depth)) = stack.pop() {
+            if count >= Self::MAX_FOLDER_IMPORT_COUNT {
+                log::warn!(
+                    "Reached maximum folder import limit of {} items.",
+                    Self::MAX_FOLDER_IMPORT_COUNT
+                );
+                break;
+            }
+
             let entries = match fs::read_dir(&dir) {
                 Ok(e) => e,
                 Err(err) => {
@@ -360,9 +413,19 @@ impl LibraryDb {
             };
 
             for entry in entries.flatten() {
+                if count >= Self::MAX_FOLDER_IMPORT_COUNT {
+                    break;
+                }
+
                 let path = entry.path();
-                if path.is_dir() && recursive {
-                    stack.push(path);
+                let file_type = entry.file_type().ok();
+                let is_symlink = file_type.as_ref().map(|ft| ft.is_symlink()).unwrap_or(false);
+
+                if recursive && depth < Self::MAX_IMPORT_DEPTH && !is_symlink && path.is_dir() {
+                    let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                    if visited_dirs.insert(canonical) {
+                        stack.push((path, depth + 1));
+                    }
                 } else if path.is_file() && is_supported_image(&path) {
                     if let Ok(_photo) = self.import_file(&path, thumb_dir) {
                         count += 1;
@@ -758,6 +821,49 @@ mod tests {
         };
         let raw_only = db.query_photos(&filter_raw).unwrap();
         assert_eq!(raw_only.len(), 0);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_schema_version_validation() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (999);
+            "#,
+        )
+        .unwrap();
+
+        let db = LibraryDb { conn };
+        let err = db.migrate();
+        assert!(err.is_err(), "Must reject future schema versions");
+        let msg = err.err().unwrap().to_string();
+        assert!(msg.contains("Unsupported database schema version 999"));
+    }
+
+    #[test]
+    fn test_scan_folder_symlink_cycle_protection() {
+        let temp_dir = std::env::temp_dir().join("beam_library_symlink_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let sub_dir = temp_dir.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+
+        let img_path = temp_dir.join("test.png");
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
+        img.save(&img_path).unwrap();
+
+        #[cfg(unix)]
+        {
+            let loop_link = sub_dir.join("cycle_link");
+            let _ = std::os::unix::fs::symlink(&temp_dir, &loop_link);
+        }
+
+        let db = LibraryDb::open_in_memory().unwrap();
+        let thumb_dir = temp_dir.join("thumbs");
+        let count = db.scan_and_import_folder(&temp_dir, &thumb_dir, true).unwrap();
+        assert_eq!(count, 1, "Must import exactly 1 image despite symlink cycle");
 
         let _ = fs::remove_dir_all(temp_dir);
     }
