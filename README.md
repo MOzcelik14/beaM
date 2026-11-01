@@ -57,7 +57,7 @@ beam/
 ### Building
 Clone the repository and compile the workspace:
 ```bash
-git clone https://github.com/mozcelik/beaM.git
+git clone https://github.com/MOzcelik14/beaM.git
 cd beaM
 cargo build --release
 ```
