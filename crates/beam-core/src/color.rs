@@ -482,4 +482,38 @@ mod tests {
             }
         }
     }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_tone_curve_arbitrary_points_finite_and_bounded(
+            raw_pts in proptest::collection::vec((proptest::num::f32::ANY, proptest::num::f32::ANY), 0..20)
+        ) {
+            let pts: Vec<ToneCurvePoint> = raw_pts
+                .into_iter()
+                .map(|(x, y)| ToneCurvePoint { x, y })
+                .collect();
+            let lut = generate_tone_curve_lut(&pts);
+            for (idx, val) in lut.iter().enumerate() {
+                proptest::prop_assert!(val.is_finite(), "LUT[{}] is not finite: {}", idx, val);
+                proptest::prop_assert!(*val >= 0.0 && *val <= 1.0, "LUT[{}] out of [0, 1]: {}", idx, val);
+            }
+        }
+
+        #[test]
+        fn prop_rgb_hsl_finite_and_bounded(
+            r in 0.0f32..=1.0f32,
+            g in 0.0f32..=1.0f32,
+            b in 0.0f32..=1.0f32,
+        ) {
+            let [h, s, l] = rgb_to_hsl([r, g, b]);
+            proptest::prop_assert!(h.is_finite() && h >= 0.0 && h <= 360.0);
+            proptest::prop_assert!(s.is_finite() && s >= 0.0 && s <= 1.0);
+            proptest::prop_assert!(l.is_finite() && l >= 0.0 && l <= 1.0);
+
+            let [r2, g2, b2] = hsl_to_rgb([h, s, l]);
+            proptest::prop_assert!(r2.is_finite() && r2 >= 0.0 && r2 <= 1.0);
+            proptest::prop_assert!(g2.is_finite() && g2 >= 0.0 && g2 <= 1.0);
+            proptest::prop_assert!(b2.is_finite() && b2 >= 0.0 && b2 <= 1.0);
+        }
+    }
 }

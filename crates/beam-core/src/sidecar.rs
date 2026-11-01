@@ -342,16 +342,10 @@ impl EditStack {
         }
 
         // 7. Crop & Geometry
-        sanitize_float(&mut self.crop.x, 0.0, 1.0, 0.0);
-        sanitize_float(&mut self.crop.y, 0.0, 1.0, 0.0);
         sanitize_float(&mut self.crop.width, 0.001, 1.0, 1.0);
         sanitize_float(&mut self.crop.height, 0.001, 1.0, 1.0);
-        if self.crop.x + self.crop.width > 1.0 {
-            self.crop.width = (1.0 - self.crop.x).max(0.001);
-        }
-        if self.crop.y + self.crop.height > 1.0 {
-            self.crop.height = (1.0 - self.crop.y).max(0.001);
-        }
+        sanitize_float(&mut self.crop.x, 0.0, 1.0 - self.crop.width, 0.0);
+        sanitize_float(&mut self.crop.y, 0.0, 1.0 - self.crop.height, 0.0);
         self.crop.rotation = ((self.crop.rotation % 360) / 90) * 90;
         sanitize_float(&mut self.crop.straighten, -45.0, 45.0, 0.0);
     }
@@ -1014,7 +1008,7 @@ mod tests {
         assert_eq!(stack.white_balance.temperature, 0.0, "Inf temp must reset to 0.0");
         assert_eq!(stack.white_balance.tint, 0.0, "-Inf tint must reset to 0.0");
         assert_eq!(stack.crop.x, 0.0);
-        assert_eq!(stack.crop.y, 1.0);
+        assert!((stack.crop.y + stack.crop.height - 1.0).abs() < 1e-4);
         assert!(stack.crop.width <= 1.0);
         assert!(stack.crop.height >= 0.001);
         assert_eq!(stack.crop.rotation, 90, "Rotation must normalize to multiples of 90");
@@ -1049,5 +1043,42 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_crop_geometry_always_valid(
+            x in proptest::num::f32::ANY,
+            y in proptest::num::f32::ANY,
+            w in proptest::num::f32::ANY,
+            h in proptest::num::f32::ANY,
+            rotation in proptest::num::u32::ANY,
+            straighten in proptest::num::f32::ANY,
+        ) {
+            let mut stack = EditStack {
+                crop: CropAdjustment {
+                    enabled: true,
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    rotation,
+                    straighten,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            stack.validate_and_sanitize();
+
+            proptest::prop_assert!(stack.crop.x.is_finite() && stack.crop.x >= 0.0 && stack.crop.x <= 1.0);
+            proptest::prop_assert!(stack.crop.y.is_finite() && stack.crop.y >= 0.0 && stack.crop.y <= 1.0);
+            proptest::prop_assert!(stack.crop.width.is_finite() && stack.crop.width >= 0.001 && stack.crop.width <= 1.0);
+            proptest::prop_assert!(stack.crop.height.is_finite() && stack.crop.height >= 0.001 && stack.crop.height <= 1.0);
+            proptest::prop_assert!(stack.crop.x + stack.crop.width <= 1.0001);
+            proptest::prop_assert!(stack.crop.y + stack.crop.height <= 1.0001);
+            proptest::prop_assert!(stack.crop.rotation % 90 == 0);
+            proptest::prop_assert!(stack.crop.straighten.is_finite() && stack.crop.straighten >= -45.0 && stack.crop.straighten <= 45.0);
+        }
     }
 }

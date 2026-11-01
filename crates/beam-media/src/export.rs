@@ -1150,5 +1150,32 @@ mod tests {
         let s_long = expand_filename_template(&long_template, "photo", None, 1, 5);
         assert!(s_long.len() <= 200, "Filename stem must be capped at 200 chars");
     }
+
+    proptest::proptest! {
+        #[test]
+        fn prop_filename_template_safety(
+            template in ".*",
+            name in ".*",
+            counter in proptest::num::usize::ANY,
+            rating in proptest::num::u8::ANY,
+        ) {
+            let expanded = expand_filename_template(&template, &name, None, counter, rating);
+            proptest::prop_assert!(!expanded.is_empty(), "Expanded filename cannot be empty");
+            proptest::prop_assert!(!expanded.contains('/'), "Cannot contain '/'");
+            proptest::prop_assert!(!expanded.contains('\\'), "Cannot contain '\\'");
+            proptest::prop_assert!(!expanded.contains(".."), "Cannot contain traversal '..'");
+            proptest::prop_assert!(!expanded.ends_with('.'), "Cannot end with '.'");
+            proptest::prop_assert!(!expanded.ends_with(' '), "Cannot end with whitespace");
+            proptest::prop_assert!(expanded.len() <= 200, "Length exceeds 200: {}", expanded.len());
+            for c in expanded.chars() {
+                proptest::prop_assert!(!c.is_control(), "Cannot contain control char: {:?}", c);
+            }
+            let upper = expanded.to_ascii_uppercase();
+            for reserved in WINDOWS_RESERVED_NAMES {
+                proptest::prop_assert_ne!(&upper, reserved, "Matches reserved Windows name: {}", upper);
+            }
+        }
+    }
 }
+
 
