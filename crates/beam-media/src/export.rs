@@ -357,7 +357,14 @@ pub fn sanitize_exif_orientation(exif: &mut [u8]) {
     }
 }
 
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 /// Expands filename template tokens: `{name}`, `{date}`, `{counter}`, `{rating}`.
+/// Strictly sanitizes path traversal, control characters, Windows reserved device names,
+/// and trailing dots/whitespace to ensure safe cross-platform filesystem paths.
 pub fn expand_filename_template(
     template: &str,
     name: &str,
@@ -381,14 +388,43 @@ pub fn expand_filename_template(
         .replace("{counter}", &counter_str)
         .replace("{rating}", &rating_str);
 
-    // Sanitize filesystem-prohibited characters
-    result = result.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-    let trimmed = result.trim();
-    if trimmed.is_empty() {
-        name.to_string()
-    } else {
-        trimmed.to_string()
+    // Filter control characters and prohibited filesystem characters
+    result = result
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    // Prevent directory traversal sequences ("..")
+    while result.contains("..") {
+        result = result.replace("..", "_");
     }
+
+    // Trim whitespace and trailing dots (illegal on Windows)
+    let mut trimmed = result.trim().trim_end_matches('.').trim().to_string();
+
+    if trimmed.is_empty() {
+        trimmed = "export".to_string();
+    }
+
+    // Windows reserved device names
+    let upper = trimmed.to_ascii_uppercase();
+    if WINDOWS_RESERVED_NAMES.contains(&upper.as_str()) {
+        trimmed.push('_');
+    }
+
+    // Truncate to safe stem length (200 characters max)
+    if trimmed.len() > 200 {
+        trimmed.truncate(200);
+        trimmed = trimmed.trim_end_matches('.').trim().to_string();
+    }
+
+    trimmed
 }
 
 /// Resolves a unique output path that never overwrites an existing file or the source file.
@@ -532,11 +568,23 @@ pub fn export_decoded_image(
         None
     };
 
-    match &config.format {
-        ExportFormat::Jpeg { quality } => {
+    let pid = std::process::id();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = match output_path.file_name() {
+        Some(name) => {
+            output_path.with_file_name(format!("{}.{pid}_{nonce}.tmp.partial", name.to_string_lossy()))
+        }
+        None => output_path.with_extension("tmp.partial"),
+    };
+
+    let encode_result: Result<()> = match &config.format {
+        ExportFormat::Jpeg { quality } => (|| -> Result<()> {
             let quality = (*quality).clamp(1, 100);
             let rgb_image = image::DynamicImage::ImageRgba8(rgba_image).to_rgb8();
-            let file = std::fs::File::create(output_path)?;
+            let file = std::fs::File::create(&tmp_path)?;
             let mut writer = std::io::BufWriter::new(file);
             let mut encoder = JpegEncoder::new_with_quality(&mut writer, quality);
 
@@ -555,9 +603,10 @@ pub fn export_decoded_image(
                     image::ExtendedColorType::Rgb8,
                 )
                 .map_err(|e| BeamError::ImageProcessing(format!("JPEG encode error: {e}")))?;
-        }
-        ExportFormat::Png => {
-            let file = std::fs::File::create(output_path)?;
+            Ok(())
+        })(),
+        ExportFormat::Png => (|| -> Result<()> {
+            let file = std::fs::File::create(&tmp_path)?;
             let mut writer = std::io::BufWriter::new(file);
             let mut encoder = PngEncoder::new(&mut writer);
 
@@ -576,7 +625,18 @@ pub fn export_decoded_image(
                     image::ExtendedColorType::Rgba8,
                 )
                 .map_err(|e| BeamError::ImageProcessing(format!("PNG encode error: {e}")))?;
-        }
+            Ok(())
+        })(),
+    };
+
+    if let Err(e) = encode_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, output_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
     }
 
     Ok(output_path.to_path_buf())
@@ -1062,4 +1122,33 @@ mod tests {
         assert_eq!(cropped.width(), 50);
         assert_eq!(cropped.height(), 25);
     }
+
+    #[test]
+    fn test_filename_template_security_sanitization() {
+        // Traversal attempt
+        let s1 = expand_filename_template("../../../etc/passwd", "photo", None, 1, 5);
+        assert!(!s1.contains(".."), "Must not contain directory traversal sequences: {s1}");
+        assert!(!s1.contains('/'), "Must not contain directory separators: {s1}");
+
+        // Control characters
+        let s2 = expand_filename_template("foo\x00bar\x1fbaz", "photo", None, 1, 5);
+        assert!(!s2.contains('\x00') && !s2.contains('\x1f'), "Must strip control characters");
+
+        // Windows reserved names
+        let s_con = expand_filename_template("CON", "photo", None, 1, 5);
+        assert_ne!(s_con, "CON", "CON must be sanitized");
+        let s_nul = expand_filename_template("nul", "photo", None, 1, 5);
+        assert_ne!(s_nul.to_ascii_uppercase(), "NUL", "NUL must be sanitized");
+
+        // Trailing dots and spaces
+        let s_dots = expand_filename_template("photo...   ", "photo", None, 1, 5);
+        assert!(!s_dots.ends_with('.'), "Trailing dots must be stripped");
+        assert!(!s_dots.ends_with(' '), "Trailing spaces must be stripped");
+
+        // Length bounding
+        let long_template = "a".repeat(500);
+        let s_long = expand_filename_template(&long_template, "photo", None, 1, 5);
+        assert!(s_long.len() <= 200, "Filename stem must be capped at 200 chars");
+    }
 }
+
