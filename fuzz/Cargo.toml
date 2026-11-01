@@ -1,0 +1,59 @@
+[package]
+name = "beam-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+beam-core = { path = "../crates/beam-core" }
+beam-media = { path = "../crates/beam-media" }
+moxcms = "0.9.1"
+exif = { package = "kamadak-exif", version = "0.6.1" }
+ron = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
+
+[[bin]]
+name = "fuzz_image_decode"
+path = "fuzz_targets/fuzz_image_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sidecar_loader"
+path = "fuzz_targets/fuzz_sidecar_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_preset_loader"
+path = "fuzz_targets/fuzz_preset_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_config_loader"
+path = "fuzz_targets/fuzz_config_loader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_icc_parse"
+path = "fuzz_targets/fuzz_icc_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_exif_parse"
+path = "fuzz_targets/fuzz_exif_parse.rs"
+test = false
+doc = false
+bench = false
