@@ -32,10 +32,22 @@ impl GpuImage {
         height: u32,
         data: &[f32],
     ) -> Result<Self> {
-        if data.len() != (width * height * 4) as usize {
+        if width == 0 || height == 0 {
+            return Err(BeamError::GpuPipeline(
+                "Image dimensions cannot be zero".into(),
+            ));
+        }
+
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| {
+                BeamError::GpuPipeline("Pixel count calculation overflowed".into())
+            })?;
+
+        if data.len() != expected_len {
             return Err(BeamError::GpuPipeline(format!(
-                "Data size mismatch: expected {} floats, got {}",
-                width * height * 4,
+                "Data size mismatch: expected {expected_len} floats, got {}",
                 data.len()
             )));
         }
@@ -1067,6 +1079,12 @@ impl EditPipeline {
         let width = input.width;
         let height = input.height;
 
+        if width == 0 || height == 0 {
+            return Err(BeamError::GpuPipeline(
+                "Cannot render image with zero width or height".into(),
+            ));
+        }
+
         // 1. Create target texture with Rgba8Unorm format
         let target_desc = wgpu::TextureDescriptor {
             label: Some("beam_export_target_texture"),
@@ -1113,9 +1131,15 @@ impl EditPipeline {
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let bytes_per_row = (unaligned_bytes_per_row + align - 1) & !(align - 1);
 
+        let staging_buffer_size = (bytes_per_row as u64)
+            .checked_mul(height as u64)
+            .ok_or_else(|| {
+                BeamError::GpuPipeline("Staging buffer size calculation overflowed".into())
+            })?;
+
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("beam_export_staging_buffer"),
-            size: (bytes_per_row * height) as u64,
+            size: staging_buffer_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1420,7 +1444,7 @@ mod tests {
 
         let staging_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("golden_readback_buffer"),
-            size: (bytes_per_row * height) as u64,
+            size: (bytes_per_row as u64) * (height as u64),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1547,7 +1571,7 @@ mod tests {
 
         let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging"),
-            size: (bytes_per_row * height) as u64,
+            size: (bytes_per_row as u64) * (height as u64),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1688,5 +1712,18 @@ mod tests {
             monolithic, tiled,
             "Tiled render must be bit-exact with monolithic render!"
         );
+    }
+
+    #[test]
+    fn test_gpu_zero_dimension_handling() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let res = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, 0, 100, &[]);
+        assert!(res.is_err(), "Must reject zero width");
+
+        let res2 = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, 100, 0, &[]);
+        assert!(res2.is_err(), "Must reject zero height");
     }
 }
