@@ -70,7 +70,22 @@ impl Default for LibraryViewState {
     }
 }
 
+pub const MAX_IN_MEMORY_THUMBNAILS: usize = 500;
+pub const MAX_PENDING_THUMBNAILS: usize = 200;
+
 impl LibraryViewState {
+    /// Inserts a thumbnail status, enforcing the in-memory cache capacity bound.
+    pub fn insert_thumbnail(&mut self, photo_id: i64, status: ThumbnailStatus) {
+        if self.thumbnail_status.len() >= MAX_IN_MEMORY_THUMBNAILS
+            && !self.thumbnail_status.contains_key(&photo_id)
+        {
+            if let Some(&old_key) = self.thumbnail_status.keys().next() {
+                self.thumbnail_status.remove(&old_key);
+            }
+        }
+        self.thumbnail_status.insert(photo_id, status);
+    }
+
     /// Refresh photos list from SQLite catalog matching current filter.
     pub fn refresh(&mut self, db: &LibraryDb) {
         if let Ok(photos) = db.query_photos(&self.filter) {
@@ -115,16 +130,15 @@ pub fn show_library_view(
 
     // Keyboard shortcuts for selected photo rating: keys 0-5
     if let Some(selected_id) = state.selected_photo_id {
-        for num in 0..=5u8 {
-            let key = match num {
-                0 => egui::Key::Num0,
-                1 => egui::Key::Num1,
-                2 => egui::Key::Num2,
-                3 => egui::Key::Num3,
-                4 => egui::Key::Num4,
-                5 => egui::Key::Num5,
-                _ => unreachable!(),
-            };
+        const RATING_KEYS: [(u8, egui::Key); 6] = [
+            (0, egui::Key::Num0),
+            (1, egui::Key::Num1),
+            (2, egui::Key::Num2),
+            (3, egui::Key::Num3),
+            (4, egui::Key::Num4),
+            (5, egui::Key::Num5),
+        ];
+        for (num, key) in RATING_KEYS {
             if ctx.input(|i| i.key_pressed(key) && !i.modifiers.command && !i.modifiers.ctrl) {
                 let _ = db.update_rating(selected_id, num);
                 state.needs_refresh = true;
@@ -518,41 +532,39 @@ pub fn show_library_view(
                                             Path::new(thumb_p),
                                         ) {
                                             Ok(tex) => {
-                                                state
-                                                    .thumbnail_status
-                                                    .insert(photo.id, ThumbnailStatus::Ready(tex));
+                                                state.insert_thumbnail(photo.id, ThumbnailStatus::Ready(tex));
                                                 ctx.request_repaint();
                                             }
                                             Err(_) => {
-                                                state
-                                                    .thumbnail_status
-                                                    .insert(photo.id, ThumbnailStatus::Loading);
-                                                state.pending_thumbnail_requests.push(
-                                                    ThumbnailRequest {
-                                                        photo_id: photo.id,
-                                                        source_path: PathBuf::from(
-                                                            &photo.file_path,
-                                                        ),
-                                                        sidecar_path: photo
-                                                            .sidecar_path
-                                                            .as_ref()
-                                                            .map(PathBuf::from),
-                                                    },
-                                                );
+                                                state.insert_thumbnail(photo.id, ThumbnailStatus::Loading);
+                                                if state.pending_thumbnail_requests.len() < MAX_PENDING_THUMBNAILS {
+                                                    state.pending_thumbnail_requests.push(
+                                                        ThumbnailRequest {
+                                                            photo_id: photo.id,
+                                                            source_path: PathBuf::from(
+                                                                &photo.file_path,
+                                                            ),
+                                                            sidecar_path: photo
+                                                                .sidecar_path
+                                                                .as_ref()
+                                                                .map(PathBuf::from),
+                                                        },
+                                                    );
+                                                }
                                             }
                                         }
                                     } else {
-                                        state
-                                            .thumbnail_status
-                                            .insert(photo.id, ThumbnailStatus::Loading);
-                                        state.pending_thumbnail_requests.push(ThumbnailRequest {
-                                            photo_id: photo.id,
-                                            source_path: PathBuf::from(&photo.file_path),
-                                            sidecar_path: photo
-                                                .sidecar_path
-                                                .as_ref()
-                                                .map(PathBuf::from),
-                                        });
+                                        state.insert_thumbnail(photo.id, ThumbnailStatus::Loading);
+                                        if state.pending_thumbnail_requests.len() < MAX_PENDING_THUMBNAILS {
+                                            state.pending_thumbnail_requests.push(ThumbnailRequest {
+                                                photo_id: photo.id,
+                                                source_path: PathBuf::from(&photo.file_path),
+                                                sidecar_path: photo
+                                                    .sidecar_path
+                                                    .as_ref()
+                                                    .map(PathBuf::from),
+                                            });
+                                        }
                                     }
                                 }
 

@@ -283,38 +283,48 @@ impl BeamApp {
                 };
 
                 let Some(req) = req else { continue };
+                let req_id = req.photo_id;
 
                 let thumb_path =
                     beam_media::thumbnail_cache_path(&req.source_path, &worker_thumb_dir);
 
-                let result = if thumb_path.exists() {
-                    match image::open(&thumb_path) {
-                        Ok(img) => {
-                            let rgba = img.to_rgba8();
-                            let size = [rgba.width() as usize, rgba.height() as usize];
-                            Ok((
-                                thumb_path.clone(),
-                                egui::ColorImage::from_rgba_unmultiplied(size, &rgba.into_raw()),
-                            ))
+                let unwind_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if thumb_path.exists() {
+                        match image::open(&thumb_path) {
+                            Ok(img) => {
+                                let rgba = img.to_rgba8();
+                                let size = [rgba.width() as usize, rgba.height() as usize];
+                                Ok((
+                                    thumb_path.clone(),
+                                    egui::ColorImage::from_rgba_unmultiplied(size, &rgba.into_raw()),
+                                ))
+                            }
+                            Err(_) => generate_and_save_thumb(&req, &thumb_path),
                         }
-                        Err(_) => generate_and_save_thumb(&req, &thumb_path),
+                    } else {
+                        generate_and_save_thumb(&req, &thumb_path)
                     }
-                } else {
-                    generate_and_save_thumb(&req, &thumb_path)
-                };
+                }));
 
-                match result {
-                    Ok((path, color_image)) => {
+                match unwind_res {
+                    Ok(Ok((path, color_image))) => {
                         let _ = worker_tx.send(BackgroundMsg::ThumbnailReady {
-                            photo_id: req.photo_id,
+                            photo_id: req_id,
                             thumb_path: path.to_string_lossy().to_string(),
                             image: color_image,
                         });
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         let _ = worker_tx.send(BackgroundMsg::ThumbnailFailed {
-                            photo_id: req.photo_id,
+                            photo_id: req_id,
                             error: e,
+                        });
+                    }
+                    Err(panic_err) => {
+                        log::error!("Thumbnail worker caught panic for photo {req_id}: {panic_err:?}");
+                        let _ = worker_tx.send(BackgroundMsg::ThumbnailFailed {
+                            photo_id: req_id,
+                            error: "Thumbnail generation panicked".to_string(),
                         });
                     }
                 }
@@ -466,12 +476,19 @@ impl BeamApp {
 
             if let Some(path) = file {
                 let _ = tx.send(BackgroundMsg::Started(path.clone()));
-                match decode_image(&path) {
-                    Ok(decoded) => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    decode_image(&path)
+                }));
+                match res {
+                    Ok(Ok(decoded)) => {
                         let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         let _ = tx.send(BackgroundMsg::Error(err.to_string()));
+                    }
+                    Err(panic_err) => {
+                        log::error!("Image decoding worker panicked: {panic_err:?}");
+                        let _ = tx.send(BackgroundMsg::Error("Image decoding panicked".to_string()));
                     }
                 }
             }
@@ -497,12 +514,20 @@ impl BeamApp {
                 }
             };
 
-            match db.scan_and_import_folder(&dir, &thumb_dir, true) {
-                Ok(count) => {
+            let scan_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                db.scan_and_import_folder(&dir, &thumb_dir, true)
+            }));
+
+            match scan_res {
+                Ok(Ok(count)) => {
                     let _ = tx.send(BackgroundMsg::ImportComplete { count });
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     let _ = tx.send(BackgroundMsg::Error(format!("Folder import failed: {e}")));
+                }
+                Err(panic_err) => {
+                    log::error!("Folder import panicked: {panic_err:?}");
+                    let _ = tx.send(BackgroundMsg::Error("Folder import panicked".to_string()));
                 }
             }
         });
@@ -529,12 +554,20 @@ impl BeamApp {
                     }
                 };
 
-                match db.scan_and_import_folder(&dir, &thumb_dir, true) {
-                    Ok(count) => {
+                let scan_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    db.scan_and_import_folder(&dir, &thumb_dir, true)
+                }));
+
+                match scan_res {
+                    Ok(Ok(count)) => {
                         let _ = tx.send(BackgroundMsg::ImportComplete { count });
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         let _ = tx.send(BackgroundMsg::Error(format!("Folder import failed: {e}")));
+                    }
+                    Err(panic_err) => {
+                        log::error!("Folder import dialog panicked: {panic_err:?}");
+                        let _ = tx.send(BackgroundMsg::Error("Folder import panicked".to_string()));
                     }
                 }
             }
@@ -556,12 +589,21 @@ impl BeamApp {
         self.current_view = AppView::Develop;
         let tx = self.tx.clone();
         let _ = tx.send(BackgroundMsg::Started(path.clone()));
-        thread::spawn(move || match decode_image(&path) {
-            Ok(decoded) => {
-                let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));
-            }
-            Err(err) => {
-                let _ = tx.send(BackgroundMsg::Error(err.to_string()));
+        thread::spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decode_image(&path)
+            }));
+            match res {
+                Ok(Ok(decoded)) => {
+                    let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));
+                }
+                Ok(Err(err)) => {
+                    let _ = tx.send(BackgroundMsg::Error(err.to_string()));
+                }
+                Err(panic_err) => {
+                    log::error!("Image decoding worker panicked: {panic_err:?}");
+                    let _ = tx.send(BackgroundMsg::Error("Image decoding panicked".to_string()));
+                }
             }
         });
     }
@@ -792,16 +834,14 @@ impl BeamApp {
                         egui::TextureOptions::LINEAR,
                     );
                     self.library_state
-                        .thumbnail_status
-                        .insert(photo_id, ThumbnailStatus::Ready(tex));
+                        .insert_thumbnail(photo_id, ThumbnailStatus::Ready(tex));
                     let _ = self.library_db.update_thumbnail_path(photo_id, &thumb_path);
                     ctx.request_repaint();
                 }
                 BackgroundMsg::ThumbnailFailed { photo_id, error } => {
                     log::warn!("Thumbnail generation failed for photo {photo_id}: {error}");
                     self.library_state
-                        .thumbnail_status
-                        .insert(photo_id, ThumbnailStatus::Failed(error));
+                        .insert_thumbnail(photo_id, ThumbnailStatus::Failed(error));
                     ctx.request_repaint();
                 }
             }
@@ -1201,6 +1241,9 @@ impl BeamApp {
         let mut q = lock.lock().unwrap();
         for req in requests {
             if !q.iter().any(|r| r.photo_id == req.photo_id) {
+                if q.len() >= 500 {
+                    q.pop_back();
+                }
                 q.push_front(req);
             }
         }
@@ -3690,13 +3733,24 @@ impl BeamApp {
         thread::spawn(move || {
             let cancel_clone = cancel_flag.clone();
             let tx_prog = tx.clone();
-            let results =
+            let batch_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 beam_media::export_batch(&targets, &config, &cancel_clone, move |progress| {
                     let _ = tx_prog.send(BackgroundMsg::ExportProgress(progress));
-                });
+                })
+            }));
 
             let cancelled = cancel_flag.load(std::sync::atomic::Ordering::Relaxed);
-            let success_count = results.as_ref().map(|r| r.len()).unwrap_or(0);
+            let success_count = match batch_res {
+                Ok(Ok(ref list)) => list.len(),
+                Ok(Err(ref e)) => {
+                    log::error!("Export batch error: {e}");
+                    0
+                }
+                Err(panic_err) => {
+                    log::error!("Export batch panicked: {panic_err:?}");
+                    0
+                }
+            };
             let _ = tx.send(BackgroundMsg::ExportFinished {
                 success_count,
                 total: targets.len(),
