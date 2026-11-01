@@ -247,9 +247,8 @@ impl LibraryDb {
         let file_path = canonical.to_string_lossy().to_string();
         let file_name = path
             .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
         let metadata = fs::metadata(path)?;
         let file_size = metadata.len();
@@ -386,11 +385,10 @@ impl LibraryDb {
         let mut count = 0;
         let mut visited_dirs = HashSet::new();
 
-        if let Ok(canonical_root) = folder.canonicalize() {
-            visited_dirs.insert(canonical_root);
-        } else {
-            visited_dirs.insert(folder.to_path_buf());
-        }
+        let canonical_root = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
+        visited_dirs.insert(canonical_root.clone());
 
         // Stack contains (directory_path, current_depth)
         let mut stack = vec![(folder.to_path_buf(), 0usize)];
@@ -423,6 +421,22 @@ impl LibraryDb {
                     .as_ref()
                     .map(|ft| ft.is_symlink())
                     .unwrap_or(false);
+
+                // Isolation policy: Skip any symlink resolving outside the imported folder root
+                if is_symlink {
+                    if let Ok(target) = path.canonicalize() {
+                        if !target.starts_with(&canonical_root) {
+                            log::debug!(
+                                "Skipping symlink pointing outside library root: {}",
+                                path.display()
+                            );
+                            continue;
+                        }
+                    } else {
+                        // Broken or unresolvable symlink
+                        continue;
+                    }
+                }
 
                 if recursive && depth < Self::MAX_IMPORT_DEPTH && !is_symlink && path.is_dir() {
                     let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -873,6 +887,175 @@ mod tests {
             count, 1,
             "Must import exactly 1 image despite symlink cycle"
         );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_sql_injection_and_metacharacters() {
+        let db = LibraryDb::open_in_memory().unwrap();
+        let temp_dir = std::env::temp_dir().join("beam_library_sqli_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let img_path = temp_dir.join("target.png");
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([0, 0, 0, 255]));
+        img.save(&img_path).unwrap();
+
+        let thumb_dir = temp_dir.join("thumbs");
+        db.import_file(&img_path, &thumb_dir).unwrap();
+
+        // 1. Classic SQL injection attempt
+        let sqli_filter = LibraryFilter {
+            search_query: Some("'; DROP TABLE photos; --".into()),
+            ..Default::default()
+        };
+        let res = db.query_photos(&sqli_filter).unwrap();
+        assert_eq!(res.len(), 0, "Injection search must not match anything");
+
+        // Verify photos table is still intact and readable
+        let count_filter = LibraryFilter::default();
+        assert_eq!(db.query_photos(&count_filter).unwrap().len(), 1, "Table must not be dropped!");
+
+        // 2. OR injection attempt
+        let or_filter = LibraryFilter {
+            search_query: Some("' OR '1'='1".into()),
+            ..Default::default()
+        };
+        let res_or = db.query_photos(&or_filter).unwrap();
+        assert_eq!(res_or.len(), 0, "Must treat search literally, not boolean OR");
+
+        // 3. Metacharacter % (wildcard match)
+        let wildcard_filter = LibraryFilter {
+            search_query: Some("%".into()),
+            ..Default::default()
+        };
+        let res_wc = db.query_photos(&wildcard_filter).unwrap();
+        assert_eq!(res_wc.len(), 1, "Wildcard search matches safely");
+
+        // 4. Very long search query (10,000 characters)
+        let long_query = "x".repeat(10_000);
+        let long_filter = LibraryFilter {
+            search_query: Some(long_query),
+            ..Default::default()
+        };
+        let res_long = db.query_photos(&long_filter).unwrap();
+        assert_eq!(res_long.len(), 0, "Oversized query handled safely");
+
+        // 5. Unicode and special characters
+        let unicode_filter = LibraryFilter {
+            search_query: Some("öçşğü_日本語_🦀".into()),
+            ..Default::default()
+        };
+        let res_uni = db.query_photos(&unicode_filter).unwrap();
+        assert_eq!(res_uni.len(), 0);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_corrupted_database_handling() {
+        let temp_dir = std::env::temp_dir().join("beam_library_corrupt_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let corrupt_db_path = temp_dir.join("corrupted.db");
+        // Write invalid garbage bytes that do not form a valid SQLite database header
+        fs::write(&corrupt_db_path, b"NOT_A_SQLITE_DATABASE_INVALID_GARBAGE_BYTES_12345").unwrap();
+
+        let res = LibraryDb::open(&corrupt_db_path);
+        assert!(res.is_err(), "Must return error on corrupted database file");
+        match res {
+            Err(BeamError::Database(msg)) => {
+                assert!(!msg.is_empty(), "Error message must be present");
+            }
+            Err(e) => panic!("Expected BeamError::Database, got {e:?}"),
+            Ok(_) => panic!("Expected error, but database opened successfully"),
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_locked_database_handling() {
+        let temp_dir = std::env::temp_dir().join("beam_library_lock_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let db_path = temp_dir.join("library.db");
+        let db1 = LibraryDb::open(&db_path).unwrap();
+
+        // Lock database exclusively with db1
+        db1.conn.execute("BEGIN EXCLUSIVE", []).unwrap();
+
+        // Open second connection and try to write; must receive busy/locked error without panic
+        let db2 = Connection::open(&db_path).unwrap();
+        let res = db2.execute("INSERT INTO schema_version (version) VALUES (2)", []);
+        assert!(res.is_err(), "Second connection must fail gracefully when locked");
+
+        // Rollback first connection to release lock cleanly
+        db1.conn.execute("ROLLBACK", []).unwrap();
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_symlinks_outside_folder_skipped() {
+        let temp_dir = std::env::temp_dir().join("beam_library_symlink_ext_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let lib_dir = temp_dir.join("library_root");
+        let ext_dir = temp_dir.join("external_dir");
+        fs::create_dir_all(&lib_dir).unwrap();
+        fs::create_dir_all(&ext_dir).unwrap();
+
+        let outside_img = ext_dir.join("secret.png");
+        let img1: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([1, 1, 1, 255]));
+        img1.save(&outside_img).unwrap();
+
+        let inside_img = lib_dir.join("normal.png");
+        let img2: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([2, 2, 2, 255]));
+        img2.save(&inside_img).unwrap();
+
+        #[cfg(unix)]
+        {
+            let symlink_path = lib_dir.join("link_to_outside.png");
+            let _ = std::os::unix::fs::symlink(&outside_img, &symlink_path);
+        }
+
+        let db = LibraryDb::open_in_memory().unwrap();
+        let thumb_dir = temp_dir.join("thumbs");
+        let count = db.scan_and_import_folder(&lib_dir, &thumb_dir, true).unwrap();
+
+        // Must import exactly 1 image (normal.png); the external symlink must be skipped
+        assert_eq!(count, 1, "Must skip symlinks resolving outside the library root folder");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_deeply_nested_directory_tree() {
+        let temp_dir = std::env::temp_dir().join("beam_library_depth_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        let mut current = temp_dir.clone();
+        for i in 0..40 {
+            current = current.join(format!("level_{i}"));
+        }
+        fs::create_dir_all(&current).unwrap();
+
+        // Place an image at depth 10
+        let mut depth_10 = temp_dir.clone();
+        for i in 0..10 {
+            depth_10 = depth_10.join(format!("level_{i}"));
+        }
+        let img_path = depth_10.join("photo.png");
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([5, 5, 5, 255]));
+        img.save(&img_path).unwrap();
+
+        let db = LibraryDb::open_in_memory().unwrap();
+        let thumb_dir = temp_dir.join("thumbs");
+        let count = db.scan_and_import_folder(&temp_dir, &thumb_dir, true).unwrap();
+        assert_eq!(count, 1, "Must scan deep tree without stack overflow");
 
         let _ = fs::remove_dir_all(temp_dir);
     }
