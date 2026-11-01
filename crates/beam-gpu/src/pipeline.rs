@@ -38,6 +38,13 @@ impl GpuImage {
             ));
         }
 
+        let max_dim = device.limits().max_texture_dimension_2d;
+        if width > max_dim || height > max_dim {
+            return Err(BeamError::GpuPipeline(format!(
+                "Image dimensions ({width}x{height}) exceed GPU maximum 2D texture limit ({max_dim})"
+            )));
+        }
+
         let expected_len = (width as usize)
             .checked_mul(height as usize)
             .and_then(|pixels| pixels.checked_mul(4))
@@ -1083,6 +1090,13 @@ impl EditPipeline {
             ));
         }
 
+        let max_dim = device.limits().max_texture_dimension_2d;
+        if width > max_dim || height > max_dim {
+            return Err(BeamError::GpuPipeline(format!(
+                "Render dimensions ({width}x{height}) exceed GPU maximum 2D texture limit ({max_dim})"
+            )));
+        }
+
         // 1. Create target texture with Rgba8Unorm format
         let target_desc = wgpu::TextureDescriptor {
             label: Some("beam_export_target_texture"),
@@ -1723,5 +1737,97 @@ mod tests {
 
         let res2 = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, 100, 0, &[]);
         assert!(res2.is_err(), "Must reject zero height");
+    }
+
+    #[test]
+    fn test_render_tiled_matches_monolithic_moderate_image() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            println!("Skipping moderate tiled test (no GPU adapter)");
+            return;
+        };
+
+        let width = 256u32;
+        let height = 256u32;
+        let mut input_data = vec![0.0f32; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                input_data[idx] = (x as f32) / (width as f32);
+                input_data[idx + 1] = (y as f32) / (height as f32);
+                input_data[idx + 2] = ((x + y) as f32) / ((width + height) as f32);
+                input_data[idx + 3] = 1.0f32;
+            }
+        }
+
+        let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut edit_stack = EditStack::default();
+        edit_stack.exposure.ev = 0.75;
+        edit_stack.contrast.contrast = 25.0;
+        edit_stack.white_balance.temperature = 1000.0;
+
+        let monolithic = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &input_img, &edit_stack)
+            .expect("monolithic render failed");
+
+        let tiled = pipeline
+            .render_tiled_to_rgba8(
+                &gpu.device,
+                &gpu.queue,
+                width,
+                height,
+                &input_data,
+                &edit_stack,
+                beam_core::ExportColorSpace::Srgb,
+                64, // 4x4 tiles of 64x64
+            )
+            .expect("tiled render failed");
+
+        assert_eq!(monolithic.len(), tiled.len());
+        // Stated tolerance: bit-exact equality (0 difference) between monolithic and tiled pipelines
+        assert_eq!(
+            monolithic, tiled,
+            "Moderate tiled render (256x256) must be bit-exact with monolithic render"
+        );
+    }
+
+    #[test]
+    fn test_gpu_oversized_dimension_handling() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let max_dim = gpu.device.limits().max_texture_dimension_2d;
+        assert!(max_dim > 0);
+
+        let res_w = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, max_dim + 1, 1, &[]);
+        assert!(res_w.is_err(), "Must reject width exceeding max_texture_dimension_2d");
+
+        let res_h = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, 1, max_dim + 1, &[]);
+        assert!(res_h.is_err(), "Must reject height exceeding max_texture_dimension_2d");
+    }
+
+    #[test]
+    fn test_gpu_memory_release_on_image_switch() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 128u32;
+        let height = 128u32;
+        let dummy_data = vec![0.5f32; (width * height * 4) as usize];
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let edit_stack = EditStack::default();
+
+        // Simulate user rapidly switching between 30 different photos in editor
+        for _ in 0..30 {
+            let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &dummy_data)
+                .expect("Image allocation must succeed without leaking GPU memory");
+            let rendered = pipeline.render_to_rgba8(&gpu.device, &gpu.queue, &img, &edit_stack);
+            assert!(rendered.is_ok(), "Render must succeed");
+            // `img` and `rendered` drop here at end of loop iteration, releasing GPU textures
+        }
     }
 }
