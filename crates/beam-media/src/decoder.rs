@@ -13,6 +13,21 @@ use std::path::{Path, PathBuf};
 /// Default maximum dimension for the interactive editing proxy
 pub const PROXY_MAX_DIMENSION: u32 = 1920;
 
+/// Maximum allowed image dimension (width or height) in pixels (32,768 px).
+pub const MAX_IMAGE_DIMENSION: u32 = 32_768;
+
+/// Maximum allowed total pixels in a decoded image (150 megapixels).
+pub const MAX_IMAGE_PIXELS: u64 = 150_000_000;
+
+/// Maximum allowed image file size for decoding (500 MB).
+pub const MAX_IMAGE_FILE_SIZE: u64 = 500 * 1024 * 1024;
+
+/// Maximum allowed memory allocation for image decoding (1 GB).
+pub const MAX_IMAGE_DECODE_ALLOC: u64 = 1024 * 1024 * 1024;
+
+/// Maximum allowed ICC profile size (4 MB).
+pub const MAX_ICC_PROFILE_SIZE: usize = 4 * 1024 * 1024;
+
 /// Decoded linear image representation containing full-resolution and fast proxy buffers.
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
@@ -65,19 +80,31 @@ pub fn generate_proxy(
     src_data: &[f32],
     max_dim: u32,
 ) -> (u32, u32, Vec<f32>) {
+    if src_w == 0 || src_h == 0 || src_data.is_empty() {
+        return (0, 0, Vec::new());
+    }
+
     let max_side = src_w.max(src_h);
     if max_side <= max_dim {
         return (src_w, src_h, src_data.to_vec());
     }
 
     let scale = max_dim as f32 / max_side as f32;
-    let dst_w = ((src_w as f32 * scale).round() as u32).max(1);
-    let dst_h = ((src_h as f32 * scale).round() as u32).max(1);
+    let dst_w = ((src_w as f32 * scale).round() as u32).clamp(1, max_dim);
+    let dst_h = ((src_h as f32 * scale).round() as u32).clamp(1, max_dim);
 
     let mut dst_data = Vec::with_capacity((dst_w * dst_h * 4) as usize);
 
-    let x_ratio = (src_w - 1) as f32 / (dst_w - 1).max(1) as f32;
-    let y_ratio = (src_h - 1) as f32 / (dst_h - 1).max(1) as f32;
+    let x_ratio = if dst_w > 1 {
+        src_w.saturating_sub(1) as f32 / (dst_w - 1) as f32
+    } else {
+        0.0
+    };
+    let y_ratio = if dst_h > 1 {
+        src_h.saturating_sub(1) as f32 / (dst_h - 1) as f32
+    } else {
+        0.0
+    };
 
     for dy in 0..dst_h {
         let sy_f = dy as f32 * y_ratio;
@@ -134,6 +161,15 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage> {
         )));
     }
 
+    let file_meta = std::fs::metadata(path)?;
+    if file_meta.len() > MAX_IMAGE_FILE_SIZE {
+        return Err(BeamError::ImageProcessing(format!(
+            "File size exceeds safety limit ({} MB > {} MB)",
+            file_meta.len() / (1024 * 1024),
+            MAX_IMAGE_FILE_SIZE / (1024 * 1024)
+        )));
+    }
+
     if is_raster_file(path) {
         return decode_raster_image(path);
     }
@@ -163,6 +199,18 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
 
     let orig_w = rawimage.width as u32;
     let orig_h = rawimage.height as u32;
+
+    if orig_w == 0 || orig_h == 0 {
+        return Err(BeamError::RawDecode(
+            "RAW image has zero width or height".into(),
+        ));
+    }
+    let total_pixels = (orig_w as u64) * (orig_h as u64);
+    if total_pixels > MAX_IMAGE_PIXELS {
+        return Err(BeamError::RawDecode(format!(
+            "RAW image exceeds maximum resolution limit ({total_pixels} pixels > {MAX_IMAGE_PIXELS} pixels)"
+        )));
+    }
 
     let camera_make = rawimage.camera.make.clone();
     let camera_model = rawimage.camera.model.clone();
@@ -366,7 +414,16 @@ pub fn extract_icc_profile(path: &Path) -> Option<Vec<u8>> {
         .ok()?
         .into_decoder()
         .ok()?;
-    decoder.icc_profile().ok().flatten()
+    let icc = decoder.icc_profile().ok().flatten()?;
+    if icc.len() > MAX_ICC_PROFILE_SIZE {
+        log::warn!(
+            "Embedded ICC profile in {} exceeds maximum size limit ({} bytes), skipping",
+            path.display(),
+            icc.len()
+        );
+        return None;
+    }
+    Some(icc)
 }
 
 /// Transform non-linear pixel buffer from embedded ICC profile to linear Rec.2020 working space using moxcms.
@@ -375,6 +432,12 @@ pub fn transform_icc_to_linear_rec2020(
     icc_bytes: &[u8],
     pixels: &mut [f32],
 ) -> std::result::Result<(), String> {
+    if icc_bytes.len() > MAX_ICC_PROFILE_SIZE {
+        return Err(format!(
+            "ICC profile exceeds maximum allowed size ({} bytes > {MAX_ICC_PROFILE_SIZE} bytes)",
+            icc_bytes.len()
+        ));
+    }
     let src_profile = ColorProfile::new_from_slice(icc_bytes)
         .map_err(|e| format!("Invalid ICC profile: {e:?}"))?;
 
@@ -411,6 +474,10 @@ pub fn apply_orientation_f32(
     src_data: &[f32],
     orientation: u16,
 ) -> (u32, u32, Vec<f32>) {
+    if src_w == 0 || src_h == 0 || src_data.is_empty() {
+        return (0, 0, Vec::new());
+    }
+
     match orientation {
         2 => {
             // Flip horizontal
@@ -511,9 +578,16 @@ pub fn decode_raster_image(path: &Path) -> Result<DecodedImage> {
     if let Ok(format) = image::ImageFormat::from_path(path) {
         image_reader.set_format(format);
     }
-    let image_reader = image_reader
+    let mut image_reader = image_reader
         .with_guessed_format()
         .map_err(|e| BeamError::UnsupportedFormat(e.to_string()))?;
+
+    // Enforce decoding limits (dimensions and memory budget) to block decompression bombs
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_IMAGE_DECODE_ALLOC);
+    image_reader.limits(limits);
 
     // 1. Extract embedded ICC profile before decoding
     let icc_bytes = extract_icc_profile(path);
@@ -528,6 +602,18 @@ pub fn decode_raster_image(path: &Path) -> Result<DecodedImage> {
         .map_err(|e| BeamError::UnsupportedFormat(e.to_string()))?;
 
     let (width, height) = (dyn_img.width(), dyn_img.height());
+
+    if width == 0 || height == 0 {
+        return Err(BeamError::ImageProcessing(
+            "Image has zero width or height".into(),
+        ));
+    }
+    let total_pixels = (width as u64) * (height as u64);
+    if total_pixels > MAX_IMAGE_PIXELS {
+        return Err(BeamError::ImageProcessing(format!(
+            "Image exceeds maximum allowed resolution ({total_pixels} pixels > {MAX_IMAGE_PIXELS} pixels)"
+        )));
+    }
 
     // 4. Convert pixels to normalized f32 RGBA, strictly keeping 16-bit precision when present
     let mut rgba_floats = match dyn_img {
@@ -1235,5 +1321,24 @@ mod tests {
         // Pure Display P3 red should be transformed and stay positive
         assert!(pixels[0] > 0.0);
         assert_eq!(pixels[3], 1.0);
+    }
+
+    #[test]
+    fn test_zero_dimensions_graceful_handling() {
+        let (pw, ph, pdata) = generate_proxy(0, 0, &[], PROXY_MAX_DIMENSION);
+        assert_eq!((pw, ph), (0, 0));
+        assert!(pdata.is_empty());
+
+        let (ow, oh, odata) = apply_orientation_f32(0, 0, &[], 6);
+        assert_eq!((ow, oh), (0, 0));
+        assert!(odata.is_empty());
+    }
+
+    #[test]
+    fn test_oversized_icc_profile_rejection() {
+        let oversized = vec![0u8; MAX_ICC_PROFILE_SIZE + 1024];
+        let mut pixels = vec![1.0f32, 0.0, 0.0, 1.0];
+        let res = transform_icc_to_linear_rec2020(&oversized, &mut pixels);
+        assert!(res.is_err(), "Oversized ICC profiles must be rejected");
     }
 }
