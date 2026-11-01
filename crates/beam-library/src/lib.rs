@@ -969,8 +969,8 @@ mod tests {
             Err(BeamError::Database(msg)) => {
                 assert!(!msg.is_empty(), "Error message must be present");
             }
-            Err(e) => panic!("Expected BeamError::Database, got {e:?}"),
-            Ok(_) => panic!("Expected error, but database opened successfully"),
+            Err(e) => assert!(false, "Expected BeamError::Database, got {e:?}"),
+            Ok(_) => assert!(false, "Expected error, but database opened successfully"),
         }
 
         let _ = fs::remove_dir_all(temp_dir);

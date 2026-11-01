@@ -525,12 +525,12 @@ pub fn show_library_view(
                                         .unwrap_or(false);
 
                                     if disk_file_valid {
-                                        let thumb_p = photo.thumbnail_path.as_ref().unwrap();
-                                        match load_texture_from_path(
-                                            &ctx,
-                                            photo.id,
-                                            Path::new(thumb_p),
-                                        ) {
+                                        if let Some(thumb_p) = photo.thumbnail_path.as_deref() {
+                                            match load_texture_from_path(
+                                                &ctx,
+                                                photo.id,
+                                                Path::new(thumb_p),
+                                            ) {
                                             Ok(tex) => {
                                                 state.insert_thumbnail(
                                                     photo.id,
@@ -561,7 +561,8 @@ pub fn show_library_view(
                                                 }
                                             }
                                         }
-                                    } else {
+                                    }
+                                } else {
                                         state.insert_thumbnail(photo.id, ThumbnailStatus::Loading);
                                         if state.pending_thumbnail_requests.len()
                                             < MAX_PENDING_THUMBNAILS

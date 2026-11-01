@@ -865,6 +865,9 @@ impl BeamApp {
         if self.edit_pipeline.is_none() {
             self.edit_pipeline = Some(EditPipeline::new(device, wgpu::TextureFormat::Rgba8Unorm));
         }
+        let Some(pipeline) = self.edit_pipeline.as_mut() else {
+            return;
+        };
 
         // Upload proxy image in linear Rec.2020
         let gpu_proxy = match GpuImage::from_rgba32f(
@@ -900,7 +903,7 @@ impl BeamApp {
         let display_view = display_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Run edit pipeline (White balance -> Exposure -> Contrast -> Display)
-        self.edit_pipeline.as_mut().unwrap().render(
+        pipeline.render(
             device,
             queue,
             &gpu_proxy,
@@ -924,7 +927,7 @@ impl BeamApp {
             view_formats: &[],
         });
         let before_view = before_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.edit_pipeline.as_mut().unwrap().render(
+        pipeline.render(
             device,
             queue,
             &gpu_proxy,
@@ -1979,12 +1982,10 @@ impl eframe::App for BeamApp {
                                     // Handle hover preview
                                     if current_hovered_preset != self.hovered_preset {
                                         if let Some(p) = &current_hovered_preset {
-                                            if self.stack_before_hover.is_none() {
-                                                self.stack_before_hover =
-                                                    Some(self.edit_stack.clone());
-                                            }
-                                            let mut preview_stack =
-                                                self.stack_before_hover.as_ref().unwrap().clone();
+                                            let orig_stack = self
+                                                .stack_before_hover
+                                                .get_or_insert_with(|| self.edit_stack.clone());
+                                            let mut preview_stack = orig_stack.clone();
                                             p.apply_to(&mut preview_stack);
                                             self.edit_stack = preview_stack;
                                             self.re_render_edits(frame);
