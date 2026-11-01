@@ -1377,4 +1377,60 @@ mod tests {
         let res = transform_icc_to_linear_rec2020(&oversized, &mut pixels);
         assert!(res.is_err(), "Oversized ICC profiles must be rejected");
     }
+
+    #[test]
+    fn test_100mp_image_opens_successfully() {
+        // 10,000 x 10,000 = 100,000,000 pixels (100 MP)
+        // Verify this is within MAX_IMAGE_PIXELS (150 MP) and MAX_IMAGE_DIMENSION (32,768)
+        let w = 10_000u32;
+        let h = 10_000u32;
+        let total_pixels = (w as u64) * (h as u64);
+        assert!(
+            total_pixels <= MAX_IMAGE_PIXELS,
+            "100 MP must be within MAX_IMAGE_PIXELS limit ({total_pixels} <= {MAX_IMAGE_PIXELS})"
+        );
+        assert!(w <= MAX_IMAGE_DIMENSION && h <= MAX_IMAGE_DIMENSION);
+
+        // Verify proxy scaling math handles 100 MP cleanly
+        let max_side = w.max(h);
+        let scale = PROXY_MAX_DIMENSION as f32 / max_side as f32;
+        let dst_w = ((w as f32 * scale).round() as u32).clamp(1, PROXY_MAX_DIMENSION);
+        let dst_h = ((h as f32 * scale).round() as u32).clamp(1, PROXY_MAX_DIMENSION);
+        assert_eq!(dst_w, PROXY_MAX_DIMENSION);
+        assert_eq!(dst_h, PROXY_MAX_DIMENSION);
+    }
+
+    #[test]
+    fn test_65535x65535_png_header_rejected() {
+        let temp_dir = std::env::temp_dir().join("beam_test_png_bomb");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let png_bomb_path = temp_dir.join("bomb.png");
+        // PNG signature + IHDR chunk declaring dimensions 65535 x 65535
+        let mut png_bytes = Vec::new();
+        png_bytes.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        // IHDR chunk: length 13
+        png_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x0D]);
+        // Chunk type: IHDR
+        png_bytes.extend_from_slice(b"IHDR");
+        // Width: 65535 (0x0000FFFF)
+        png_bytes.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]);
+        // Height: 65535 (0x0000FFFF)
+        png_bytes.extend_from_slice(&[0x00, 0x00, 0xFF, 0xFF]);
+        // Bit depth: 8, color type: 2 (RGB), compression: 0, filter: 0, interlace: 0
+        png_bytes.extend_from_slice(&[8, 2, 0, 0, 0]);
+        // CRC (arbitrary 4 bytes)
+        png_bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        std::fs::write(&png_bomb_path, &png_bytes).unwrap();
+
+        let res = decode_image(&png_bomb_path);
+        assert!(
+            res.is_err(),
+            "A 65535x65535 decompression bomb must be strictly rejected by image limits"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
 }

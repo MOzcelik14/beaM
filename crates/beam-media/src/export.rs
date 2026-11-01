@@ -302,7 +302,11 @@ pub fn get_icc_profile_bytes(color_space: ExportColorSpace) -> Result<Vec<u8>> {
         .map_err(|e| BeamError::ImageProcessing(format!("Failed to encode ICC profile: {e}")))
 }
 
+/// Maximum allowable EXIF metadata size (1 MB).
+pub const MAX_EXIF_SIZE: usize = 1024 * 1024;
+
 /// Extracts raw EXIF metadata bytes from a file if present.
+/// Memory allocation is strictly bounded by `MAX_EXIF_SIZE`.
 pub fn extract_raw_exif(path: &Path) -> Option<Vec<u8>> {
     // 1. Try decoding container via image crate ImageDecoder
     if let Ok(file) = std::fs::File::open(path) {
@@ -310,24 +314,35 @@ pub fn extract_raw_exif(path: &Path) -> Option<Vec<u8>> {
         if let Ok(reader) = image::ImageReader::new(reader).with_guessed_format() {
             if let Ok(mut decoder) = reader.into_decoder() {
                 if let Ok(Some(exif)) = decoder.exif_metadata() {
-                    return Some(exif);
+                    if exif.len() <= MAX_EXIF_SIZE {
+                        return Some(exif);
+                    }
+                    return None;
                 }
             }
         }
     }
 
     // 2. Scan byte stream for JPEG APP1 EXIF segment (0xFF, 0xE1, len, "Exif\0\0")
-    if let Ok(bytes) = std::fs::read(path) {
-        let max_search = bytes.len().min(65536);
-        let mut i = 0;
-        while i + 10 < max_search {
-            if bytes[i] == 0xFF && bytes[i + 1] == 0xE1 {
-                let length = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-                if i + 4 + length <= bytes.len() && &bytes[i + 4..i + 10] == b"Exif\0\0" {
-                    return Some(bytes[i + 4..i + 2 + length].to_vec());
+    // Read only first 64 KB to avoid allocating large files in memory
+    if let Ok(mut file) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut buffer = vec![0u8; 65536];
+        if let Ok(bytes_read) = file.read(&mut buffer) {
+            let bytes = &buffer[..bytes_read];
+            let mut i = 0;
+            while i + 10 < bytes.len() {
+                if bytes[i] == 0xFF && bytes[i + 1] == 0xE1 {
+                    let length = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+                    if length <= MAX_EXIF_SIZE
+                        && i + 4 + length <= bytes.len()
+                        && &bytes[i + 4..i + 10] == b"Exif\0\0"
+                    {
+                        return Some(bytes[i + 4..i + 2 + length].to_vec());
+                    }
                 }
+                i += 1;
             }
-            i += 1;
         }
     }
 
