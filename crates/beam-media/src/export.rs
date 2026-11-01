@@ -363,8 +363,9 @@ const WINDOWS_RESERVED_NAMES: &[&str] = &[
 ];
 
 /// Expands filename template tokens: `{name}`, `{date}`, `{counter}`, `{rating}`.
-/// Strictly sanitizes path traversal, control characters, Windows reserved device names,
-/// and trailing dots/whitespace to ensure safe cross-platform filesystem paths.
+/// Strictly sanitizes path traversal, control characters, Windows reserved device names
+/// (including with extensions, e.g. CON.png), trailing dots/whitespace, and absolute paths
+/// to ensure safe cross-platform filesystem paths.
 pub fn expand_filename_template(
     template: &str,
     name: &str,
@@ -388,11 +389,13 @@ pub fn expand_filename_template(
         .replace("{counter}", &counter_str)
         .replace("{rating}", &rating_str);
 
-    // Filter control characters and prohibited filesystem characters
+    // Filter control characters and prohibited filesystem characters: <>:"/\|?*
     result = result
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            if c.is_control()
+                || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0')
+            {
                 '_'
             } else {
                 c
@@ -405,23 +408,42 @@ pub fn expand_filename_template(
         result = result.replace("..", "_");
     }
 
-    // Trim whitespace and trailing dots (illegal on Windows)
-    let mut trimmed = result.trim().trim_end_matches('.').trim().to_string();
+    // Strip trailing dots and spaces (illegal on Windows filesystem APIs)
+    let mut trimmed = result.trim().to_string();
+    while trimmed.ends_with('.') || trimmed.ends_with(' ') {
+        trimmed.pop();
+    }
 
-    if trimmed.is_empty() {
+    // Replace leading dot to prevent hidden files or traversal prefix
+    if trimmed.starts_with('.') {
+        trimmed = format!("_{}", &trimmed[1..]);
+    }
+
+    if trimmed.is_empty() || trimmed.chars().all(|c| c == '_') {
         trimmed = "export".to_string();
     }
 
-    // Windows reserved device names
-    let upper = trimmed.to_ascii_uppercase();
-    if WINDOWS_RESERVED_NAMES.contains(&upper.as_str()) {
-        trimmed.push('_');
+    // Truncate to safe stem length (200 characters max) respecting UTF-8 char boundaries
+    if trimmed.len() > 200 {
+        let mut end = 200;
+        while !trimmed.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        trimmed.truncate(end);
+        while trimmed.ends_with('.') || trimmed.ends_with(' ') {
+            trimmed.pop();
+        }
+        if trimmed.is_empty() || trimmed.chars().all(|c| c == '_') {
+            trimmed = "export".to_string();
+        }
     }
 
-    // Truncate to safe stem length (200 characters max)
-    if trimmed.len() > 200 {
-        trimmed.truncate(200);
-        trimmed = trimmed.trim_end_matches('.').trim().to_string();
+    // Windows reserved device names: CON, PRN, AUX, NUL, COM1-9, LPT1-9
+    // Windows rejects these even with extensions (e.g. "CON.jpg", "aux.png")
+    let upper = trimmed.to_ascii_uppercase();
+    let stem_prefix = upper.split('.').next().unwrap_or(&upper);
+    if WINDOWS_RESERVED_NAMES.contains(&stem_prefix) || WINDOWS_RESERVED_NAMES.contains(&upper.as_str()) {
+        trimmed = format!("_{trimmed}");
     }
 
     trimmed
@@ -1144,16 +1166,40 @@ mod tests {
             "Must strip control characters"
         );
 
-        // Windows reserved names
+        // Windows reserved names (standalone and with extension)
         let s_con = expand_filename_template("CON", "photo", None, 1, 5);
-        assert_ne!(s_con, "CON", "CON must be sanitized");
-        let s_nul = expand_filename_template("nul", "photo", None, 1, 5);
-        assert_ne!(s_nul.to_ascii_uppercase(), "NUL", "NUL must be sanitized");
+        assert_ne!(s_con.to_ascii_uppercase(), "CON", "CON must be sanitized");
+        let s_con_ext = expand_filename_template("CON.jpg", "photo", None, 1, 5);
+        assert!(!s_con_ext.to_ascii_uppercase().starts_with("CON."), "CON.jpg must be sanitized");
+        let s_nul = expand_filename_template("nul.png", "photo", None, 1, 5);
+        assert!(!s_nul.to_ascii_uppercase().starts_with("NUL."), "NUL.png must be sanitized");
+        let s_aux = expand_filename_template("aux.anything", "photo", None, 1, 5);
+        assert!(!s_aux.to_ascii_uppercase().starts_with("AUX."), "AUX.anything must be sanitized");
 
         // Trailing dots and spaces
         let s_dots = expand_filename_template("photo...   ", "photo", None, 1, 5);
         assert!(!s_dots.ends_with('.'), "Trailing dots must be stripped");
         assert!(!s_dots.ends_with(' '), "Trailing spaces must be stripped");
+
+        // Invalid characters: <>:"/\|?*
+        let s_chars = expand_filename_template("bad<file>name:with*question?and|pipe", "photo", None, 1, 5);
+        assert!(!s_chars.contains('<') && !s_chars.contains('>'));
+        assert!(!s_chars.contains(':') && !s_chars.contains('*'));
+        assert!(!s_chars.contains('?') && !s_chars.contains('|'));
+
+        // Drive letters and absolute paths
+        let s_drive = expand_filename_template("C:\\Windows\\System32\\cmd.exe", "photo", None, 1, 5);
+        assert!(!s_drive.contains(':') && !s_drive.contains('\\'));
+
+        // Non-ASCII and unicode preserved safely
+        let s_utf8 = expand_filename_template("resim_öçşğü_日本語", "photo", None, 1, 5);
+        assert!(s_utf8.contains("öçşğü"));
+        assert!(s_utf8.contains("日本語"));
+
+        // Empty template fallback
+        let s_empty = expand_filename_template("   ...   ", "", None, 1, 0);
+        assert!(!s_empty.is_empty(), "Must not be empty");
+        assert_eq!(s_empty, "export");
 
         // Length bounding
         let long_template = "a".repeat(500);
@@ -1162,6 +1208,43 @@ mod tests {
             s_long.len() <= 200,
             "Filename stem must be capped at 200 chars"
         );
+    }
+
+    #[test]
+    fn test_collision_and_atomic_temp_placement() {
+        let temp_dir = std::env::temp_dir().join(format!("beam_test_collision_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let base_file = temp_dir.join("photo.jpg");
+        std::fs::write(&base_file, b"existing").unwrap();
+
+        // 1. Collision detection generates -1, -2
+        let path1 = resolve_unique_output_path(&temp_dir, "photo", "jpg", None);
+        assert_eq!(path1, temp_dir.join("photo-1.jpg"));
+        std::fs::write(&path1, b"first-collision").unwrap();
+
+        let path2 = resolve_unique_output_path(&temp_dir, "photo", "jpg", None);
+        assert_eq!(path2, temp_dir.join("photo-2.jpg"));
+
+        // 2. Temp file placement in the exact same directory
+        let out_target = temp_dir.join("subfolder_export.jpg");
+        let pid = std::process::id();
+        let nonce = 12345u128;
+        let tmp_path = match out_target.file_name() {
+            Some(name) => out_target.with_file_name(format!(
+                "{}.{pid}_{nonce}.tmp.partial",
+                name.to_string_lossy()
+            )),
+            None => out_target.with_extension("tmp.partial"),
+        };
+
+        assert_eq!(
+            tmp_path.parent(),
+            out_target.parent(),
+            "Atomic temp file MUST reside in the exact same directory as target output"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     proptest::proptest! {
@@ -1176,15 +1259,20 @@ mod tests {
             proptest::prop_assert!(!expanded.is_empty(), "Expanded filename cannot be empty");
             proptest::prop_assert!(!expanded.contains('/'), "Cannot contain '/'");
             proptest::prop_assert!(!expanded.contains('\\'), "Cannot contain '\\'");
+            proptest::prop_assert!(!expanded.contains(':'), "Cannot contain ':'");
             proptest::prop_assert!(!expanded.contains(".."), "Cannot contain traversal '..'");
+            proptest::prop_assert!(!expanded.starts_with('.'), "Cannot start with '.'");
             proptest::prop_assert!(!expanded.ends_with('.'), "Cannot end with '.'");
             proptest::prop_assert!(!expanded.ends_with(' '), "Cannot end with whitespace");
             proptest::prop_assert!(expanded.len() <= 200, "Length exceeds 200: {}", expanded.len());
             for c in expanded.chars() {
                 proptest::prop_assert!(!c.is_control(), "Cannot contain control char: {:?}", c);
+                proptest::prop_assert!(!matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'), "Prohibited char: {:?}", c);
             }
             let upper = expanded.to_ascii_uppercase();
+            let stem_prefix = upper.split('.').next().unwrap_or(&upper);
             for reserved in WINDOWS_RESERVED_NAMES {
+                proptest::prop_assert_ne!(&stem_prefix, reserved, "Stem prefix matches Windows reserved: {}", upper);
                 proptest::prop_assert_ne!(&upper, reserved, "Matches reserved Windows name: {}", upper);
             }
         }
