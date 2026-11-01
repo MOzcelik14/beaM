@@ -6,6 +6,7 @@ pub const APP_NAME: &str = "beaM.";
 
 pub mod color;
 pub mod error;
+pub mod fs_util;
 pub mod geometry;
 pub mod i18n;
 pub mod preset;
@@ -13,6 +14,7 @@ pub mod sidecar;
 
 pub use color::ExportColorSpace;
 pub use error::{BeamError, Result};
+pub use fs_util::atomic_write;
 pub use geometry::{
     calculate_cropped_dimensions, calculate_effective_aspect_ratio, create_centered_crop_rect,
     map_output_uv_to_source,

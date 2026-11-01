@@ -208,8 +208,69 @@ impl Preset {
         ron::ser::to_string_pretty(self, pretty)
     }
 
+    pub fn validate_and_sanitize(&mut self) {
+        if let Some(wb) = &mut self.white_balance {
+            let mut stack = EditStack {
+                white_balance: wb.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *wb = stack.white_balance;
+        }
+        if let Some(exp) = &mut self.exposure {
+            let mut stack = EditStack {
+                exposure: exp.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *exp = stack.exposure;
+        }
+        if let Some(hs) = &mut self.highlights_shadows {
+            let mut stack = EditStack {
+                highlights_shadows: hs.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *hs = stack.highlights_shadows;
+        }
+        if let Some(c) = &mut self.contrast {
+            let mut stack = EditStack {
+                contrast: c.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *c = stack.contrast;
+        }
+        if let Some(tc) = &mut self.tone_curve {
+            let mut stack = EditStack {
+                tone_curve: tc.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *tc = stack.tone_curve;
+        }
+        if let Some(hsl) = &mut self.hsl {
+            let mut stack = EditStack {
+                hsl: hsl.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *hsl = stack.hsl;
+        }
+        if let Some(crop) = &mut self.crop {
+            let mut stack = EditStack {
+                crop: crop.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *crop = stack.crop;
+        }
+    }
+
     pub fn from_ron_str(s: &str) -> Result<Self, ron::error::SpannedError> {
-        ron::from_str::<Self>(s)
+        let mut preset = ron::from_str::<Self>(s)?;
+        preset.validate_and_sanitize();
+        Ok(preset)
     }
 }
 
@@ -536,7 +597,8 @@ pub fn save_user_preset(preset: &Preset, dir: &Path) -> Result<PathBuf, std::io:
     let s = preset
         .to_ron_string()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    fs::write(&path, s)?;
+    crate::fs_util::atomic_write(&path, s.as_bytes())
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(path)
 }
 

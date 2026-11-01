@@ -947,34 +947,67 @@ pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
 }
 
 /// Save an RGBA image as a thumbnail on disk (supports JPEG and PNG).
+/// Save an RGBA image as a thumbnail on disk atomically (supports JPEG and PNG).
 pub fn save_thumbnail(image: &image::RgbaImage, target_path: &Path) -> Result<()> {
     use image::ImageEncoder;
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+
     let ext = target_path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext == "jpg" || ext == "jpeg" {
-        let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
-        let file = std::fs::File::create(target_path)?;
-        let mut writer = std::io::BufWriter::new(file);
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 85);
-        encoder
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                image::ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+
+    let pid = std::process::id();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = match target_path.file_name() {
+        Some(name) => {
+            if ext.is_empty() {
+                target_path.with_file_name(format!("{}.{pid}_{nonce}.tmp", name.to_string_lossy()))
+            } else {
+                target_path.with_file_name(format!("{}.{pid}_{nonce}.tmp.{ext}", name.to_string_lossy()))
+            }
+        }
+        None => target_path.with_extension("tmp"),
+    };
+
+    let write_res = if ext == "jpg" || ext == "jpeg" {
+        (|| -> Result<()> {
+            let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+            let file = std::fs::File::create(&tmp_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, 85);
+            encoder
+                .write_image(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+            Ok(())
+        })()
     } else {
         image
-            .save(target_path)
-            .map_err(|e| BeamError::ImageProcessing(e.to_string()))?;
+            .save(&tmp_path)
+            .map_err(|e| BeamError::ImageProcessing(e.to_string()))
+    };
+
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
+
+    if let Err(e) = std::fs::rename(&tmp_path, target_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+
     Ok(())
 }
 

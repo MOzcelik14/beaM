@@ -190,7 +190,19 @@ pub fn contrast_slope(contrast: f32) -> f32 {
 
 /// Evaluates a 256-sample lookup table from a list of ToneCurvePoints using monotone cubic spline interpolation.
 pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
-    if points.is_empty() {
+    // Filter non-finite points and clamp coordinates
+    let mut pts: Vec<ToneCurvePoint> = points
+        .iter()
+        .copied()
+        .filter(|p| p.x.is_finite() && p.y.is_finite())
+        .map(|mut p| {
+            p.x = p.x.clamp(0.0, 1.0);
+            p.y = p.y.clamp(0.0, 1.0);
+            p
+        })
+        .collect();
+
+    if pts.is_empty() {
         let mut lut = [0.0f32; 256];
         for (i, item) in lut.iter_mut().enumerate() {
             *item = i as f32 / 255.0;
@@ -199,7 +211,6 @@ pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
     }
 
     // Sort and deduplicate control points by x coordinate
-    let mut pts = points.to_vec();
     pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-4);
 
@@ -208,8 +219,8 @@ pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
         let first_y = pts[0].y;
         pts.insert(0, ToneCurvePoint { x: 0.0, y: first_y });
     }
-    if pts.last().unwrap().x < 1.0 {
-        let last_y = pts.last().unwrap().y;
+    if pts.last().map(|p| p.x < 1.0).unwrap_or(false) {
+        let last_y = pts.last().map(|p| p.y).unwrap_or(1.0);
         pts.push(ToneCurvePoint { x: 1.0, y: last_y });
     }
 

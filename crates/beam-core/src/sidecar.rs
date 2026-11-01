@@ -10,11 +10,21 @@ use std::path::{Path, PathBuf};
 pub const CURRENT_FORMAT_VERSION: u32 = 1;
 pub const SIDECAR_EXTENSION: &str = "beam";
 pub const LEGACY_SIDECAR_EXTENSION: &str = "beam.ron";
+pub const MAX_SIDECAR_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
 /// Alias representing a standalone beaM project file.
 pub type BeamProject = Sidecar;
 /// Alias representing a standalone beaM project file.
 pub type Project = Sidecar;
+
+#[inline]
+fn sanitize_float(val: &mut f32, min: f32, max: f32, default: f32) {
+    if !val.is_finite() {
+        *val = default;
+    } else {
+        *val = val.clamp(min, max);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhiteBalanceAdjustment {
@@ -293,6 +303,58 @@ impl EditStack {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
+
+    /// Validates and sanitizes all numerical and geometric values in the edit stack.
+    /// Clamps or replaces non-finite (NaN, +/-Inf) values and enforces valid geometric boundaries.
+    pub fn validate_and_sanitize(&mut self) {
+        // 1. White balance
+        sanitize_float(&mut self.white_balance.temperature, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.white_balance.tint, -100.0, 100.0, 0.0);
+
+        // 2. Exposure
+        sanitize_float(&mut self.exposure.ev, -5.0, 5.0, 0.0);
+
+        // 3. Highlights & Shadows
+        sanitize_float(&mut self.highlights_shadows.highlights, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.highlights_shadows.shadows, -100.0, 100.0, 0.0);
+
+        // 4. Contrast
+        sanitize_float(&mut self.contrast.contrast, -100.0, 100.0, 0.0);
+
+        // 5. Tone curve
+        self.tone_curve.points.retain(|p| p.x.is_finite() && p.y.is_finite());
+        for p in &mut self.tone_curve.points {
+            p.x = p.x.clamp(0.0, 1.0);
+            p.y = p.y.clamp(0.0, 1.0);
+        }
+        self.tone_curve
+            .points
+            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        if self.tone_curve.points.len() < 2 {
+            self.tone_curve.points = ToneCurveAdjustment::default().points;
+        }
+
+        // 6. HSL bands
+        for band in &mut self.hsl.bands {
+            sanitize_float(&mut band.hue, -100.0, 100.0, 0.0);
+            sanitize_float(&mut band.saturation, -100.0, 100.0, 0.0);
+            sanitize_float(&mut band.luminance, -100.0, 100.0, 0.0);
+        }
+
+        // 7. Crop & Geometry
+        sanitize_float(&mut self.crop.x, 0.0, 1.0, 0.0);
+        sanitize_float(&mut self.crop.y, 0.0, 1.0, 0.0);
+        sanitize_float(&mut self.crop.width, 0.001, 1.0, 1.0);
+        sanitize_float(&mut self.crop.height, 0.001, 1.0, 1.0);
+        if self.crop.x + self.crop.width > 1.0 {
+            self.crop.width = (1.0 - self.crop.x).max(0.001);
+        }
+        if self.crop.y + self.crop.height > 1.0 {
+            self.crop.height = (1.0 - self.crop.y).max(0.001);
+        }
+        self.crop.rotation = ((self.crop.rotation % 360) / 90) * 90;
+        sanitize_float(&mut self.crop.straighten, -45.0, 45.0, 0.0);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -539,8 +601,38 @@ impl Sidecar {
         ron::ser::to_string_pretty(self, pretty_config).map_err(BeamError::from)
     }
 
+    /// Validates and sanitizes sidecar data, bounding history length and clamping all parameters.
+    pub fn validate_and_sanitize(&mut self) {
+        self.rating = self.rating.min(5);
+        self.edit_stack.validate_and_sanitize();
+
+        if self.history.is_empty() {
+            self.history
+                .push(HistoryStep::new("Initial", self.edit_stack.clone()));
+            self.history_index = 0;
+        } else {
+            if self.history.len() > MAX_HISTORY_STEPS {
+                let excess = self.history.len() - MAX_HISTORY_STEPS;
+                // Preserve initial step at 0, drain excess from index 1
+                self.history.drain(1..=excess);
+            }
+            for step in &mut self.history {
+                step.stack.validate_and_sanitize();
+            }
+            if self.history_index >= self.history.len() {
+                self.history_index = self.history.len() - 1;
+            }
+        }
+    }
+
     /// Parse sidecar from RON string and automatically run migrations if necessary.
     pub fn from_ron_str(content: &str) -> Result<Self> {
+        if content.len() > MAX_SIDECAR_FILE_SIZE as usize {
+            return Err(BeamError::Sidecar(format!(
+                "Sidecar content length ({} bytes) exceeds limit of {MAX_SIDECAR_FILE_SIZE} bytes",
+                content.len()
+            )));
+        }
         let mut sidecar: Sidecar = ron::from_str(content).map_err(BeamError::from)?;
         if sidecar.history.is_empty() {
             let initial = sidecar.edit_stack.clone();
@@ -548,18 +640,26 @@ impl Sidecar {
             sidecar.history_index = 0;
         }
         sidecar.migrate_if_needed()?;
+        sidecar.validate_and_sanitize();
         Ok(sidecar)
     }
 
-    /// Save sidecar to disk next to the given image path or explicit sidecar path.
+    /// Save sidecar to disk next to the given image path or explicit sidecar path atomically.
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
         let ron_str = self.to_ron_string()?;
-        fs::write(path, ron_str)?;
+        crate::fs_util::atomic_write(path, ron_str.as_bytes())?;
         Ok(())
     }
 
-    /// Load sidecar from disk.
+    /// Load sidecar from disk with safety bounds on file size.
     pub fn load_from_file(path: &Path) -> Result<Self> {
+        let metadata = fs::metadata(path)?;
+        if metadata.len() > MAX_SIDECAR_FILE_SIZE {
+            return Err(BeamError::Sidecar(format!(
+                "Sidecar file {} exceeds maximum allowed size of {MAX_SIDECAR_FILE_SIZE} bytes",
+                path.display()
+            )));
+        }
         let content = fs::read_to_string(path)?;
         Self::from_ron_str(&content)
     }
@@ -881,5 +981,73 @@ mod tests {
         // Reset all
         current.reset_all();
         assert_eq!(saved, current);
+    }
+
+    #[test]
+    fn test_sidecar_nan_inf_sanitization() {
+        let mut stack = EditStack {
+            exposure: ExposureAdjustment {
+                enabled: true,
+                ev: f32::NAN,
+            },
+            white_balance: WhiteBalanceAdjustment {
+                enabled: true,
+                temperature: f32::INFINITY,
+                tint: f32::NEG_INFINITY,
+            },
+            crop: CropAdjustment {
+                enabled: true,
+                x: -1.0,
+                y: 2.0,
+                width: 5.0,
+                height: 0.0,
+                rotation: 100,
+                straighten: 999.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        stack.validate_and_sanitize();
+
+        assert_eq!(stack.exposure.ev, 0.0, "NaN EV must reset to 0.0");
+        assert_eq!(stack.white_balance.temperature, 0.0, "Inf temp must reset to 0.0");
+        assert_eq!(stack.white_balance.tint, 0.0, "-Inf tint must reset to 0.0");
+        assert_eq!(stack.crop.x, 0.0);
+        assert_eq!(stack.crop.y, 1.0);
+        assert!(stack.crop.width <= 1.0);
+        assert!(stack.crop.height >= 0.001);
+        assert_eq!(stack.crop.rotation, 90, "Rotation must normalize to multiples of 90");
+        assert_eq!(stack.crop.straighten, 45.0, "Straighten must clamp to 45.0");
+    }
+
+    #[test]
+    fn test_sidecar_oversized_file_rejection() {
+        let oversized = " ".repeat((MAX_SIDECAR_FILE_SIZE + 100) as usize);
+        let res = Sidecar::from_ron_str(&oversized);
+        assert!(res.is_err(), "Must reject oversized sidecar content");
+    }
+
+    #[test]
+    fn test_atomic_sidecar_save() {
+        let temp_dir = std::env::temp_dir().join("beam_atomic_sidecar_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let _ = fs::create_dir_all(&temp_dir);
+        let sidecar_p = temp_dir.join("photo.beam");
+
+        let sidecar = Sidecar::new("photo.jpg");
+        sidecar.save_to_file(&sidecar_p).expect("Must save atomically");
+
+        assert!(sidecar_p.is_file());
+        let loaded = Sidecar::load_from_file(&sidecar_p).expect("Must load cleanly");
+        assert_eq!(loaded.source_filename, "photo.jpg");
+
+        // Verify no orphaned .tmp files in temp_dir
+        for entry in fs::read_dir(&temp_dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(!name.ends_with(".tmp"), "No temporary files should linger: {name}");
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

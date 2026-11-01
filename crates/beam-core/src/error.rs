@@ -23,6 +23,9 @@ pub enum BeamError {
     #[error("Sidecar migration error: {0}")]
     SidecarMigration(String),
 
+    #[error("Sidecar error: {0}")]
+    Sidecar(String),
+
     #[error("GPU pipeline error: {0}")]
     GpuPipeline(String),
 

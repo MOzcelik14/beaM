@@ -180,7 +180,8 @@ impl AppConfig {
         let pretty = ron::ser::PrettyConfig::new();
         let s = ron::ser::to_string_pretty(self, pretty)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        std::fs::write(&path, s)
+        crate::fs_util::atomic_write(&path, s.as_bytes())
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 
