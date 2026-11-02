@@ -15,6 +15,14 @@ moxcms = "0.9.1"
 exif = { package = "kamadak-exif", version = "0.6.1" }
 ron = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
+rawler = "0.8.0"
+
+[[bin]]
+name = "fuzz_raw_decode"
+path = "fuzz_targets/fuzz_raw_decode.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "fuzz_image_decode"
@@ -57,3 +65,13 @@ path = "fuzz_targets/fuzz_exif_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "generate_seeds"
+path = "src/bin/generate_seeds.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+panic = "unwind"

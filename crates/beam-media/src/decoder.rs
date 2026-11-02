@@ -192,10 +192,623 @@ pub fn decode_image(path: &Path) -> Result<DecodedImage> {
     }
 }
 
+/// Validate TIFF header and IFD structures to prevent third-party parser unbounded memory allocation (OOM).
+pub fn validate_tiff_raw_structure(head: &[u8], total_file_size: usize) -> Result<()> {
+    if head.len() < 8 {
+        if head.starts_with(b"II") || head.starts_with(b"MM") {
+            return Err(BeamError::RawDecode(
+                "Corrupted TIFF header: truncated (< 8 bytes)".into(),
+            ));
+        }
+        return Ok(());
+    }
+    let is_le = match &head[0..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Ok(()),
+    };
+    let magic = if is_le {
+        u16::from_le_bytes([head[2], head[3]])
+    } else {
+        u16::from_be_bytes([head[2], head[3]])
+    };
+    if !matches!(magic, 42 | 85 | 21330 | 20306) {
+        return Ok(());
+    }
+
+    let mut current_ifd = if is_le {
+        u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize
+    } else {
+        u32::from_be_bytes([head[4], head[5], head[6], head[7]]) as usize
+    };
+
+    if current_ifd == 0 {
+        return Err(BeamError::RawDecode(
+            "Corrupted TIFF header: missing root IFD (offset is 0)".into(),
+        ));
+    }
+
+    let mut visited_ifds = std::collections::HashSet::new();
+    let mut ifd_depth = 0;
+
+    while current_ifd != 0 {
+        ifd_depth += 1;
+        if ifd_depth > 16 {
+            return Err(BeamError::RawDecode(
+                "Corrupted TIFF header: IFD chain exceeded max depth of 16".into(),
+            ));
+        }
+
+        if current_ifd < 8 || current_ifd.saturating_add(2) > total_file_size {
+            return Err(BeamError::RawDecode(format!(
+                "Corrupted TIFF header: IFD offset {current_ifd} invalid or exceeds file length {total_file_size}"
+            )));
+        }
+
+        if !visited_ifds.insert(current_ifd) {
+            return Err(BeamError::RawDecode(
+                "Corrupted TIFF header: cycle detected in IFD chain".into(),
+            ));
+        }
+
+        if current_ifd.saturating_add(2) > head.len() {
+            // IFD is beyond our buffered head, but its offset is within file bounds
+            break;
+        }
+
+        let entry_count = if is_le {
+            u16::from_le_bytes([head[current_ifd], head[current_ifd + 1]]) as usize
+        } else {
+            u16::from_be_bytes([head[current_ifd], head[current_ifd + 1]]) as usize
+        };
+
+        if entry_count == 0 || entry_count > 4096 {
+            return Err(BeamError::RawDecode(format!(
+                "Corrupted TIFF header: invalid IFD entry count ({entry_count})"
+            )));
+        }
+
+        let entries_end = current_ifd
+            .saturating_add(2)
+            .saturating_add(entry_count.saturating_mul(12));
+        if entries_end.saturating_add(4) > total_file_size {
+            return Err(BeamError::RawDecode(format!(
+                "Corrupted TIFF header: {entry_count} IFD entries require at least {entries_end} bytes, file has {total_file_size}"
+            )));
+        }
+
+        for i in 0..entry_count {
+            let entry_offset = current_ifd.saturating_add(2).saturating_add(i.saturating_mul(12));
+            if entry_offset.saturating_add(12) > head.len() {
+                break;
+            }
+
+            let tag = if is_le {
+                u16::from_le_bytes([head[entry_offset], head[entry_offset + 1]])
+            } else {
+                u16::from_be_bytes([head[entry_offset], head[entry_offset + 1]])
+            };
+
+            let type_code = if is_le {
+                u16::from_le_bytes([head[entry_offset + 2], head[entry_offset + 3]])
+            } else {
+                u16::from_be_bytes([head[entry_offset + 2], head[entry_offset + 3]])
+            };
+            let type_size = match type_code {
+                1 | 2 | 6 | 7 => 1,
+                3 | 8 => 2,
+                4 | 9 | 11 | 13 => 4,
+                5 | 10 | 12 => 8,
+                _ => 1,
+            };
+
+            let count = if is_le {
+                u32::from_le_bytes([
+                    head[entry_offset + 4],
+                    head[entry_offset + 5],
+                    head[entry_offset + 6],
+                    head[entry_offset + 7],
+                ]) as usize
+            } else {
+                u32::from_be_bytes([
+                    head[entry_offset + 4],
+                    head[entry_offset + 5],
+                    head[entry_offset + 6],
+                    head[entry_offset + 7],
+                ]) as usize
+            };
+
+            if matches!(tag, 0x014A | 0x8769 | 0x8825 | 0x8773) && (count == 0 || type_code == 0 || type_code > 13) {
+                return Err(BeamError::RawDecode(format!(
+                    "Corrupted TIFF IFD entry: SubIFD tag 0x{tag:04X} has invalid count ({count}) or type ({type_code})"
+                )));
+            }
+
+            let data_size = count.saturating_mul(type_size);
+            if data_size > total_file_size || count > total_file_size {
+                return Err(BeamError::RawDecode(format!(
+                    "Corrupted TIFF IFD entry: data size {data_size} exceeds file length {total_file_size}"
+                )));
+            }
+
+            if matches!(tag, 0x014A | 0x8769 | 0x8825) && data_size <= 4 {
+                let sub_offset = if is_le {
+                    u32::from_le_bytes([
+                        head[entry_offset + 8],
+                        head[entry_offset + 9],
+                        head[entry_offset + 10],
+                        head[entry_offset + 11],
+                    ]) as usize
+                } else {
+                    u32::from_be_bytes([
+                        head[entry_offset + 8],
+                        head[entry_offset + 9],
+                        head[entry_offset + 10],
+                        head[entry_offset + 11],
+                    ]) as usize
+                };
+                if sub_offset < 8 || sub_offset.saturating_add(2) > total_file_size {
+                    return Err(BeamError::RawDecode(format!(
+                        "Corrupted TIFF IFD entry: SubIFD tag 0x{tag:04X} offset {sub_offset} invalid or exceeds file length {total_file_size}"
+                    )));
+                }
+            }
+
+            if data_size > 4 {
+                let val_offset = if is_le {
+                    u32::from_le_bytes([
+                        head[entry_offset + 8],
+                        head[entry_offset + 9],
+                        head[entry_offset + 10],
+                        head[entry_offset + 11],
+                    ]) as usize
+                } else {
+                    u32::from_be_bytes([
+                        head[entry_offset + 8],
+                        head[entry_offset + 9],
+                        head[entry_offset + 10],
+                        head[entry_offset + 11],
+                    ]) as usize
+                };
+                if val_offset.saturating_add(data_size) > total_file_size {
+                    return Err(BeamError::RawDecode(format!(
+                        "Corrupted TIFF IFD entry data at {val_offset}..{} exceeds file length {total_file_size}",
+                        val_offset.saturating_add(data_size)
+                    )));
+                }
+            }
+        }
+
+        // Read next IFD pointer if within buffered head
+        if entries_end.saturating_add(4) <= head.len() {
+            let next_offset = if is_le {
+                u32::from_le_bytes([
+                    head[entries_end],
+                    head[entries_end + 1],
+                    head[entries_end + 2],
+                    head[entries_end + 3],
+                ]) as usize
+            } else {
+                u32::from_be_bytes([
+                    head[entries_end],
+                    head[entries_end + 1],
+                    head[entries_end + 2],
+                    head[entries_end + 3],
+                ]) as usize
+            };
+            current_ifd = next_offset;
+        } else {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_ciff_ifd(buf: &[u8], start: usize, end: usize) -> Result<()> {
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(start);
+    validate_ciff_ifd_inner(buf, start, end, 1, &mut visited)
+}
+
+fn validate_ciff_ifd_inner(
+    buf: &[u8],
+    start: usize,
+    end: usize,
+    depth: u32,
+    visited: &mut std::collections::HashSet<usize>,
+) -> Result<()> {
+    if depth > 10 {
+        return Ok(());
+    }
+    if end < 4 || end > buf.len() || start >= end {
+        return Err(BeamError::RawDecode("Corrupted CIFF: invalid block range".into()));
+    }
+    let valuedata_size = u32::from_le_bytes([
+        buf[end - 4],
+        buf[end - 3],
+        buf[end - 2],
+        buf[end - 1],
+    ]) as usize;
+    let dir_offset = start.saturating_add(valuedata_size);
+    if dir_offset.saturating_add(2) > end {
+        return Err(BeamError::RawDecode("Corrupted CIFF: directory offset out of range".into()));
+    }
+    let dircount = u16::from_le_bytes([buf[dir_offset], buf[dir_offset + 1]]) as usize;
+    if dircount > 1024
+        || dir_offset
+            .saturating_add(2)
+            .saturating_add(dircount.saturating_mul(10))
+            > end
+    {
+        return Err(BeamError::RawDecode("Corrupted CIFF: directory entries exceed bounds".into()));
+    }
+    for i in 0..dircount {
+        let entry_offset = dir_offset + 2 + i * 10;
+        let p = u16::from_le_bytes([buf[entry_offset], buf[entry_offset + 1]]);
+        let datalocation = p & 0xc000;
+        let typ = p & 0x3800;
+        let (bytesize, data_offset) = match datalocation {
+            0x0000 => (
+                u32::from_le_bytes([
+                    buf[entry_offset + 2],
+                    buf[entry_offset + 3],
+                    buf[entry_offset + 4],
+                    buf[entry_offset + 5],
+                ]) as usize,
+                (u32::from_le_bytes([
+                    buf[entry_offset + 6],
+                    buf[entry_offset + 7],
+                    buf[entry_offset + 8],
+                    buf[entry_offset + 9],
+                ]) as usize)
+                    .saturating_add(start),
+            ),
+            0x4000 => (8, entry_offset + 2),
+            _ => continue,
+        };
+        if data_offset.saturating_add(bytesize) > buf.len() {
+            return Err(BeamError::RawDecode("Corrupted CIFF: entry data exceeds file length".into()));
+        }
+        if typ == 0x2800 || typ == 0x3000 {
+            if data_offset <= start {
+                return Err(BeamError::RawDecode(
+                    "Corrupted CIFF: subIFD offset cannot precede or equal parent offset".into(),
+                ));
+            }
+            if !visited.insert(data_offset) {
+                return Err(BeamError::RawDecode(
+                    "Corrupted CIFF: cycle detected in subIFD hierarchy".into(),
+                ));
+            }
+            validate_ciff_ifd_inner(buf, data_offset, data_offset.saturating_add(bytesize), depth + 1, visited)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
+    if bytes.len() < 16 {
+        return Err(BeamError::RawDecode("Corrupted BMFF container: truncated".into()));
+    }
+    if &bytes[4..8] != b"ftyp" {
+        return Err(BeamError::RawDecode("Corrupted BMFF: first box must be ftyp".into()));
+    }
+
+    let mut offset: usize = 0;
+    while offset.saturating_add(8) <= bytes.len() {
+        let size32 = u32::from_be_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]) as usize;
+
+        let box_size = if size32 == 1 {
+            if offset.saturating_add(16) > bytes.len() {
+                return Err(BeamError::RawDecode("Corrupted BMFF box header: 64-bit size truncated".into()));
+            }
+            let size64 = u64::from_be_bytes([
+                bytes[offset + 8],
+                bytes[offset + 9],
+                bytes[offset + 10],
+                bytes[offset + 11],
+                bytes[offset + 12],
+                bytes[offset + 13],
+                bytes[offset + 14],
+                bytes[offset + 15],
+            ]);
+            if size64 < 16 || size64 > bytes.len() as u64 {
+                return Err(BeamError::RawDecode("Corrupted BMFF box: 64-bit size out of range".into()));
+            }
+            size64 as usize
+        } else if size32 < 8 {
+            return Err(BeamError::RawDecode("Corrupted BMFF box: box size less than 8 bytes".into()));
+        } else {
+            size32
+        };
+
+        let tag = &bytes[offset + 4..offset + 8];
+        if tag == b"ftyp" && (offset != 0 || box_size < 16 || box_size % 4 != 0) {
+            return Err(BeamError::RawDecode("Corrupted BMFF ftyp box: invalid ftyp box".into()));
+        }
+
+        if offset.saturating_add(box_size) > bytes.len() {
+            return Err(BeamError::RawDecode("Corrupted BMFF box: size exceeds file length".into()));
+        }
+        offset = offset.saturating_add(box_size);
+    }
+    Ok(())
+}
+
+/// Validate RAW container bounds (TIFF, X3F, BMFF, etc.) to prevent third-party parser panics and unbounded allocations.
+pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
+    if bytes.len() < 8 {
+        return Err(BeamError::RawDecode("RAW container truncated (< 8 bytes)".into()));
+    }
+
+    let is_known_container = bytes.starts_with(b"\0MRM")
+        || bytes.starts_with(b"FUJIFILM")
+        || bytes.starts_with(b"ARRI")
+        || bytes.starts_with(b"qktk")
+        || bytes.starts_with(b"qktn")
+        || (bytes.len() >= 14 && &bytes[6..14] == b"HEAPCCDR")
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF, 0xE1])
+        || bytes.starts_with(b"FOVb")
+        || (bytes.len() >= 8 && &bytes[4..8] == b"ftyp")
+        || bytes.starts_with(b"II")
+        || bytes.starts_with(b"MM");
+
+    if !is_known_container {
+        return Err(BeamError::RawDecode("Unsupported or unrecognized RAW container format".into()));
+    }
+
+    validate_tiff_raw_structure(bytes, bytes.len())?;
+
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        validate_bmff_container(bytes)?;
+    }
+
+    if bytes.starts_with(b"FOVb") {
+        if bytes.len() < 16 {
+            return Err(BeamError::RawDecode("Corrupted X3F container: header truncated".into()));
+        }
+        let offset = u32::from_le_bytes([
+            bytes[bytes.len() - 4],
+            bytes[bytes.len() - 3],
+            bytes[bytes.len() - 2],
+            bytes[bytes.len() - 1],
+        ]) as usize;
+        if offset < 4 || offset.saturating_add(12) > bytes.len() {
+            return Err(BeamError::RawDecode(
+                "Corrupted X3F header: directory offset invalid or exceeds file length".into(),
+            ));
+        }
+        let entries = u32::from_le_bytes([
+            bytes[offset + 8],
+            bytes[offset + 9],
+            bytes[offset + 10],
+            bytes[offset + 11],
+        ]) as usize;
+        if entries > 4096 {
+            return Err(BeamError::RawDecode(
+                "Corrupted X3F header: excessive directory entries".into(),
+            ));
+        }
+        let required = offset
+            .saturating_add(12)
+            .saturating_add(entries.saturating_mul(12));
+        if required > bytes.len() {
+            return Err(BeamError::RawDecode(
+                "Corrupted X3F header: directory entries exceed file length".into(),
+            ));
+        }
+        for i in 0..entries {
+            let entry_offset = offset + 12 + i * 12;
+            let dir_offset = u32::from_le_bytes([
+                bytes[entry_offset],
+                bytes[entry_offset + 1],
+                bytes[entry_offset + 2],
+                bytes[entry_offset + 3],
+            ]) as usize;
+            let dir_len = u32::from_le_bytes([
+                bytes[entry_offset + 4],
+                bytes[entry_offset + 5],
+                bytes[entry_offset + 6],
+                bytes[entry_offset + 7],
+            ]) as usize;
+            if dir_offset.saturating_add(dir_len) > bytes.len() {
+                return Err(BeamError::RawDecode(
+                    "Corrupted X3F header: directory entry data exceeds file length".into(),
+                ));
+            }
+            if &bytes[entry_offset + 8..entry_offset + 12] == b"IMA2"
+                && dir_offset.saturating_add(28) > bytes.len()
+            {
+                return Err(BeamError::RawDecode(
+                    "Corrupted X3F header: IMA2 entry truncated".into(),
+                ));
+            }
+        }
+    }
+
+    if bytes.len() >= 14 && &bytes[6..14] == b"HEAPCCDR" {
+        if bytes.len() < 26 {
+            return Err(BeamError::RawDecode("Corrupted CIFF container: truncated".into()));
+        }
+        if !bytes.starts_with(b"II\x1a\0\0\0") && !bytes.starts_with(b"MM\0\x1a\0\0") {
+            return Err(BeamError::RawDecode(
+                "Corrupted CIFF container: invalid header marker".into(),
+            ));
+        }
+        let start = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]) as usize;
+        validate_ciff_ifd(bytes, start, bytes.len())?;
+    }
+
+    if bytes.starts_with(b"FUJIFILM") {
+        if bytes.len() < 104 {
+            return Err(BeamError::RawDecode("Corrupted RAF container: truncated header".into()));
+        }
+        let tiff1_offset = u32::from_be_bytes([bytes[84], bytes[85], bytes[86], bytes[87]]) as usize;
+        let tiff1_start = tiff1_offset.saturating_add(12);
+        if tiff1_start >= bytes.len() {
+            return Err(BeamError::RawDecode("Corrupted RAF header: TIFF offset exceeds file".into()));
+        }
+        validate_tiff_raw_structure(&bytes[tiff1_start..], bytes.len() - tiff1_start)?;
+
+        let tiff2_offset = u32::from_be_bytes([bytes[100], bytes[101], bytes[102], bytes[103]]) as usize;
+        if tiff2_offset < bytes.len() {
+            validate_tiff_raw_structure(&bytes[tiff2_offset..], bytes.len() - tiff2_offset)?;
+        }
+    }
+
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF, 0xE1]) {
+        if bytes.len() < 22 {
+            return Err(BeamError::RawDecode("Corrupted JPEG/EXIF container: truncated".into()));
+        }
+        let app1_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+        // APP1 must contain: 2 bytes len + 6 bytes "Exif\0\0" + 8 bytes TIFF header + 2 bytes IFD entry count = 18 bytes minimum
+        if app1_len < 18 || app1_len.saturating_add(4) > bytes.len() {
+            return Err(BeamError::RawDecode(
+                "Corrupted JPEG/EXIF container: APP1 length out of range".into(),
+            ));
+        }
+        const APP1_EXIF_MARKER: &[u8] = b"Exif\0\0";
+        if &bytes[6..12] != APP1_EXIF_MARKER {
+            return Err(BeamError::RawDecode(
+                "Corrupted JPEG/EXIF container: missing Exif marker".into(),
+            ));
+        }
+        let tiff_start = 12;
+        if !bytes[tiff_start..].starts_with(b"II*\0") && !bytes[tiff_start..].starts_with(b"MM\0*") {
+            return Err(BeamError::RawDecode(
+                "Corrupted JPEG/EXIF container: invalid TIFF header in EXIF APP1".into(),
+            ));
+        }
+        let tiff_len = app1_len.saturating_add(4).saturating_sub(tiff_start);
+        if tiff_len < 10 {
+            return Err(BeamError::RawDecode(
+                "Corrupted JPEG/EXIF container: TIFF payload too short".into(),
+            ));
+        }
+        validate_tiff_raw_structure(&bytes[tiff_start..tiff_start + tiff_len], tiff_len)?;
+    }
+
+    if bytes.starts_with(b"\0MRM") {
+        if bytes.len() < 40 {
+            return Err(BeamError::RawDecode("Corrupted MRW container: truncated".into()));
+        }
+        let data_offset = (u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize)
+            .saturating_add(8);
+        if data_offset > bytes.len() {
+            return Err(BeamError::RawDecode(
+                "Corrupted MRW container: data offset exceeds file length".into(),
+            ));
+        }
+        let mut currpos: usize = 8;
+        let mut tiffpos: usize = 0;
+        while currpos.saturating_add(8) <= data_offset {
+            let tag = u32::from_be_bytes([bytes[currpos], bytes[currpos + 1], bytes[currpos + 2], bytes[currpos + 3]]);
+            let len = u32::from_be_bytes([bytes[currpos + 4], bytes[currpos + 5], bytes[currpos + 6], bytes[currpos + 7]]) as usize;
+            if tag == 0x545457 {
+                tiffpos = currpos.saturating_add(8);
+            }
+            if len == 0 || currpos.saturating_add(len.saturating_add(8)) <= currpos {
+                break;
+            }
+            currpos = currpos.saturating_add(len.saturating_add(8));
+        }
+        if tiffpos == 0 {
+            return Err(BeamError::RawDecode("Corrupted MRW container: missing TTW block".into()));
+        }
+        let ifd_target = tiffpos.saturating_add(8);
+        if ifd_target.saturating_add(2) > bytes.len() {
+            return Err(BeamError::RawDecode("Corrupted MRW container: IFD offset out of range".into()));
+        }
+        let entry_count = u16::from_be_bytes([bytes[ifd_target], bytes[ifd_target + 1]]) as usize;
+        if entry_count > 4096 || ifd_target.saturating_add(2).saturating_add(entry_count.saturating_mul(12)) > bytes.len() {
+            return Err(BeamError::RawDecode("Corrupted MRW container: IFD entries exceed file length".into()));
+        }
+        for i in 0..entry_count {
+            let entry_offset = ifd_target + 2 + i * 12;
+            let type_code = u16::from_be_bytes([bytes[entry_offset + 2], bytes[entry_offset + 3]]);
+            let type_size = match type_code {
+                1 | 2 | 6 | 7 => 1,
+                3 | 8 => 2,
+                4 | 9 | 11 | 13 => 4,
+                5 | 10 | 12 => 8,
+                _ => 1,
+            };
+            let count = u32::from_be_bytes([
+                bytes[entry_offset + 4],
+                bytes[entry_offset + 5],
+                bytes[entry_offset + 6],
+                bytes[entry_offset + 7],
+            ]) as usize;
+            if count.saturating_mul(type_size) > bytes.len() || count > bytes.len() {
+                return Err(BeamError::RawDecode("Corrupted MRW IFD entry data size out of range".into()));
+            }
+        }
+    }
+
+    if bytes.starts_with(b"qktk") || bytes.starts_with(b"qktn") {
+        if bytes.len() < 750 {
+            return Err(BeamError::RawDecode("Corrupted QTK container: truncated".into()));
+        }
+        let height = u16::from_be_bytes([bytes[544], bytes[545]]) as usize;
+        let width = u16::from_be_bytes([bytes[546], bytes[547]]) as usize;
+        let (min_dim, max_dim) = if height > width { (width, height) } else { (height, width) };
+        if (max_dim != 640 || min_dim != 480) && (max_dim != 320 || min_dim != 240) {
+            return Err(BeamError::RawDecode(format!(
+                "Corrupted QTK header: invalid QuickTake dimensions {width}x{height}"
+            )));
+        }
+        let hint = u16::from_be_bytes([bytes[552], bytes[553]]);
+        let offset = if hint == 30 { 738 } else { 736 };
+        let min_required = offset + (max_dim * min_dim * 3) / 8;
+        if bytes.len() < min_required {
+            return Err(BeamError::RawDecode("Corrupted QTK container: truncated payload".into()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate TIFF header bounds to prevent third-party parser unbounded memory allocation (OOM).
+pub fn validate_tiff_raw_header(bytes: &[u8]) -> Result<()> {
+    validate_raw_container(bytes)
+}
+
 /// Decode camera RAW using rawler
 fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
-    let rawimage = rawler::decode_file(path)
-        .map_err(|e| BeamError::RawDecode(format!("RAW decode failed: {e:?}")))?;
+    // Read up to first 64KB to validate container header structure if applicable
+    if let Ok(mut f) = std::fs::File::open(path) {
+        use std::io::Read;
+        let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as usize;
+        let mut head = vec![0u8; 65536.min(file_size.max(16))];
+        if let Ok(n) = f.read(&mut head) {
+            validate_tiff_raw_structure(&head[..n], file_size)?;
+            if file_size <= 65536 {
+                validate_raw_container(&head[..n])?;
+            } else if head.starts_with(b"FOVb") || (head.len() >= 14 && &head[6..14] == b"HEAPCCDR") {
+                if let Ok(whole) = std::fs::read(path) {
+                    validate_raw_container(&whole)?;
+                }
+            } else {
+                validate_raw_container(&head[..n])?;
+            }
+        }
+    }
+
+    let decode_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rawler::decode_file(path)
+    }));
+
+    let rawimage = match decode_result {
+        Ok(Ok(img)) => img,
+        Ok(Err(e)) => return Err(BeamError::RawDecode(format!("RAW decode failed: {e:?}"))),
+        Err(_) => return Err(BeamError::RawDecode("RAW parser panicked on corrupted input".into())),
+    };
 
     let orig_w = rawimage.width as u32;
     let orig_h = rawimage.height as u32;
@@ -1430,6 +2043,377 @@ mod tests {
             res.is_err(),
             "A 65535x65535 decompression bomb must be strictly rejected by image limits"
         );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_fuzz_reproducer_raw_oom() {
+        // Reproducer oom-662b8ff128146682485447ad5aaecb821636dd18 from fuzz_raw_decode
+        // Declares 65535 IFD entries in a 37-byte file which previously triggered malloc(4294967295)
+        let oom_bytes: &[u8] = &[
+            0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x01, 0x01,
+            0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let validation_res = validate_tiff_raw_header(oom_bytes);
+        assert!(
+            validation_res.is_err(),
+            "Must reject corrupted TIFF header with impossible IFD entry count"
+        );
+
+        let temp_dir = std::env::temp_dir().join("beam_test_fuzz_raw_oom");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let raw_path = temp_dir.join("corrupted.dng");
+        std::fs::write(&raw_path, oom_bytes).unwrap();
+
+        let res = decode_image(&raw_path);
+        assert!(res.is_err(), "Must cleanly fail decoding without allocating 4.29 GB");
+
+        // Fuzz reproducer 2: IFD entry count declared 4294967041 elements
+        let oom_bytes_2: &[u8] = &[
+            77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 255, 255, 255, 255, 255, 255, 255, 1, 18, 32, 3, 0,
+            0, 0, 1, 0, 0, 0, 8, 0, 0,
+        ];
+        let val_res_2 = validate_tiff_raw_header(oom_bytes_2);
+        assert!(val_res_2.is_err());
+        let raw_path_2 = temp_dir.join("corrupted_entry.dng");
+        std::fs::write(&raw_path_2, oom_bytes_2).unwrap();
+        let res_2 = decode_image(&raw_path_2);
+        assert!(res_2.is_err());
+
+        // Fuzz reproducer 3: next_ifd pointed to invalid offset 1 causing 2.91 GB allocation
+        let oom_bytes_3: &[u8] = &[
+            77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 1, 18, 1, 0, 0, 0, 0, 0, 3, 87, 0, 3, 0, 0, 0, 1, 0,
+            1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+        ];
+        let val_res_3 = validate_tiff_raw_header(oom_bytes_3);
+        assert!(val_res_3.is_err());
+        let raw_path_3 = temp_dir.join("corrupted_chain.dng");
+        std::fs::write(&raw_path_3, oom_bytes_3).unwrap();
+        let res_3 = decode_image(&raw_path_3);
+        assert!(res_3.is_err());
+
+        // Fuzz reproducer 4: X3F container with invalid directory offset and 303M entries
+        let oom_bytes_4: &[u8] = &[
+            70, 79, 86, 98, 0, 0, 0, 7, 255, 249, 24, 18, 0, 0, 1, 4, 1, 0, 0, 0, 0,
+        ];
+        let val_res_4 = validate_tiff_raw_header(oom_bytes_4);
+        assert!(val_res_4.is_err());
+        let raw_path_4 = temp_dir.join("corrupted.x3f");
+        std::fs::write(&raw_path_4, oom_bytes_4).unwrap();
+        let res_4 = decode_image(&raw_path_4);
+        assert!(res_4.is_err());
+
+        // Fuzz reproducer 5: CIFF container with out-of-bounds start offset (13.6 MB in 24-byte file)
+        let oom_bytes_5: &[u8] = &[
+            0, 0, 0, 11, 208, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 12, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let val_res_5 = validate_tiff_raw_header(oom_bytes_5);
+        assert!(val_res_5.is_err());
+        let raw_path_5 = temp_dir.join("corrupted.crw");
+        std::fs::write(&raw_path_5, oom_bytes_5).unwrap();
+        let res_5 = decode_image(&raw_path_5);
+        assert!(res_5.is_err());
+
+        // Fuzz reproducer 6: CIFF container with entry data size out of range (16.7 MB in 124-byte file)
+        let mut oom_bytes_6 = vec![
+            8, 0, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 255, 255, 255, 0,
+        ];
+        oom_bytes_6.extend(std::iter::repeat_n(109, 92));
+        oom_bytes_6.extend_from_slice(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let val_res_6 = validate_tiff_raw_header(&oom_bytes_6);
+        assert!(val_res_6.is_err());
+        let raw_path_6 = temp_dir.join("corrupted_entry.crw");
+        std::fs::write(&raw_path_6, &oom_bytes_6).unwrap();
+        let res_6 = decode_image(&raw_path_6);
+        assert!(res_6.is_err());
+
+        // Fuzz reproducer 7: RAF container with corrupted embedded TIFF structure
+        let oom_bytes_7: &[u8] = &[
+            70, 85, 74, 73, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0,
+            1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 1, 18, 0,
+            0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 77, 77, 77, 0, 42, 0, 49, 0, 0, 0, 0, 0, 0, 8,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 1,
+            18, 0, 32, 3, 0, 16, 0, 18, 248,
+        ];
+        let val_res_7 = validate_tiff_raw_header(oom_bytes_7);
+        assert!(val_res_7.is_err());
+        let raw_path_7 = temp_dir.join("corrupted.raf");
+        std::fs::write(&raw_path_7, oom_bytes_7).unwrap();
+        let res_7 = decode_image(&raw_path_7);
+        assert!(res_7.is_err());
+
+        // Fuzz reproducer 8: JPEG/EXIF malformed APP1 triggering rawler Jfif infinite loop hang
+        let oom_bytes_8: &[u8] = &[
+            255, 216, 255, 225, 199, 77, 77, 0, 255, 216, 255, 225, 0,
+        ];
+        let val_res_8 = validate_tiff_raw_header(oom_bytes_8);
+        assert!(val_res_8.is_err());
+        let raw_path_8 = temp_dir.join("corrupted_jfif.dng");
+        std::fs::write(&raw_path_8, oom_bytes_8).unwrap();
+        let res_8 = decode_image(&raw_path_8);
+        assert!(res_8.is_err());
+
+        // Fuzz reproducer 9: CIFF container with subIFD valuedata_size out of bounds (1.14 GB in 116-byte file)
+        let oom_bytes_9: &[u8] = &[
+            88, 73, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 127, 7, 0, 2, 2, 0, 113, 107,
+            116, 110, 37, 0, 247, 9, 68, 82, 0, 127, 7, 0, 2, 2, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 19, 0, 0, 0,
+        ];
+        let val_res_9 = validate_tiff_raw_header(oom_bytes_9);
+        assert!(val_res_9.is_err());
+        let raw_path_9 = temp_dir.join("corrupted_subifd.crw");
+        std::fs::write(&raw_path_9, oom_bytes_9).unwrap();
+        let res_9 = decode_image(&raw_path_9);
+        assert!(res_9.is_err());
+
+        // Fuzz reproducer 10: MRW container with data_offset out of range (2.77 MB in 77-byte file)
+        let oom_bytes_10: &[u8] = &[
+            0, 77, 82, 77, 0, 42, 86, 0, 0, 0, 0, 0, 0, 0, 37, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 97, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0,
+            2, 40, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0,
+        ];
+        let val_res_10 = validate_tiff_raw_header(oom_bytes_10);
+        assert!(val_res_10.is_err());
+        let raw_path_10 = temp_dir.join("corrupted.mrw");
+        std::fs::write(&raw_path_10, oom_bytes_10).unwrap();
+        let res_10 = decode_image(&raw_path_10);
+        assert!(res_10.is_err());
+
+        // Fuzz reproducer 11: MRW container with corrupted IFD entries declaring 4GB allocation
+        let oom_bytes_11: &[u8] = &[
+            0, 77, 82, 77, 0, 0, 0, 8, 0, 9, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            143, 143, 143, 143, 1, 0, 0, 8, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 16, 0,
+            0, 0, 0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 196, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 9, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 176, 0, 0, 0, 0, 0, 0, 0, 0, 219, 255, 255, 248,
+            18, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0,
+        ];
+        let val_res_11 = validate_tiff_raw_header(oom_bytes_11);
+        assert!(val_res_11.is_err());
+        let raw_path_11 = temp_dir.join("corrupted_entries.mrw");
+        std::fs::write(&raw_path_11, oom_bytes_11).unwrap();
+        let res_11 = decode_image(&raw_path_11);
+        assert!(res_11.is_err());
+
+        // Fuzz reproducer 12: X3F container with truncated header (14 bytes)
+        let oom_bytes_12: &[u8] = &[70, 79, 86, 98, 73, 77, 77, 0, 46, 46, 46, 46, 46, 8];
+        let val_res_12 = validate_tiff_raw_header(oom_bytes_12);
+        assert!(val_res_12.is_err());
+        let raw_path_12 = temp_dir.join("corrupted.x3f");
+        std::fs::write(&raw_path_12, oom_bytes_12).unwrap();
+        let res_12 = decode_image(&raw_path_12);
+        assert!(res_12.is_err());
+
+        // Fuzz reproducer 13: CIFF container with invalid header marker (114 bytes)
+        let oom_bytes_13: &[u8] = &[
+            88, 73, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 127, 7, 0, 2, 2, 0, 113, 107,
+            116, 110, 37, 0, 247, 9, 68, 82, 0, 127, 7, 0, 2, 2, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            6, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 19, 0, 0, 0,
+        ];
+        let val_res_13 = validate_tiff_raw_header(oom_bytes_13);
+        assert!(val_res_13.is_err());
+        let raw_path_13 = temp_dir.join("corrupted_subifd.crw");
+        std::fs::write(&raw_path_13, oom_bytes_13).unwrap();
+        let res_13 = decode_image(&raw_path_13);
+        assert!(res_13.is_err());
+
+        // Fuzz reproducer 14: CIFF container with corrupted subIFD bounds (49 bytes)
+        let oom_bytes_14: &[u8] = &[
+            88, 73, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 127, 255, 0, 2, 1, 0, 0, 106,
+            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 171, 49, 72, 0, 0, 0, 0, 0, 0, 0, 19, 0, 0, 0,
+        ];
+        let val_res_14 = validate_tiff_raw_header(oom_bytes_14);
+        assert!(val_res_14.is_err());
+        let raw_path_14 = temp_dir.join("corrupted_bounds.crw");
+        std::fs::write(&raw_path_14, oom_bytes_14).unwrap();
+        let res_14 = decode_image(&raw_path_14);
+        assert!(res_14.is_err());
+
+        // Fuzz reproducer 15: X3F container with IMA2 directory entry offset out of bounds (63 bytes)
+        let oom_bytes_15: &[u8] = &[
+            70, 79, 86, 98, 65, 100, 46, 86, 0, 0, 0, 11, 0, 0, 8, 255, 3, 0, 0, 0, 46, 188, 86, 0,
+            0, 0, 131, 0, 73, 77, 65, 50, 11, 0, 8, 0, 4, 96, 0, 255, 255, 255, 255, 136, 255, 50,
+            0, 255, 77, 77, 77, 47, 77, 77, 77, 77, 225, 6, 254, 8, 0, 0, 0,
+        ];
+        let val_res_15 = validate_tiff_raw_header(oom_bytes_15);
+        assert!(val_res_15.is_err());
+        let raw_path_15 = temp_dir.join("corrupted_ima2.x3f");
+        std::fs::write(&raw_path_15, oom_bytes_15).unwrap();
+        let res_15 = decode_image(&raw_path_15);
+        assert!(res_15.is_err());
+
+        // Fuzz reproducer 16: QTK container with invalid dimensions (Apple QuickTake)
+        let oom_bytes_16: &[u8] = &[
+            113, 107, 116, 107, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 77, 0, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 239, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 171, 10, 185, 90, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0, 183, 0, 42, 3, 0, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 77, 77, 0, 0, 1, 58, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 0, 0, 0, 8, 0, 1, 1, 18, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 224, 252, 0, 1, 109, 0, 0, 149, 0, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 77, 0, 149, 42, 0, 77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
+        ];
+        let val_res_16 = validate_tiff_raw_header(oom_bytes_16);
+        assert!(val_res_16.is_err());
+        let raw_path_16 = temp_dir.join("corrupted.qtk");
+        std::fs::write(&raw_path_16, oom_bytes_16).unwrap();
+        let res_16 = decode_image(&raw_path_16);
+        assert!(res_16.is_err());
+
+        // Fuzz reproducer 17: QTK container with truncated bitpump payload (Apple QuickTake)
+        let oom_bytes_17: &[u8] = &[
+            113, 107, 116, 107, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 77, 0, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 0, 0, 0, 245, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 64, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 16, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 239, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 171, 10, 185, 90, 77, 8, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 77, 77, 0, 42, 161, 0, 0, 8, 0, 1, 73, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 11, 0, 0, 0, 1, 183, 3, 0, 77, 0, 0, 0, 0, 73, 77, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 0, 0, 183, 0, 42, 3, 0, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 8, 0, 0, 0, 2, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 91, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 77, 77, 0, 0, 1, 58, 1, 0, 0, 0, 46, 0, 0, 43, 1, 0, 0, 70, 73, 76, 77, 77, 77, 76, 77, 0, 0, 0, 245, 77, 77, 0, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 47, 0, 0, 0, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 0, 0, 0, 8, 0, 1, 1, 18, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149,
+        ];
+        let val_res_17 = validate_tiff_raw_header(oom_bytes_17);
+        assert!(val_res_17.is_err());
+        let raw_path_17 = temp_dir.join("corrupted_payload.qtk");
+        std::fs::write(&raw_path_17, oom_bytes_17).unwrap();
+        let res_17 = decode_image(&raw_path_17);
+        assert!(res_17.is_err());
+
+        // Fuzz reproducer 18: Panasonic RW2 container with corrupted IFD allocation (111 bytes)
+        let oom_bytes_18: &[u8] = &[
+            77, 77, 0, 85, 0, 0, 0, 20, 77, 77, 0, 42, 0, 131, 131, 131, 131, 131, 131, 131, 131,
+            131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131,
+            131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131,
+            131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131,
+            131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131, 131,
+            131, 131, 131, 131, 0, 0, 8, 0, 1, 1, 1, 18, 0, 6, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0,
+        ];
+        let val_res_18 = validate_tiff_raw_header(oom_bytes_18);
+        assert!(val_res_18.is_err());
+        let raw_path_18 = temp_dir.join("corrupted.rw2");
+        std::fs::write(&raw_path_18, oom_bytes_18).unwrap();
+        let res_18 = decode_image(&raw_path_18);
+        assert!(res_18.is_err());
+
+        // Fuzz reproducer 19: JPEG/EXIF container with truncated TIFF header causing JFIF infinite loop (19 bytes)
+        let oom_bytes_19: &[u8] = &[
+            255, 216, 255, 225, 0, 8, 69, 120, 105, 102, 0, 0, 49, 0, 0, 1, 0, 0, 0,
+        ];
+        let val_res_19 = validate_tiff_raw_header(oom_bytes_19);
+        assert!(val_res_19.is_err());
+        let raw_path_19 = temp_dir.join("corrupted_app1.jpg");
+        std::fs::write(&raw_path_19, oom_bytes_19).unwrap();
+        let res_19 = decode_image(&raw_path_19);
+        assert!(res_19.is_err());
+
+        // Fuzz reproducer 20: BMFF vendor box 64-bit size overflow causing panic in rawler (87 bytes)
+        let oom_bytes_20: &[u8] = &[
+            0, 0, 0, 11, 0, 77, 73, 73, 42, 0, 12, 0, 0, 0, 1, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 66, 2, 42, 190, 0, 1, 2, 16, 0,
+            0, 0, 8, 2, 4, 1, 0, 0, 0,
+        ];
+        let val_res_20 = validate_tiff_raw_header(oom_bytes_20);
+        assert!(val_res_20.is_err());
+        let raw_path_20 = temp_dir.join("corrupted.cr3");
+        std::fs::write(&raw_path_20, oom_bytes_20).unwrap();
+        let res_20 = decode_image(&raw_path_20);
+        assert!(res_20.is_err());
+
+        // Fuzz reproducer 21: BMFF ftyp box zero size causing underflow panic (98 bytes)
+        let oom_bytes_21: &[u8] = &[
+            0, 0, 0, 0, 102, 116, 121, 112, 0, 8, 0, 1, 1, 18, 32, 3, 0, 0, 0, 0, 0, 8, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 77, 77, 77, 0, 42, 0, 49, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0,
+            0, 129, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 37, 0,
+        ];
+        let val_res_21 = validate_tiff_raw_header(oom_bytes_21);
+        assert!(val_res_21.is_err());
+        let raw_path_21 = temp_dir.join("corrupted_ftyp.cr3");
+        std::fs::write(&raw_path_21, oom_bytes_21).unwrap();
+        let res_21 = decode_image(&raw_path_21);
+        assert!(res_21.is_err());
+
+        // Fuzz reproducer 22: JPEG/EXIF container with root IFD offset 0 causing JFIF infinite loop (60 bytes)
+        let oom_bytes_22: &[u8] = &[
+            255, 216, 255, 225, 0, 36, 69, 120, 105, 102, 0, 0, 77, 77, 0, 42, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 16, 0, 16,
+        ];
+        let val_res_22 = validate_tiff_raw_header(oom_bytes_22);
+        assert!(val_res_22.is_err());
+        let raw_path_22 = temp_dir.join("corrupted_zero_ifd.jpg");
+        std::fs::write(&raw_path_22, oom_bytes_22).unwrap();
+        let res_22 = decode_image(&raw_path_22);
+        assert!(res_22.is_err());
+
+        // Fuzz reproducer 23: JPEG/EXIF container with IFD entry count 0 causing JFIF infinite loop (40 bytes)
+        let oom_bytes_23: &[u8] = &[
+            255, 216, 255, 225, 0, 36, 69, 120, 105, 102, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 0,
+            0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 27, 77, 16,
+        ];
+        let val_res_23 = validate_tiff_raw_header(oom_bytes_23);
+        assert!(val_res_23.is_err());
+        let raw_path_23 = temp_dir.join("corrupted_zero_entries.jpg");
+        std::fs::write(&raw_path_23, oom_bytes_23).unwrap();
+        let res_23 = decode_image(&raw_path_23);
+        assert!(res_23.is_err());
+
+        // Fuzz reproducer 24: BMFF container with secondary truncated ftyp box causing underflow panic (36 bytes)
+        let oom_bytes_24: &[u8] = &[
+            0, 0, 0, 16, 102, 116, 121, 112, 252, 0, 0, 0, 163, 163, 0, 0, 0, 0, 0, 8, 102, 116,
+            121, 112, 0, 0, 0, 8, 252, 0, 0, 0, 163, 163, 0, 0,
+        ];
+        let val_res_24 = validate_tiff_raw_header(oom_bytes_24);
+        assert!(val_res_24.is_err());
+        let raw_path_24 = temp_dir.join("corrupted_second_ftyp.cr3");
+        std::fs::write(&raw_path_24, oom_bytes_24).unwrap();
+        let res_24 = decode_image(&raw_path_24);
+        assert!(res_24.is_err());
+        // Fuzz reproducer 25: CIFF container with recursive self-referential subIFD bomb (113 bytes)
+        let oom_bytes_25: &[u8] = &[
+            73, 73, 26, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 119, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
+            0, 0, 8, 0, 0, 45, 87, 0, 0, 0, 0, 0, 0, 0, 73, 42, 87, 0, 0, 0, 0, 0, 0, 0, 73, 42,
+            87, 0, 0, 0, 0, 0, 0, 0, 73, 58, 73, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            73, 42, 87, 0, 0, 0, 0, 0, 0, 0, 73, 42, 87, 0, 0, 0, 0, 0, 0, 0, 73, 58, 73, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0,
+        ];
+        let val_res_25 = validate_tiff_raw_header(oom_bytes_25);
+        assert!(val_res_25.is_err());
+        let raw_path_25 = temp_dir.join("corrupted_ciff_subifd_cycle.crw");
+        std::fs::write(&raw_path_25, oom_bytes_25).unwrap();
+        let res_25 = decode_image(&raw_path_25);
+        assert!(res_25.is_err());
+        // Fuzz reproducer 26: JPEG/EXIF container with truncated APP1 TIFF header causing rawler infinite loop (42 bytes)
+        let oom_bytes_26: &[u8] = &[
+            255, 216, 255, 225, 0, 14, 69, 120, 105, 102, 0, 0, 73, 73, 42, 0, 77, 14, 69, 120, 106,
+            0, 42, 0, 0, 8, 252, 9, 1, 48, 33, 0, 32, 1, 122, 0, 0, 0, 1, 216, 255, 65,
+        ];
+        let val_res_26 = validate_tiff_raw_header(oom_bytes_26);
+        assert!(val_res_26.is_err());
+        let raw_path_26 = temp_dir.join("corrupted_app1_trunc.jpg");
+        std::fs::write(&raw_path_26, oom_bytes_26).unwrap();
+        let res_26 = decode_image(&raw_path_26);
+        assert!(res_26.is_err());
+        // Fuzz reproducer 27: TIFF container with SubIFD tag having count 0 causing rawler empty slice indexing panic (62 bytes)
+        let oom_bytes_27: &[u8] = &[
+            77, 77, 0, 42, 0, 0, 0, 8, 0, 4, 1, 74, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 8, 0, 0, 0,
+            0, 0, 0, 0, 0,
+        ];
+        let val_res_27 = validate_tiff_raw_header(oom_bytes_27);
+        assert!(val_res_27.is_err());
+        let raw_path_27 = temp_dir.join("corrupted_subifd_count0.tif");
+        std::fs::write(&raw_path_27, oom_bytes_27).unwrap();
+        let res_27 = decode_image(&raw_path_27);
+        assert!(res_27.is_err());
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

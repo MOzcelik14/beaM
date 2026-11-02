@@ -123,6 +123,7 @@ dependencies = [
  "kamadak-exif",
  "libfuzzer-sys",
  "moxcms 0.9.1",
+ "rawler",
  "ron",
 ]
 
