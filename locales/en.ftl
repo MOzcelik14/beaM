@@ -14,6 +14,8 @@ menu_save_project = Save Project
 menu_save_project_shortcut = Save Project (Ctrl+S)
 menu_save_project_as = Save Project As...
 menu_save_project_as_shortcut = Save Project As... (Ctrl+Shift+S)
+menu_close_project = Close Project
+menu_close_project_shortcut = Close Project (Ctrl+W)
 menu_import_folder = Import Folder...
 menu_import_folder_shortcut = Import Folder... (Ctrl+Shift+O)
 menu_export = Export...
@@ -399,7 +401,8 @@ settings_shortcut_clipping = Clipping Overlays Toggle (J)
 
 # Unsaved Changes Dialog
 unsaved_dialog_title = Unsaved Changes
-unsaved_dialog_message = You have unsaved changes in the current photo. Do you want to save before closing?
-unsaved_save_and_exit = Save & Exit
-unsaved_discard_and_exit = Discard & Exit
+unsaved_dialog_message = You have unsaved changes in the current project. Do you want to save before continuing?
+unsaved_save = Save
+unsaved_save_and_exit = Save
+unsaved_discard_and_exit = Exit Without Saving
 unsaved_cancel = Cancel

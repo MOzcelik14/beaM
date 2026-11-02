@@ -191,8 +191,21 @@ pub struct BeamApp {
     logo_texture: egui::TextureHandle,
     pending_project_sidecar: Option<(PathBuf, Sidecar)>,
     last_saved_stack: Option<EditStack>,
+    pending_action: Option<PendingAction>,
     show_unsaved_changes_dialog: bool,
     allow_close: bool,
+}
+
+/// Action to be executed after unsaved changes confirmation
+#[derive(Clone, Debug, PartialEq)]
+pub enum PendingAction {
+    ExitApp,
+    CloseProject,
+    OpenFile(PathBuf),
+    OpenProject(PathBuf),
+    OpenFileDialog,
+    OpenProjectDialog,
+    ImportFolderDialog,
 }
 
 fn default_export_dir() -> PathBuf {
@@ -442,6 +455,7 @@ impl BeamApp {
             logo_texture,
             pending_project_sidecar: None,
             last_saved_stack: None,
+            pending_action: None,
             show_unsaved_changes_dialog: false,
             allow_close: false,
         }
@@ -577,6 +591,130 @@ impl BeamApp {
                 }
             }
         });
+    }
+
+    /// Request closing the project. If there are unsaved changes, prompt the user.
+    pub fn request_close_project(&mut self) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::CloseProject);
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            self.close_project();
+        }
+    }
+
+    /// Close current project / photo and clear the workspace
+    pub fn close_project(&mut self) {
+        self.current_image = None;
+        self.current_path = None;
+        self.sidecar_path = None;
+        self.last_saved_stack = None;
+        self.edit_stack = EditStack::default();
+        self.history = vec![HistoryStep::new(
+            t!("history_initial"),
+            EditStack::default(),
+        )];
+        self.history_index = 0;
+        self.current_metadata = None;
+        self.sidecar_status = String::new();
+        self.gpu_proxy_image = None;
+        self.gpu_display_texture = None;
+        self.egui_texture_id = None;
+        self.gpu_before_texture = None;
+        self.egui_before_texture_id = None;
+        self.crop_mode_active = false;
+        self.slider_drag_start_stack = None;
+        self.slider_drag_action_name = None;
+        self.current_view = AppView::Library;
+    }
+
+    /// Request opening a file dialog. If there are unsaved changes, prompt first.
+    pub fn request_open_file_dialog(&mut self) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::OpenFileDialog);
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            self.open_file_dialog();
+        }
+    }
+
+    /// Request opening a project dialog. If there are unsaved changes, prompt first.
+    pub fn request_open_project_dialog(&mut self) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::OpenProjectDialog);
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            self.open_project_dialog();
+        }
+    }
+
+    /// Request importing a folder dialog. If there are unsaved changes, prompt first.
+    pub fn request_import_folder_dialog(&mut self) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::ImportFolderDialog);
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            self.import_folder_dialog();
+        }
+    }
+
+    /// Request loading a file path. If there are unsaved changes, prompt first.
+    pub fn request_load_file_path(&mut self, path: PathBuf) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::OpenFile(path));
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            self.load_file_path(path);
+        }
+    }
+
+    /// Request loading a project file. If there are unsaved changes, prompt first.
+    pub fn request_load_project_file(&mut self, path: PathBuf) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::OpenProject(path));
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            self.load_project_file(path);
+        }
+    }
+
+    /// Request application exit. If there are unsaved changes, prompt first.
+    pub fn request_exit(&mut self, ctx: &egui::Context) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(PendingAction::ExitApp);
+            self.show_unsaved_changes_dialog = true;
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Execute a deferred pending action after unsaved changes confirmation
+    pub fn execute_pending_action(&mut self, action: PendingAction, ctx: &egui::Context) {
+        match action {
+            PendingAction::ExitApp => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            PendingAction::CloseProject => {
+                self.close_project();
+                ctx.request_repaint();
+            }
+            PendingAction::OpenFile(path) => {
+                self.load_file_path(path);
+            }
+            PendingAction::OpenProject(path) => {
+                self.load_project_file(path);
+            }
+            PendingAction::OpenFileDialog => {
+                self.open_file_dialog();
+            }
+            PendingAction::OpenProjectDialog => {
+                self.open_project_dialog();
+            }
+            PendingAction::ImportFolderDialog => {
+                self.import_folder_dialog();
+            }
+        }
     }
 
     /// Load a specific file path asynchronously
@@ -1207,7 +1345,10 @@ impl BeamApp {
 
     /// Persist current edit stack and history to the sidecar file on disk
     fn save_sidecar(&mut self) {
-        if let (Some(path), Some(sidecar_path)) = (&self.current_path, &self.sidecar_path) {
+        if let Some(path) = &self.current_path {
+            let sidecar_p = self.sidecar_path.clone().unwrap_or_else(|| {
+                Sidecar::path_for(path)
+            });
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             let mut sidecar = Sidecar::new(filename);
             sidecar.edit_stack = self.edit_stack.clone();
@@ -1221,10 +1362,11 @@ impl BeamApp {
                 }
             }
 
-            if let Err(e) = sidecar.save_to_file(sidecar_path) {
-                log::error!("Failed to save sidecar to {}: {e}", sidecar_path.display());
+            if let Err(e) = sidecar.save_to_file(&sidecar_p) {
+                log::error!("Failed to save sidecar to {}: {e}", sidecar_p.display());
                 self.sidecar_status = t!("status_save_error", "error" => e.to_string());
             } else {
+                self.sidecar_path = Some(sidecar_p);
                 self.last_saved_stack = Some(self.edit_stack.clone());
                 self.sidecar_status = t!("status_saved");
                 if let Some(photo_id) = self.library_state.selected_photo_id {
@@ -1299,6 +1441,7 @@ impl eframe::App for BeamApp {
             && self.has_unsaved_changes()
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_action = Some(PendingAction::ExitApp);
             self.show_unsaved_changes_dialog = true;
         }
 
@@ -1320,9 +1463,9 @@ impl eframe::App for BeamApp {
                             .unwrap_or("")
                             .to_ascii_lowercase();
                         if ext == "beam" || path_buf.to_string_lossy().ends_with(".beam.ron") {
-                            self.load_project_file(path_buf);
+                            self.request_load_project_file(path_buf);
                         } else {
-                            self.load_file_path(path_buf);
+                            self.request_load_file_path(path_buf);
                         }
                         break;
                     }
@@ -1361,16 +1504,16 @@ impl eframe::App for BeamApp {
 
                 ui.menu_button(t!("menu_file"), |ui| {
                     if ui.button(t!("menu_import_folder_shortcut")).clicked() {
-                        self.import_folder_dialog();
+                        self.request_import_folder_dialog();
                     }
                     if ui.button(t!("menu_open_photo_shortcut")).clicked() {
-                        self.open_file_dialog();
+                        self.request_open_file_dialog();
                     }
                     if ui.button(t!("menu_open_project_shortcut")).clicked() {
-                        self.open_project_dialog();
+                        self.request_open_project_dialog();
                     }
                     ui.separator();
-                    let can_save = self.current_image.is_some();
+                    let can_save = self.current_image.is_some() || self.current_path.is_some();
                     if ui
                         .add_enabled(
                             can_save,
@@ -1389,6 +1532,16 @@ impl eframe::App for BeamApp {
                     {
                         self.save_project_as_dialog();
                     }
+                    let can_close = self.current_image.is_some() || self.current_path.is_some();
+                    if ui
+                        .add_enabled(
+                            can_close,
+                            egui::Button::new(t!("menu_close_project_shortcut")),
+                        )
+                        .clicked()
+                    {
+                        self.request_close_project();
+                    }
                     ui.separator();
                     let can_export = (self.current_view == AppView::Develop
                         && self.current_image.is_some())
@@ -1402,11 +1555,7 @@ impl eframe::App for BeamApp {
                     }
                     ui.separator();
                     if ui.button(t!("menu_quit")).clicked() {
-                        if self.has_unsaved_changes() {
-                            self.show_unsaved_changes_dialog = true;
-                        } else {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
+                        self.request_exit(ui.ctx());
                     }
                 });
 
@@ -1575,11 +1724,26 @@ impl eframe::App for BeamApp {
         if ctx.input(|i| i.key_pressed(egui::Key::D) && !i.modifiers.command && !i.modifiers.ctrl) {
             self.current_view = AppView::Develop;
         }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) {
-            self.open_file_dialog();
+        if ctx.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl)
+                && !i.modifiers.shift
+                && i.key_pressed(egui::Key::W)
+        }) {
+            self.request_close_project();
         }
-        if ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::O)) {
-            self.import_folder_dialog();
+        if ctx.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl)
+                && !i.modifiers.shift
+                && i.key_pressed(egui::Key::O)
+        }) {
+            self.request_open_file_dialog();
+        }
+        if ctx.input(|i| {
+            (i.modifiers.command || i.modifiers.ctrl)
+                && i.modifiers.shift
+                && i.key_pressed(egui::Key::O)
+        }) {
+            self.request_import_folder_dialog();
         }
         if ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S)) {
             self.save_project_as_dialog();
@@ -1761,10 +1925,10 @@ impl eframe::App for BeamApp {
                 }
                 match action {
                     LibraryAction::OpenPhoto(path) => {
-                        self.load_file_path(path);
+                        self.request_load_file_path(path);
                     }
                     LibraryAction::ImportFolder => {
-                        self.import_folder_dialog();
+                        self.request_import_folder_dialog();
                     }
                     LibraryAction::ExportPhotos(paths) => {
                         self.open_export_dialog_with_paths(paths);
@@ -4704,7 +4868,7 @@ impl BeamApp {
         };
 
         let target_path = PathBuf::from(&self.library_state.photos[next_idx].file_path);
-        self.load_file_path(target_path);
+        self.request_load_file_path(target_path);
     }
 
     /// Render horizontal filmstrip thumbnail carousel at bottom of Develop view
@@ -4796,99 +4960,353 @@ impl BeamApp {
             });
 
         if let Some(target_path) = clicked_photo {
-            self.load_file_path(PathBuf::from(target_path));
+            self.request_load_file_path(PathBuf::from(target_path));
         }
     }
 
-    /// Check if current image has unsaved edits
+    /// Check if current image or project has unsaved edits
     pub fn has_unsaved_changes(&self) -> bool {
-        if self.current_image.is_none() {
+        if self.current_image.is_none() && self.current_path.is_none() {
             return false;
         }
         match &self.last_saved_stack {
             Some(saved) => *saved != self.edit_stack,
-            None => false,
+            None => self.edit_stack != EditStack::default(),
         }
     }
 
-    /// Render unsaved changes confirmation modal when attempting to exit with modified edits
+    /// Render unsaved changes confirmation modal when attempting to exit or switch with modified edits
     fn show_unsaved_changes_dialog_window(&mut self, ctx: &egui::Context) {
         if !self.show_unsaved_changes_dialog {
             return;
         }
 
-        let mut action_save_and_exit = false;
-        let mut action_discard_and_exit = false;
+        // Dim background to make the modal truly prominent and focused
+        let screen_rect = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::unique("unsaved_dialog_dim"),
+        ));
+        painter.rect_filled(
+            screen_rect,
+            0.0,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+        );
+
+        let mut action_save = false;
+        let mut action_discard = false;
         let mut action_cancel = false;
 
         egui::Window::new(t!("unsaved_dialog_title"))
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_min_width(380.0);
+                ui.set_min_width(420.0);
                 ui.vertical(|ui| {
-                    ui.heading(t!("unsaved_dialog_title"));
+                    ui.add_space(4.0);
+                    ui.heading(
+                        RichText::new(t!("unsaved_dialog_title"))
+                            .strong()
+                            .color(Color32::from_rgb(240, 200, 100)),
+                    );
                     ui.separator();
                     ui.add_space(8.0);
 
-                    ui.label(t!("unsaved_dialog_message"));
+                    ui.label(
+                        RichText::new(t!("unsaved_dialog_message"))
+                            .size(14.0),
+                    );
 
                     if let Some(path) = &self.current_path {
                         if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                            ui.add_space(4.0);
+                            ui.add_space(6.0);
                             ui.colored_label(Color32::from_rgb(180, 200, 240), fname);
                         }
                     }
 
                     ui.add_space(16.0);
                     ui.separator();
-                    ui.add_space(4.0);
+                    ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
-                        if ui
-                            .button(RichText::new(t!("unsaved_save_and_exit")).strong())
-                            .clicked()
-                        {
-                            action_save_and_exit = true;
+                        // 1. Kaydet (Save)
+                        let save_btn = egui::Button::new(
+                            RichText::new(t!("unsaved_save")).strong().color(Color32::WHITE),
+                        )
+                        .fill(Color32::from_rgb(45, 120, 210));
+                        if ui.add(save_btn).clicked() {
+                            action_save = true;
                         }
 
-                        if ui
-                            .button(
-                                RichText::new(t!("unsaved_discard_and_exit"))
-                                    .color(Color32::LIGHT_RED),
-                            )
-                            .clicked()
-                        {
-                            action_discard_and_exit = true;
+                        ui.add_space(8.0);
+
+                        // 2. Kaydetmeden Çık (Exit without saving / Discard)
+                        let discard_btn = egui::Button::new(
+                            RichText::new(t!("unsaved_discard_and_exit"))
+                                .color(Color32::from_rgb(255, 120, 120)),
+                        );
+                        if ui.add(discard_btn).clicked() {
+                            action_discard = true;
                         }
 
-                        if ui.button(t!("unsaved_cancel")).clicked() {
-                            action_cancel = true;
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // 3. İptal (Cancel)
+                            if ui.button(t!("unsaved_cancel")).clicked() {
+                                action_cancel = true;
+                            }
+                        });
                     });
 
-                    // Keyboard shortcuts in dialog: Escape cancels, Enter saves and exits
+                    // Keyboard shortcuts in dialog: Escape cancels, Enter saves
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         action_cancel = true;
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        action_save_and_exit = true;
+                        action_save = true;
                     }
                 });
             });
 
-        if action_save_and_exit {
+        if action_save {
             self.save_project();
-            self.allow_close = true;
             self.show_unsaved_changes_dialog = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if action_discard_and_exit {
-            self.allow_close = true;
+            if let Some(action) = self.pending_action.take() {
+                self.execute_pending_action(action, ctx);
+            }
+        } else if action_discard {
             self.show_unsaved_changes_dialog = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if let Some(action) = self.pending_action.take() {
+                self.execute_pending_action(action, ctx);
+            }
         } else if action_cancel {
             self.show_unsaved_changes_dialog = false;
+            self.pending_action = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_app() -> BeamApp {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let library_db = LibraryDb::open_in_memory().expect("in-memory db");
+        let ctx = egui::Context::default();
+        let logo_texture = ctx.load_texture(
+            "test_logo",
+            egui::ColorImage::example(),
+            egui::TextureOptions::default(),
+        );
+        let library_state = LibraryViewState {
+            logo_texture: Some(logo_texture.clone()),
+            ..Default::default()
+        };
+        let thumb_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+
+        BeamApp {
+            current_view: AppView::Library,
+            library_db,
+            library_state,
+            thumbnail_cache_dir: std::env::temp_dir(),
+            thumb_queue,
+            current_image: None,
+            current_path: None,
+            current_metadata: None,
+            edit_stack: EditStack::default(),
+            sidecar_path: None,
+            sidecar_status: "No image".to_string(),
+            edit_pipeline: None,
+            gpu_proxy_image: None,
+            gpu_display_texture: None,
+            egui_texture_id: None,
+            gpu_before_texture: None,
+            egui_before_texture_id: None,
+            texture_aspect_ratio: 1.0,
+            before_after_mode: BeforeAfterMode::Normal,
+            split_view_divider: 0.5,
+            crop_mode_active: false,
+            tx,
+            rx,
+            is_loading: false,
+            loading_filename: None,
+            histogram_data: None,
+            histogram_mode: HistogramMode::Rgb,
+            hsl_selected_band: 0,
+            error_message: None,
+            show_about: false,
+            show_settings: false,
+            show_develop_panel: true,
+            show_history_panel: true,
+            zoom_level: 1.0,
+            is_one_to_one: false,
+            pan_offset: Vec2::ZERO,
+            gpu_full_image: None,
+            gpu_full_texture: None,
+            egui_full_texture_id: None,
+            show_shadow_clipping: false,
+            show_highlight_clipping: false,
+            filmstrip_visible: true,
+            filmstrip_height: 110.0,
+            is_fullscreen: false,
+            settings_tab: SettingsTab::General,
+            left_panel_tab: LeftPanelTab::Presets,
+            user_presets: Vec::new(),
+            preset_dir: std::env::temp_dir(),
+            hovered_preset: None,
+            stack_before_hover: None,
+            show_new_preset_dialog: false,
+            new_preset_name: String::new(),
+            new_preset_mask: PresetGroupMask::default(),
+            copied_settings: None,
+            show_copy_dialog: false,
+            copy_dialog_mask: PresetGroupMask::default(),
+            show_sync_dialog: false,
+            sync_dialog_mask: PresetGroupMask::default(),
+            sync_dialog_source_photo: None,
+            history: vec![HistoryStep::new("Initial", EditStack::default())],
+            history_index: 0,
+            slider_drag_start_stack: None,
+            slider_drag_action_name: None,
+            app_config: AppConfig::default(),
+            show_export_dialog: false,
+            show_export_progress: false,
+            export_output_dir: std::env::temp_dir(),
+            export_format_is_png: false,
+            export_jpeg_quality: 90,
+            export_color_space: beam_core::ExportColorSpace::Srgb,
+            export_resize_mode_index: 0,
+            export_resize_long_edge: 2048,
+            export_resize_percentage: 100.0,
+            export_resize_width: 1920,
+            export_resize_height: 1080,
+            export_resize_lock_aspect: true,
+            export_sharpening_index: 0,
+            export_include_exif: true,
+            export_template: "{name}".to_string(),
+            export_suffix: "_beam".to_string(),
+            export_targets: Vec::new(),
+            export_cancel_flag: None,
+            export_progress_data: None,
+            export_is_running: false,
+            export_status_message: None,
+            logo_texture,
+            pending_project_sidecar: None,
+            last_saved_stack: None,
+            pending_action: None,
+            show_unsaved_changes_dialog: false,
+            allow_close: false,
+        }
+    }
+
+    #[test]
+    fn test_unsaved_changes_detection() {
+        let mut app = create_test_app();
+
+        // 1. Initially no photo is open, so no unsaved changes even if default stack
+        assert!(!app.has_unsaved_changes());
+
+        // 2. Open a photo path with clean default stack
+        app.current_path = Some(PathBuf::from("/tmp/test_photo.jpg"));
+        assert!(!app.has_unsaved_changes());
+
+        // 3. Mutate an edit parameter
+        app.edit_stack.exposure.ev = 1.25;
+        assert!(app.has_unsaved_changes());
+
+        // 4. Mark as saved (last_saved_stack matches edit_stack)
+        app.last_saved_stack = Some(app.edit_stack.clone());
+        assert!(!app.has_unsaved_changes());
+
+        // 5. Change another parameter
+        app.edit_stack.contrast.contrast = -0.5;
+        assert!(app.has_unsaved_changes());
+
+        // 6. Reset to saved state
+        app.edit_stack = app.last_saved_stack.clone().unwrap();
+        assert!(!app.has_unsaved_changes());
+    }
+
+    #[test]
+    fn test_close_project_cleans_state() {
+        let mut app = create_test_app();
+
+        app.current_path = Some(PathBuf::from("/tmp/sample.raw"));
+        app.sidecar_path = Some(PathBuf::from("/tmp/sample.raw.beam.ron"));
+        app.edit_stack.exposure.ev = 2.0;
+        app.last_saved_stack = Some(app.edit_stack.clone());
+        app.crop_mode_active = true;
+        app.current_view = AppView::Develop;
+
+        app.close_project();
+
+        assert!(app.current_path.is_none());
+        assert!(app.current_image.is_none());
+        assert!(app.sidecar_path.is_none());
+        assert!(app.last_saved_stack.is_none());
+        assert_eq!(app.edit_stack, EditStack::default());
+        assert_eq!(app.current_view, AppView::Library);
+        assert!(!app.crop_mode_active);
+        assert!(!app.has_unsaved_changes());
+    }
+
+    #[test]
+    fn test_pending_actions_lifecycle() {
+        let mut app = create_test_app();
+
+        // With unsaved changes:
+        app.current_path = Some(PathBuf::from("/tmp/photo.jpg"));
+        app.edit_stack.exposure.ev = 0.75;
+        assert!(app.has_unsaved_changes());
+
+        // Request close project should trigger dialog
+        app.request_close_project();
+        assert!(app.show_unsaved_changes_dialog);
+        assert_eq!(app.pending_action, Some(PendingAction::CloseProject));
+
+        // User cancels
+        app.show_unsaved_changes_dialog = false;
+        app.pending_action = None;
+        assert!(!app.show_unsaved_changes_dialog);
+        assert_eq!(app.pending_action, None);
+
+        // Request open new file with unsaved edits should trigger dialog
+        let new_path = PathBuf::from("/tmp/another.jpg");
+        app.request_load_file_path(new_path.clone());
+        assert!(app.show_unsaved_changes_dialog);
+        assert_eq!(app.pending_action, Some(PendingAction::OpenFile(new_path)));
+
+        // Once changes are cleared or saved:
+        app.show_unsaved_changes_dialog = false;
+        app.pending_action = None;
+        app.last_saved_stack = Some(app.edit_stack.clone());
+        assert!(!app.has_unsaved_changes());
+
+        // Now request_close_project should execute immediately without modal
+        app.request_close_project();
+        assert!(!app.show_unsaved_changes_dialog);
+        assert_eq!(app.pending_action, None);
+        assert!(app.current_path.is_none());
+    }
+
+    #[test]
+    fn test_localization_unsaved_strings() {
+        // Turkish
+        beam_core::set_language(beam_core::Language::Tr);
+        assert_eq!(t!("unsaved_dialog_title"), "Kaydedilmemiş Değişiklikler");
+        assert_eq!(t!("unsaved_save"), "Kaydet");
+        assert_eq!(t!("unsaved_discard_and_exit"), "Kaydetmeden Çık");
+        assert_eq!(t!("unsaved_cancel"), "İptal");
+        assert!(t!("unsaved_dialog_message").contains("kaydedilmemiş"));
+
+        // English
+        beam_core::set_language(beam_core::Language::En);
+        assert_eq!(t!("unsaved_dialog_title"), "Unsaved Changes");
+        assert_eq!(t!("unsaved_save"), "Save");
+        assert_eq!(t!("unsaved_discard_and_exit"), "Exit Without Saving");
+        assert_eq!(t!("unsaved_cancel"), "Cancel");
+        assert!(t!("unsaved_dialog_message").contains("unsaved changes"));
     }
 }

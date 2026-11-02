@@ -14,6 +14,8 @@ menu_save_project = Projeyi Kaydet
 menu_save_project_shortcut = Projeyi Kaydet (Ctrl+S)
 menu_save_project_as = Projeyi Farklı Kaydet...
 menu_save_project_as_shortcut = Projeyi Farklı Kaydet... (Ctrl+Shift+S)
+menu_close_project = Projeyi Kapat
+menu_close_project_shortcut = Projeyi Kapat (Ctrl+W)
 menu_import_folder = Klasör İçe Aktar...
 menu_import_folder_shortcut = Klasör İçe Aktar... (Ctrl+Shift+O)
 menu_export = Dışa Aktar...
@@ -399,7 +401,8 @@ settings_shortcut_clipping = Kırpılma Uyarıları (J)
 
 # Kaydedilmemiş Değişiklikler İletişim Kutusu
 unsaved_dialog_title = Kaydedilmemiş Değişiklikler
-unsaved_dialog_message = Mevcut fotoğrafta kaydedilmemiş değişiklikler var. Çıkmadan önce kaydetmek istiyor musunuz?
-unsaved_save_and_exit = Kaydet ve Çık
+unsaved_dialog_message = Mevcut projede kaydedilmemiş değişiklikler var. Devam etmeden önce kaydetmek istiyor musunuz?
+unsaved_save = Kaydet
+unsaved_save_and_exit = Kaydet
 unsaved_discard_and_exit = Kaydetmeden Çık
 unsaved_cancel = İptal
