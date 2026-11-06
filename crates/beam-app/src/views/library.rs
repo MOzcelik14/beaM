@@ -34,7 +34,10 @@ pub struct ThumbnailRequest {
 pub enum LibraryAction {
     None,
     OpenPhoto(PathBuf),
-    ImportFolder,
+    SelectFolderDialog,
+    ChangeFolder(PathBuf),
+    ToggleBookmark(PathBuf),
+    ToggleRecursive(bool),
     ExportPhotos(Vec<PathBuf>),
     RebuildThumbnails,
     SyncSettings,
@@ -43,6 +46,50 @@ pub enum LibraryAction {
     RelinkFolder,
     CleanMissingPhotos,
     RemovePhoto(i64),
+}
+
+/// System places (Home, Pictures, Desktop, Downloads) for quick navigation
+pub fn system_places() -> Vec<(&'static str, PathBuf)> {
+    let mut places = Vec::new();
+    let home_opt = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from);
+
+    if let Some(home) = home_opt {
+        places.push(("browser_home", home.clone()));
+
+        let pictures = home.join("Pictures");
+        if pictures.exists() {
+            places.push(("browser_pictures", pictures));
+        } else {
+            let resimler = home.join("Resimler");
+            if resimler.exists() {
+                places.push(("browser_pictures", resimler));
+            }
+        }
+
+        let desktop = home.join("Desktop");
+        if desktop.exists() {
+            places.push(("browser_desktop", desktop));
+        } else {
+            let masaustu = home.join("Masaüstü");
+            if masaustu.exists() {
+                places.push(("browser_desktop", masaustu));
+            }
+        }
+
+        let downloads = home.join("Downloads");
+        if downloads.exists() {
+            places.push(("browser_downloads", downloads));
+        } else {
+            let indirilenler = home.join("İndirilenler");
+            if indirilenler.exists() {
+                places.push(("browser_downloads", indirilenler));
+            }
+        }
+    }
+    places
 }
 
 /// Helper to truncate a long filename nicely while preserving extension and readability
@@ -60,7 +107,10 @@ pub fn truncate_filename(name: &str, max_len: usize) -> String {
             let keep_stem = max_len - ext_chars - 3;
             let half_stem = keep_stem / 2;
             let head: String = stem.chars().take(half_stem + keep_stem % 2).collect();
-            let tail: String = stem.chars().skip(stem_chars.saturating_sub(half_stem)).collect();
+            let tail: String = stem
+                .chars()
+                .skip(stem_chars.saturating_sub(half_stem))
+                .collect();
             return format!("{head}...{tail}{ext}");
         }
     }
@@ -82,6 +132,9 @@ pub struct LibraryViewState {
     pub needs_refresh: bool,
     pub logo_texture: Option<egui::TextureHandle>,
     pub missing_photo_ids: HashSet<i64>,
+    pub active_folder: Option<PathBuf>,
+    pub bookmarked_folders: Vec<PathBuf>,
+    pub subdirectories: Vec<PathBuf>,
 }
 
 impl Default for LibraryViewState {
@@ -98,6 +151,9 @@ impl Default for LibraryViewState {
             needs_refresh: true,
             logo_texture: None,
             missing_photo_ids: HashSet::new(),
+            active_folder: None,
+            bookmarked_folders: Vec::new(),
+            subdirectories: Vec::new(),
         }
     }
 }
@@ -120,6 +176,14 @@ impl LibraryViewState {
 
     /// Refresh photos list from SQLite catalog matching current filter and identify missing files.
     pub fn refresh(&mut self, db: &LibraryDb) {
+        if let Some(folder) = &self.active_folder {
+            self.filter.folder_path = Some(folder.clone());
+            self.subdirectories = beam_library::list_subdirectories(folder);
+        } else {
+            self.filter.folder_path = None;
+            self.subdirectories.clear();
+        }
+
         if let Ok(photos) = db.query_photos(&self.filter) {
             self.missing_photo_ids = photos
                 .iter()
@@ -190,8 +254,169 @@ pub fn show_library_view(
         .resizable(true)
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.heading(t!("library_catalog"));
+                // Header with Select Folder button
+                ui.horizontal(|ui| {
+                    ui.heading(t!("browser_title"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(RichText::new("📁").size(14.0))
+                            .on_hover_text(t!("browser_choose_folder"))
+                            .clicked()
+                        {
+                            action = LibraryAction::SelectFolderDialog;
+                        }
+                    });
+                });
                 ui.separator();
+
+                // Path navigation bar:
+                // [ ↑ .. ] [ ⟳ ] [ ★ / ☆ ]
+                if let Some(current_folder) = &state.active_folder {
+                    ui.horizontal(|ui| {
+                        let has_parent = current_folder.parent().is_some();
+                        if ui
+                            .add_enabled(has_parent, egui::Button::new("↑ .."))
+                            .on_hover_text(t!("browser_parent"))
+                            .clicked()
+                        {
+                            if let Some(parent) = current_folder.parent() {
+                                action = LibraryAction::ChangeFolder(parent.to_path_buf());
+                            }
+                        }
+
+                        if ui
+                            .button("⟳")
+                            .on_hover_text(t!("browser_refresh"))
+                            .clicked()
+                        {
+                            action = LibraryAction::ChangeFolder(current_folder.clone());
+                        }
+
+                        let is_bookmarked = state.bookmarked_folders.contains(current_folder);
+                        let bookmark_icon = if is_bookmarked { "★" } else { "☆" };
+                        let bookmark_tip = if is_bookmarked {
+                            t!("browser_bookmark_remove")
+                        } else {
+                            t!("browser_bookmark_add")
+                        };
+                        if ui
+                            .button(bookmark_icon)
+                            .on_hover_text(bookmark_tip)
+                            .clicked()
+                        {
+                            action = LibraryAction::ToggleBookmark(current_folder.clone());
+                        }
+                    });
+
+                    // Current path display
+                    let folder_disp = current_folder.to_string_lossy();
+                    ui.label(
+                        RichText::new(truncate_filename(&folder_disp, 26))
+                            .size(11.5)
+                            .strong()
+                            .color(Color32::from_rgb(180, 205, 245)),
+                    )
+                    .on_hover_text(&*folder_disp);
+
+                    // Recursive checkbox: "Alt klasörleri dahil et"
+                    let mut rec = state.filter.recursive;
+                    if ui.checkbox(&mut rec, t!("browser_recursive")).changed() {
+                        action = LibraryAction::ToggleRecursive(rec);
+                    }
+                } else if ui
+                    .button(
+                        RichText::new(t!("browser_choose_folder"))
+                            .size(13.0)
+                            .strong(),
+                    )
+                    .clicked()
+                {
+                    action = LibraryAction::SelectFolderDialog;
+                }
+
+                ui.add_space(4.0);
+                ui.separator();
+
+                // Places & Bookmarks
+                ui.label(
+                    RichText::new(t!("browser_places"))
+                        .size(12.0)
+                        .strong()
+                        .color(Color32::from_rgb(220, 222, 230)),
+                );
+                ui.add_space(2.0);
+                let places = system_places();
+                for (trans_key, path) in places {
+                    let is_active = state.active_folder.as_ref() == Some(&path);
+                    let label_text = t!(trans_key);
+                    if ui.selectable_label(is_active, label_text).clicked() {
+                        action = LibraryAction::ChangeFolder(path);
+                    }
+                }
+
+                if !state.bookmarked_folders.is_empty() {
+                    ui.add_space(2.0);
+                    let bookmarks = state.bookmarked_folders.clone();
+                    for b_path in bookmarks {
+                        let is_active = state.active_folder.as_ref() == Some(&b_path);
+                        let folder_name = b_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("Folder")
+                            .to_string();
+                        let b_path_lossy = b_path.to_string_lossy().into_owned();
+                        let b_path_target = b_path.clone();
+                        ui.horizontal(|ui| {
+                            if ui
+                                .selectable_label(is_active, format!("* {folder_name}"))
+                                .on_hover_text(&b_path_lossy)
+                                .clicked()
+                            {
+                                action = LibraryAction::ChangeFolder(b_path_target.clone());
+                            }
+                            if ui
+                                .small_button("×")
+                                .on_hover_text(t!("browser_bookmark_remove"))
+                                .clicked()
+                            {
+                                action = LibraryAction::ToggleBookmark(b_path_target);
+                            }
+                        });
+                    }
+                }
+
+                ui.add_space(4.0);
+                ui.separator();
+
+                // Subdirectories (Folders)
+                ui.label(
+                    RichText::new(t!("browser_folders"))
+                        .size(12.0)
+                        .strong()
+                        .color(Color32::from_rgb(220, 222, 230)),
+                );
+                ui.add_space(2.0);
+                if state.subdirectories.is_empty() {
+                    ui.label(RichText::new("-").weak());
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("subdirectories_scroll")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            let subdirs = state.subdirectories.clone();
+                            for sub in subdirs {
+                                let name = sub
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("folder")
+                                    .to_string();
+                                let sub_lossy = sub.to_string_lossy().into_owned();
+                                if ui.button(&name).on_hover_text(&sub_lossy).clicked() {
+                                    action = LibraryAction::ChangeFolder(sub);
+                                }
+                            }
+                        });
+                }
 
                 if !state.missing_photo_ids.is_empty() {
                     let missing_count = state.missing_photo_ids.len();
@@ -233,18 +458,7 @@ pub fn show_library_view(
                                 });
                             });
                         });
-                    ui.add_space(6.0);
-                }
-
-                if ui
-                    .button(
-                        RichText::new(t!("library_import_folder"))
-                            .size(14.0)
-                            .strong(),
-                    )
-                    .clicked()
-                {
-                    action = LibraryAction::ImportFolder;
+                    ui.add_space(4.0);
                 }
 
                 let selected_count = state.selected_photo_ids.len();
@@ -257,10 +471,11 @@ pub fn show_library_view(
                 };
 
                 let can_export = !state.photos.is_empty();
+                ui.add_space(4.0);
                 if ui
                     .add_enabled(
                         can_export,
-                        egui::Button::new(RichText::new(export_btn_text).size(14.0).strong()),
+                        egui::Button::new(RichText::new(export_btn_text).size(13.0).strong()),
                     )
                     .clicked()
                 {
@@ -496,54 +711,107 @@ pub fn show_library_view(
                                 ));
                                 ui.add_space(16.0);
                             }
-                            ui.label(
-                                RichText::new(t!("welcome_title"))
-                                    .size(24.0)
-                                    .strong()
-                                    .color(Color32::from_rgb(240, 240, 245)),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                RichText::new(t!("welcome_subtitle"))
-                                    .size(13.0)
-                                    .color(Color32::from_rgb(160, 165, 175)),
-                            );
-                            ui.add_space(16.0);
-                            ui.label(
-                                RichText::new(t!("welcome_drag_drop"))
-                                    .size(12.0)
-                                    .weak()
-                                    .color(Color32::from_rgb(130, 135, 145)),
-                            );
-                            ui.add_space(20.0);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 12.0;
-                                if ui
-                                    .add_sized(
-                                        [180.0, 36.0],
-                                        egui::Button::new(
-                                            RichText::new(t!("welcome_open_file"))
-                                                .size(13.0)
-                                                .strong(),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    action = LibraryAction::OpenFileDialog;
-                                }
-                                if ui
-                                    .add_sized(
-                                        [180.0, 36.0],
-                                        egui::Button::new(
-                                            RichText::new(t!("welcome_import_folder"))
-                                                .size(13.0),
-                                        ),
-                                    )
-                                    .clicked()
-                                {
-                                    action = LibraryAction::ImportFolder;
-                                }
-                            });
+                            if let Some(ref folder) = state.active_folder {
+                                ui.label(
+                                    RichText::new(t!("browser_no_photos"))
+                                        .size(18.0)
+                                        .strong()
+                                        .color(Color32::from_rgb(240, 240, 245)),
+                                );
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(folder.to_string_lossy())
+                                        .size(12.0)
+                                        .weak()
+                                        .color(Color32::from_rgb(160, 165, 175)),
+                                );
+                                ui.add_space(16.0);
+                                ui.label(
+                                    RichText::new(t!("browser_empty_tip"))
+                                        .size(12.0)
+                                        .weak()
+                                        .color(Color32::from_rgb(130, 135, 145)),
+                                );
+                                ui.add_space(20.0);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    if !state.filter.recursive
+                                        && ui
+                                            .add_sized(
+                                                [180.0, 36.0],
+                                                egui::Button::new(
+                                                    RichText::new(t!("browser_recursive"))
+                                                        .size(13.0)
+                                                        .strong(),
+                                                ),
+                                            )
+                                            .clicked()
+                                    {
+                                        action = LibraryAction::ToggleRecursive(true);
+                                    }
+                                    if ui
+                                        .add_sized(
+                                            [180.0, 36.0],
+                                            egui::Button::new(
+                                                RichText::new(t!("browser_choose_folder"))
+                                                    .size(13.0),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = LibraryAction::SelectFolderDialog;
+                                    }
+                                });
+                            } else {
+                                ui.label(
+                                    RichText::new(t!("welcome_title"))
+                                        .size(24.0)
+                                        .strong()
+                                        .color(Color32::from_rgb(240, 240, 245)),
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(t!("welcome_subtitle"))
+                                        .size(13.0)
+                                        .color(Color32::from_rgb(160, 165, 175)),
+                                );
+                                ui.add_space(16.0);
+                                ui.label(
+                                    RichText::new(t!("welcome_drag_drop"))
+                                        .size(12.0)
+                                        .weak()
+                                        .color(Color32::from_rgb(130, 135, 145)),
+                                );
+                                ui.add_space(20.0);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 12.0;
+                                    if ui
+                                        .add_sized(
+                                            [180.0, 36.0],
+                                            egui::Button::new(
+                                                RichText::new(t!("welcome_open_file"))
+                                                    .size(13.0)
+                                                    .strong(),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = LibraryAction::OpenFileDialog;
+                                    }
+                                    if ui
+                                        .add_sized(
+                                            [180.0, 36.0],
+                                            egui::Button::new(
+                                                RichText::new(t!("welcome_import_folder"))
+                                                    .size(13.0),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = LibraryAction::SelectFolderDialog;
+                                    }
+                                });
+                            }
                             ui.add_space(24.0);
                             ui.separator();
                             ui.add_space(8.0);
@@ -704,38 +972,38 @@ pub fn show_library_view(
                                                 photo.id,
                                                 Path::new(thumb_p),
                                             ) {
-                                            Ok(tex) => {
-                                                state.insert_thumbnail(
-                                                    photo.id,
-                                                    ThumbnailStatus::Ready(tex),
-                                                );
-                                                ctx.request_repaint();
-                                            }
-                                            Err(_) => {
-                                                state.insert_thumbnail(
-                                                    photo.id,
-                                                    ThumbnailStatus::Loading,
-                                                );
-                                                if state.pending_thumbnail_requests.len()
-                                                    < MAX_PENDING_THUMBNAILS
-                                                {
-                                                    state.pending_thumbnail_requests.push(
-                                                        ThumbnailRequest {
-                                                            photo_id: photo.id,
-                                                            source_path: PathBuf::from(
-                                                                &photo.file_path,
-                                                            ),
-                                                            sidecar_path: photo
-                                                                .sidecar_path
-                                                                .as_ref()
-                                                                .map(PathBuf::from),
-                                                        },
+                                                Ok(tex) => {
+                                                    state.insert_thumbnail(
+                                                        photo.id,
+                                                        ThumbnailStatus::Ready(tex),
                                                     );
+                                                    ctx.request_repaint();
+                                                }
+                                                Err(_) => {
+                                                    state.insert_thumbnail(
+                                                        photo.id,
+                                                        ThumbnailStatus::Loading,
+                                                    );
+                                                    if state.pending_thumbnail_requests.len()
+                                                        < MAX_PENDING_THUMBNAILS
+                                                    {
+                                                        state.pending_thumbnail_requests.push(
+                                                            ThumbnailRequest {
+                                                                photo_id: photo.id,
+                                                                source_path: PathBuf::from(
+                                                                    &photo.file_path,
+                                                                ),
+                                                                sidecar_path: photo
+                                                                    .sidecar_path
+                                                                    .as_ref()
+                                                                    .map(PathBuf::from),
+                                                            },
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                } else {
+                                    } else {
                                         state.insert_thumbnail(photo.id, ThumbnailStatus::Loading);
                                         if state.pending_thumbnail_requests.len()
                                             < MAX_PENDING_THUMBNAILS

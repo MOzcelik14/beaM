@@ -429,6 +429,25 @@ welcome_title = beaM. Photo Studio
 welcome_subtitle = Pure Rust, hardware-accelerated, non-destructive RAW photo editor
 welcome_drag_drop = Drag and drop photos or folders here to begin
 welcome_open_file = Open Photo (Ctrl+O)
-welcome_import_folder = Import Folder (Ctrl+Shift+O)
+welcome_import_folder = Select Folder (Ctrl+Shift+O)
 welcome_tip = Tip: Press G for Library and D for Develop view to switch workflows quickly.
+
+# File Browser (RawTherapee Model)
+browser_title = File Browser
+browser_places = Places
+browser_folders = Folders
+browser_home = Home
+browser_desktop = Desktop
+browser_pictures = Pictures
+browser_downloads = Downloads
+browser_parent = Parent Directory
+browser_refresh = Refresh
+browser_bookmark_add = Add to Bookmarks
+browser_bookmark_remove = Remove Bookmark
+browser_recursive = Include Subfolders
+browser_no_photos = No supported photos found in this folder
+browser_empty_tip = Select a folder from the tree on the left or drag and drop photos here
+browser_choose_folder = Select Folder...
+browser_open_folder = Open Folder
+browser_folder_photos_count = {$count} photos
 

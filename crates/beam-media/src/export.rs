@@ -409,7 +409,10 @@ pub fn expand_filename_template(
         .chars()
         .map(|c| {
             if c.is_control()
-                || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0')
+                || matches!(
+                    c,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'
+                )
             {
                 '_'
             } else {
@@ -457,7 +460,9 @@ pub fn expand_filename_template(
     // Windows rejects these even with extensions (e.g. "CON.jpg", "aux.png")
     let upper = trimmed.to_ascii_uppercase();
     let stem_prefix = upper.split('.').next().unwrap_or(&upper);
-    if WINDOWS_RESERVED_NAMES.contains(&stem_prefix) || WINDOWS_RESERVED_NAMES.contains(&upper.as_str()) {
+    if WINDOWS_RESERVED_NAMES.contains(&stem_prefix)
+        || WINDOWS_RESERVED_NAMES.contains(&upper.as_str())
+    {
         trimmed = format!("_{trimmed}");
     }
 
@@ -1185,11 +1190,20 @@ mod tests {
         let s_con = expand_filename_template("CON", "photo", None, 1, 5);
         assert_ne!(s_con.to_ascii_uppercase(), "CON", "CON must be sanitized");
         let s_con_ext = expand_filename_template("CON.jpg", "photo", None, 1, 5);
-        assert!(!s_con_ext.to_ascii_uppercase().starts_with("CON."), "CON.jpg must be sanitized");
+        assert!(
+            !s_con_ext.to_ascii_uppercase().starts_with("CON."),
+            "CON.jpg must be sanitized"
+        );
         let s_nul = expand_filename_template("nul.png", "photo", None, 1, 5);
-        assert!(!s_nul.to_ascii_uppercase().starts_with("NUL."), "NUL.png must be sanitized");
+        assert!(
+            !s_nul.to_ascii_uppercase().starts_with("NUL."),
+            "NUL.png must be sanitized"
+        );
         let s_aux = expand_filename_template("aux.anything", "photo", None, 1, 5);
-        assert!(!s_aux.to_ascii_uppercase().starts_with("AUX."), "AUX.anything must be sanitized");
+        assert!(
+            !s_aux.to_ascii_uppercase().starts_with("AUX."),
+            "AUX.anything must be sanitized"
+        );
 
         // Trailing dots and spaces
         let s_dots = expand_filename_template("photo...   ", "photo", None, 1, 5);
@@ -1197,13 +1211,15 @@ mod tests {
         assert!(!s_dots.ends_with(' '), "Trailing spaces must be stripped");
 
         // Invalid characters: <>:"/\|?*
-        let s_chars = expand_filename_template("bad<file>name:with*question?and|pipe", "photo", None, 1, 5);
+        let s_chars =
+            expand_filename_template("bad<file>name:with*question?and|pipe", "photo", None, 1, 5);
         assert!(!s_chars.contains('<') && !s_chars.contains('>'));
         assert!(!s_chars.contains(':') && !s_chars.contains('*'));
         assert!(!s_chars.contains('?') && !s_chars.contains('|'));
 
         // Drive letters and absolute paths
-        let s_drive = expand_filename_template("C:\\Windows\\System32\\cmd.exe", "photo", None, 1, 5);
+        let s_drive =
+            expand_filename_template("C:\\Windows\\System32\\cmd.exe", "photo", None, 1, 5);
         assert!(!s_drive.contains(':') && !s_drive.contains('\\'));
 
         // Non-ASCII and unicode preserved safely
@@ -1227,7 +1243,8 @@ mod tests {
 
     #[test]
     fn test_collision_and_atomic_temp_placement() {
-        let temp_dir = std::env::temp_dir().join(format!("beam_test_collision_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("beam_test_collision_{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let base_file = temp_dir.join("photo.jpg");

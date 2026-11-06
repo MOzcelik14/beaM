@@ -125,6 +125,10 @@ pub struct AppConfig {
     #[serde(default = "default_true")]
     pub show_develop_panel: bool,
     #[serde(default)]
+    pub bookmarked_folders: Vec<PathBuf>,
+    #[serde(default)]
+    pub recursive_browse: bool,
+    #[serde(default)]
     pub shortcuts: ShortcutConfig,
 }
 
@@ -139,6 +143,8 @@ impl Default for AppConfig {
             filmstrip_height: Some(110.0),
             show_history_panel: true,
             show_develop_panel: true,
+            bookmarked_folders: Vec::new(),
+            recursive_browse: false,
             shortcuts: ShortcutConfig::default(),
         }
     }

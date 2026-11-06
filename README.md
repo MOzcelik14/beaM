@@ -75,7 +75,7 @@ Library operations leverage an embedded, ACID-compliant SQLite catalog (`beam-li
 - **History & Presets**: 50-step linear undo/redo stack with jump-to-step history panel, reusable user presets, and cross-photo settings synchronization.
 
 ### Library Module
-- **Directory Ingestion**: Fast folder scanning with protection against recursive symlink cycles.
+- **File Browser & Ingestion**: RawTherapee-style in-app directory navigation with quick Places, persistent bookmarks, subfolder browsing, optional recursive scanning, and protection against symlink loops.
 - **Metadata Inspection**: Lens, focal length, ISO, shutter speed, aperture, and camera model display.
 - **Filtering & Search**: Filter by star rating, color label, file extension, or text query.
 - **Filmstrip Navigation**: Collapsible bottom tray in Develop mode for rapid image switching.

@@ -1,6 +1,6 @@
 //! Non-destructive sidecar file format for beaM.
 //!
-//! Stores the full edit stack in a human-readable RON file (`photo.ARW.beam.ron`).
+//! Stores the full edit stack in a human-readable RON file (`photo.ARW.beam`, legacy `photo.ARW.beam.ron`).
 
 use crate::error::{BeamError, Result};
 use serde::{Deserialize, Serialize};

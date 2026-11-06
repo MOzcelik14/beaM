@@ -75,7 +75,7 @@ Kütüphane yönetimi, gömülü ve ACID uyumlu bir SQLite kataloğu (`beam-libr
 - **Geçmiş ve Hazır Ayarlar**: İstenilen adıma tek tıkla dönülebilen 50 adımlı doğrusal geri alma/yineleme geçmişi, yeniden kullanılabilir kullanıcı önayarları ve fotoğraflar arası ayar senkronizasyonu.
 
 ### Kütüphane (Library) Modülü
-- **Dizin İçe Aktarımı**: Döngüsel sembolik bağ (symlink) kilitlenmelerine karşı korumalı hızlı klasör tarama.
+- **Dosya Yöneticisi ve Dizin Tarama**: RawTherapee tarzı yerleşik dosya gezgini, hızlı Konumlar, kalıcı yer imleri, alt klasör gezinimi, isteğe bağlı özyinelemeli tarama ve sembolik bağ döngüsü koruması.
 - **Metaveri İncelemesi**: Lens, odak uzaklığı, ISO, enstantane hızı, diyafram ve kamera gövdesi gösterimi.
 - **Filtreleme ve Arama**: Yıldız puanı, renk etiketi, dosya uzantısı veya metin sorgusuna göre filtreleme.
 - **Film Şeridi (Filmstrip)**: Geliştir modunda fotoğraflar arasında hızlı geçiş sağlayan açılır-kapanır alt şerit.

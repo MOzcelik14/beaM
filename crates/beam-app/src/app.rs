@@ -59,6 +59,7 @@ enum BackgroundMsg {
     Error(String),
     ImportComplete {
         count: usize,
+        folder: Option<PathBuf>,
     },
     ExportProgress(beam_media::BatchProgress),
     ExportFinished {
@@ -376,12 +377,37 @@ impl BeamApp {
             cc.egui_ctx
                 .load_texture("beam_app_logo", color_image, egui::TextureOptions::LINEAR)
         };
-        let library_state = LibraryViewState {
+
+        let active_folder = app_config.last_opened_folder.clone().or_else(|| {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .ok()
+                .map(PathBuf::from)?;
+            let pictures = home.join("Pictures");
+            if pictures.exists() {
+                Some(pictures)
+            } else {
+                Some(home)
+            }
+        });
+        let subdirectories = active_folder
+            .as_ref()
+            .map(|f| beam_library::list_subdirectories(f))
+            .unwrap_or_default();
+
+        let mut library_state = LibraryViewState {
             logo_texture: Some(logo_texture.clone()),
+            active_folder: active_folder.clone(),
+            bookmarked_folders: app_config.bookmarked_folders.clone(),
+            subdirectories,
             ..Default::default()
         };
+        if let Some(ref folder) = active_folder {
+            library_state.filter.folder_path = Some(folder.clone());
+            library_state.filter.recursive = app_config.recursive_browse;
+        }
 
-        Self {
+        let mut app = Self {
             current_view: AppView::Library,
             library_db,
             library_state,
@@ -473,7 +499,26 @@ impl BeamApp {
             pending_action: None,
             show_unsaved_changes_dialog: false,
             allow_close: false,
+        };
+
+        if let Some(ref folder) = app.library_state.active_folder.clone() {
+            if folder.exists() {
+                app.import_folder_path(folder.clone());
+            }
         }
+
+        app
+    }
+
+    /// Navigate to a folder in the file browser and scan its photos
+    pub fn browse_folder(&mut self, folder: PathBuf) {
+        self.library_state.active_folder = Some(folder.clone());
+        self.library_state.filter.folder_path = Some(folder.clone());
+        self.library_state.subdirectories = beam_library::list_subdirectories(&folder);
+        self.app_config.last_opened_folder = Some(folder.clone());
+        let _ = self.app_config.save();
+        self.import_folder_path(folder);
+        self.library_state.needs_refresh = true;
     }
 
     /// Open file dialog and spawn background thread to decode the image
@@ -534,9 +579,11 @@ impl BeamApp {
         let tx = self.tx.clone();
         let thumb_dir = self.thumbnail_cache_dir.clone();
         let catalog_path = default_catalog_path();
+        let recursive = self.app_config.recursive_browse;
         self.library_state.is_importing = true;
         self.library_state.import_status = Some(t!("library_importing"));
 
+        let scan_dir = dir.clone();
         thread::spawn(move || {
             let db = match LibraryDb::open(&catalog_path) {
                 Ok(d) => d,
@@ -549,12 +596,15 @@ impl BeamApp {
             };
 
             let scan_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                db.scan_and_import_folder(&dir, &thumb_dir, true)
+                db.scan_and_import_folder(&scan_dir, &thumb_dir, recursive)
             }));
 
             match scan_res {
                 Ok(Ok(count)) => {
-                    let _ = tx.send(BackgroundMsg::ImportComplete { count });
+                    let _ = tx.send(BackgroundMsg::ImportComplete {
+                        count,
+                        folder: Some(scan_dir),
+                    });
                 }
                 Ok(Err(e)) => {
                     let _ = tx.send(BackgroundMsg::Error(format!("Folder import failed: {e}")));
@@ -573,6 +623,7 @@ impl BeamApp {
         let thumb_dir = self.thumbnail_cache_dir.clone();
         let catalog_path = default_catalog_path();
         let dialog_title = t!("menu_file_import");
+        let recursive = self.app_config.recursive_browse;
 
         thread::spawn(move || {
             let folder = rfd::FileDialog::new().set_title(dialog_title).pick_folder();
@@ -588,13 +639,17 @@ impl BeamApp {
                     }
                 };
 
+                let scan_dir = dir.clone();
                 let scan_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    db.scan_and_import_folder(&dir, &thumb_dir, true)
+                    db.scan_and_import_folder(&scan_dir, &thumb_dir, recursive)
                 }));
 
                 match scan_res {
                     Ok(Ok(count)) => {
-                        let _ = tx.send(BackgroundMsg::ImportComplete { count });
+                        let _ = tx.send(BackgroundMsg::ImportComplete {
+                            count,
+                            folder: Some(dir),
+                        });
                     }
                     Ok(Err(e)) => {
                         let _ = tx.send(BackgroundMsg::Error(format!("Folder import failed: {e}")));
@@ -947,9 +1002,15 @@ impl BeamApp {
                     self.error_message = Some(err_msg);
                     ctx.request_repaint();
                 }
-                BackgroundMsg::ImportComplete { count } => {
+                BackgroundMsg::ImportComplete { count, folder } => {
                     self.library_state.is_importing = false;
                     self.library_state.import_status = None;
+                    if let Some(folder) = folder {
+                        if self.library_state.active_folder.as_ref() == Some(&folder) {
+                            self.library_state.subdirectories =
+                                beam_library::list_subdirectories(&folder);
+                        }
+                    }
                     self.library_state.needs_refresh = true;
                     log::info!("Imported {count} photos into catalog");
                     ctx.request_repaint();
@@ -1056,13 +1117,7 @@ impl BeamApp {
         let display_view = display_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Run edit pipeline (White balance -> Exposure -> Contrast -> Display)
-        pipeline.render(
-            device,
-            queue,
-            &gpu_proxy,
-            &display_view,
-            &self.edit_stack,
-        );
+        pipeline.render(device, queue, &gpu_proxy, &display_view, &self.edit_stack);
 
         // Create and render Before (unedited baseline) texture
         let before_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1361,9 +1416,10 @@ impl BeamApp {
     /// Persist current edit stack and history to the sidecar file on disk
     fn save_sidecar(&mut self) {
         if let Some(path) = &self.current_path {
-            let sidecar_p = self.sidecar_path.clone().unwrap_or_else(|| {
-                Sidecar::path_for(path)
-            });
+            let sidecar_p = self
+                .sidecar_path
+                .clone()
+                .unwrap_or_else(|| Sidecar::path_for(path));
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("image");
             let mut sidecar = Sidecar::new(filename);
             sidecar.edit_stack = self.edit_stack.clone();
@@ -1470,7 +1526,7 @@ impl eframe::App for BeamApp {
                 if !path.as_os_str().is_empty() {
                     let path_buf = path.to_path_buf();
                     if path_buf.is_dir() {
-                        self.import_folder_path(path_buf);
+                        self.browse_folder(path_buf);
                     } else if path_buf.is_file() {
                         let ext = path_buf
                             .extension()
@@ -1946,8 +2002,44 @@ impl eframe::App for BeamApp {
                     LibraryAction::OpenPhoto(path) => {
                         self.request_load_file_path(path);
                     }
-                    LibraryAction::ImportFolder => {
-                        self.request_import_folder_dialog();
+                    LibraryAction::SelectFolderDialog => {
+                        let choose_title = t!("browser_choose_folder");
+                        let mut dialog = rfd::FileDialog::new().set_title(choose_title);
+                        if let Some(ref current) = self.library_state.active_folder {
+                            if current.exists() {
+                                dialog = dialog.set_directory(current);
+                            }
+                        }
+                        if let Some(folder) = dialog.pick_folder() {
+                            self.browse_folder(folder);
+                        }
+                    }
+                    LibraryAction::ChangeFolder(folder) => {
+                        self.browse_folder(folder);
+                    }
+                    LibraryAction::ToggleBookmark(folder) => {
+                        if let Some(pos) = self
+                            .library_state
+                            .bookmarked_folders
+                            .iter()
+                            .position(|p| p == &folder)
+                        {
+                            self.library_state.bookmarked_folders.remove(pos);
+                        } else {
+                            self.library_state.bookmarked_folders.push(folder);
+                        }
+                        self.app_config.bookmarked_folders =
+                            self.library_state.bookmarked_folders.clone();
+                        let _ = self.app_config.save();
+                    }
+                    LibraryAction::ToggleRecursive(rec) => {
+                        self.library_state.filter.recursive = rec;
+                        self.app_config.recursive_browse = rec;
+                        let _ = self.app_config.save();
+                        if let Some(ref folder) = self.library_state.active_folder {
+                            self.import_folder_path(folder.clone());
+                        }
+                        self.library_state.needs_refresh = true;
                     }
                     LibraryAction::ExportPhotos(paths) => {
                         self.open_export_dialog_with_paths(paths);
@@ -5086,10 +5178,7 @@ impl BeamApp {
                     ui.separator();
                     ui.add_space(8.0);
 
-                    ui.label(
-                        RichText::new(t!("unsaved_dialog_message"))
-                            .size(14.0),
-                    );
+                    ui.label(RichText::new(t!("unsaved_dialog_message")).size(14.0));
 
                     if let Some(path) = &self.current_path {
                         if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
@@ -5105,7 +5194,9 @@ impl BeamApp {
                     ui.horizontal(|ui| {
                         // 1. Kaydet (Save)
                         let save_btn = egui::Button::new(
-                            RichText::new(t!("unsaved_save")).strong().color(Color32::WHITE),
+                            RichText::new(t!("unsaved_save"))
+                                .strong()
+                                .color(Color32::WHITE),
                         )
                         .fill(Color32::from_rgb(45, 120, 210));
                         if ui.add(save_btn).clicked() {

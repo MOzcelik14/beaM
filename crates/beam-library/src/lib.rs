@@ -129,6 +129,8 @@ pub struct LibraryFilter {
     pub file_type: FileTypeFilter,
     pub search_query: Option<String>,
     pub sort_by: SortOrder,
+    pub folder_path: Option<PathBuf>,
+    pub recursive: bool,
 }
 
 pub struct LibraryDb {
@@ -333,6 +335,8 @@ impl LibraryDb {
                 modified_at=excluded.modified_at,
                 width=excluded.width,
                 height=excluded.height,
+                rating=excluded.rating,
+                color_label=excluded.color_label,
                 thumbnail_path=COALESCE(excluded.thumbnail_path, photos.thumbnail_path),
                 sidecar_path=COALESCE(excluded.sidecar_path, photos.sidecar_path)
             "#,
@@ -510,6 +514,23 @@ impl LibraryDb {
             }
         }
 
+        if let Some(folder) = &filter.folder_path {
+            let folder_str = folder.to_string_lossy().to_string();
+            let prefix = if folder_str.ends_with('/') || folder_str.ends_with('\\') {
+                folder_str
+            } else {
+                format!("{folder_str}/")
+            };
+            if filter.recursive {
+                sql.push_str(" AND file_path LIKE ?");
+                params_vec.push(format!("{prefix}%").into());
+            } else {
+                sql.push_str(" AND file_path LIKE ? AND file_path NOT LIKE ?");
+                params_vec.push(format!("{prefix}%").into());
+                params_vec.push(format!("{prefix}%/%").into());
+            }
+        }
+
         match filter.sort_by {
             SortOrder::DateTakenDesc => sql.push_str(" ORDER BY created_at DESC, id DESC"),
             SortOrder::DateTakenAsc => sql.push_str(" ORDER BY created_at ASC, id ASC"),
@@ -676,7 +697,8 @@ impl LibraryDb {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let sidecar_p = Sidecar::find_sidecar_for(new_path).unwrap_or_else(|| Sidecar::path_for(new_path));
+        let sidecar_p =
+            Sidecar::find_sidecar_for(new_path).unwrap_or_else(|| Sidecar::path_for(new_path));
         let sidecar_str = if sidecar_p.exists() {
             Some(sidecar_p.to_string_lossy().to_string())
         } else {
@@ -742,6 +764,29 @@ impl LibraryDb {
 
         Ok(remapped)
     }
+}
+
+/// List immediate subdirectories within a directory, ignoring hidden (dot) folders and sorting alphabetically.
+pub fn list_subdirectories(folder: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(entries) = fs::read_dir(folder) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if !name.starts_with('.') {
+                        dirs.push(path);
+                    }
+                }
+            }
+        }
+    }
+    dirs.sort_by(|a, b| {
+        let name_a = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name_b = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name_a.to_lowercase().cmp(&name_b.to_lowercase())
+    });
+    dirs
 }
 
 #[cfg(test)]
@@ -974,7 +1019,8 @@ mod tests {
         fs::create_dir_all(&temp_dir).unwrap();
 
         let img_path = temp_dir.join("target.png");
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([0, 0, 0, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([0, 0, 0, 255]));
         img.save(&img_path).unwrap();
 
         let thumb_dir = temp_dir.join("thumbs");
@@ -990,7 +1036,11 @@ mod tests {
 
         // Verify photos table is still intact and readable
         let count_filter = LibraryFilter::default();
-        assert_eq!(db.query_photos(&count_filter).unwrap().len(), 1, "Table must not be dropped!");
+        assert_eq!(
+            db.query_photos(&count_filter).unwrap().len(),
+            1,
+            "Table must not be dropped!"
+        );
 
         // 2. OR injection attempt
         let or_filter = LibraryFilter {
@@ -998,7 +1048,11 @@ mod tests {
             ..Default::default()
         };
         let res_or = db.query_photos(&or_filter).unwrap();
-        assert_eq!(res_or.len(), 0, "Must treat search literally, not boolean OR");
+        assert_eq!(
+            res_or.len(),
+            0,
+            "Must treat search literally, not boolean OR"
+        );
 
         // 3. Metacharacter % (wildcard match)
         let wildcard_filter = LibraryFilter {
@@ -1036,7 +1090,11 @@ mod tests {
 
         let corrupt_db_path = temp_dir.join("corrupted.db");
         // Write invalid garbage bytes that do not form a valid SQLite database header
-        fs::write(&corrupt_db_path, b"NOT_A_SQLITE_DATABASE_INVALID_GARBAGE_BYTES_12345").unwrap();
+        fs::write(
+            &corrupt_db_path,
+            b"NOT_A_SQLITE_DATABASE_INVALID_GARBAGE_BYTES_12345",
+        )
+        .unwrap();
 
         let res = LibraryDb::open(&corrupt_db_path);
         assert!(res.is_err(), "Must return error on corrupted database file");
@@ -1066,7 +1124,10 @@ mod tests {
         // Open second connection and try to write; must receive busy/locked error without panic
         let db2 = Connection::open(&db_path).unwrap();
         let res = db2.execute("INSERT INTO schema_version (version) VALUES (2)", []);
-        assert!(res.is_err(), "Second connection must fail gracefully when locked");
+        assert!(
+            res.is_err(),
+            "Second connection must fail gracefully when locked"
+        );
 
         // Rollback first connection to release lock cleanly
         db1.conn.execute("ROLLBACK", []).unwrap();
@@ -1084,11 +1145,13 @@ mod tests {
         fs::create_dir_all(&ext_dir).unwrap();
 
         let outside_img = ext_dir.join("secret.png");
-        let img1: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([1, 1, 1, 255]));
+        let img1: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([1, 1, 1, 255]));
         img1.save(&outside_img).unwrap();
 
         let inside_img = lib_dir.join("normal.png");
-        let img2: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([2, 2, 2, 255]));
+        let img2: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([2, 2, 2, 255]));
         img2.save(&inside_img).unwrap();
 
         #[cfg(unix)]
@@ -1099,10 +1162,15 @@ mod tests {
 
         let db = LibraryDb::open_in_memory().unwrap();
         let thumb_dir = temp_dir.join("thumbs");
-        let count = db.scan_and_import_folder(&lib_dir, &thumb_dir, true).unwrap();
+        let count = db
+            .scan_and_import_folder(&lib_dir, &thumb_dir, true)
+            .unwrap();
 
         // Must import exactly 1 image (normal.png); the external symlink must be skipped
-        assert_eq!(count, 1, "Must skip symlinks resolving outside the library root folder");
+        assert_eq!(
+            count, 1,
+            "Must skip symlinks resolving outside the library root folder"
+        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -1124,12 +1192,15 @@ mod tests {
             depth_10 = depth_10.join(format!("level_{i}"));
         }
         let img_path = depth_10.join("photo.png");
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([5, 5, 5, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([5, 5, 5, 255]));
         img.save(&img_path).unwrap();
 
         let db = LibraryDb::open_in_memory().unwrap();
         let thumb_dir = temp_dir.join("thumbs");
-        let count = db.scan_and_import_folder(&temp_dir, &thumb_dir, true).unwrap();
+        let count = db
+            .scan_and_import_folder(&temp_dir, &thumb_dir, true)
+            .unwrap();
         assert_eq!(count, 1, "Must scan deep tree without stack overflow");
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -1148,7 +1219,8 @@ mod tests {
         let img_path2 = old_folder.join("image_b.png");
         let thumb_dir = temp_dir.join("thumbs");
 
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
         img.save(&img_path1).unwrap();
         img.save(&img_path2).unwrap();
 
@@ -1187,6 +1259,67 @@ mod tests {
         // 4. Test delete_photo
         db.delete_photo(p1.id).unwrap();
         assert_eq!(db.query_photos(&LibraryFilter::default()).unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_list_subdirectories_and_folder_filter() {
+        let temp_dir = std::env::temp_dir().join("beam_library_folder_browse_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let root = temp_dir.join("photos_root");
+        let sub_a = root.join("vacation");
+        let sub_b = root.join("portraits");
+        let hidden = root.join(".hidden_folder");
+        fs::create_dir_all(&sub_a).unwrap();
+        fs::create_dir_all(&sub_b).unwrap();
+        fs::create_dir_all(&hidden).unwrap();
+
+        let subdirs = list_subdirectories(&root);
+        assert_eq!(subdirs.len(), 2);
+        assert_eq!(subdirs[0].file_name().unwrap(), "portraits");
+        assert_eq!(subdirs[1].file_name().unwrap(), "vacation");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
+        let file_root = root.join("root_photo.png");
+        let file_sub = sub_a.join("beach.png");
+        img.save(&file_root).unwrap();
+        img.save(&file_sub).unwrap();
+
+        let thumb_dir = temp_dir.join("thumbs");
+        let db = LibraryDb::open_in_memory().unwrap();
+        db.import_file(&file_root, &thumb_dir).unwrap();
+        db.import_file(&file_sub, &thumb_dir).unwrap();
+
+        // 1. Filter non-recursive root
+        let filter_non_rec = LibraryFilter {
+            folder_path: Some(root.clone()),
+            recursive: false,
+            ..Default::default()
+        };
+        let res_non_rec = db.query_photos(&filter_non_rec).unwrap();
+        assert_eq!(res_non_rec.len(), 1);
+        assert_eq!(res_non_rec[0].file_name, "root_photo.png");
+
+        // 2. Filter recursive root
+        let filter_rec = LibraryFilter {
+            folder_path: Some(root.clone()),
+            recursive: true,
+            ..Default::default()
+        };
+        let res_rec = db.query_photos(&filter_rec).unwrap();
+        assert_eq!(res_rec.len(), 2);
+
+        // 3. Filter subfolder
+        let filter_sub = LibraryFilter {
+            folder_path: Some(sub_a.clone()),
+            recursive: false,
+            ..Default::default()
+        };
+        let res_sub = db.query_photos(&filter_sub).unwrap();
+        assert_eq!(res_sub.len(), 1);
+        assert_eq!(res_sub[0].file_name, "beach.png");
 
         let _ = fs::remove_dir_all(temp_dir);
     }

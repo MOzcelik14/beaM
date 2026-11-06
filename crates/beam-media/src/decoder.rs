@@ -278,7 +278,9 @@ pub fn validate_tiff_raw_structure(head: &[u8], total_file_size: usize) -> Resul
         }
 
         for i in 0..entry_count {
-            let entry_offset = current_ifd.saturating_add(2).saturating_add(i.saturating_mul(12));
+            let entry_offset = current_ifd
+                .saturating_add(2)
+                .saturating_add(i.saturating_mul(12));
             if entry_offset.saturating_add(12) > head.len() {
                 break;
             }
@@ -318,7 +320,9 @@ pub fn validate_tiff_raw_structure(head: &[u8], total_file_size: usize) -> Resul
                 ]) as usize
             };
 
-            if matches!(tag, 0x014A | 0x8769 | 0x8825 | 0x8773) && (count == 0 || type_code == 0 || type_code > 13) {
+            if matches!(tag, 0x014A | 0x8769 | 0x8825 | 0x8773)
+                && (count == 0 || type_code == 0 || type_code > 13)
+            {
                 return Err(BeamError::RawDecode(format!(
                     "Corrupted TIFF IFD entry: SubIFD tag 0x{tag:04X} has invalid count ({count}) or type ({type_code})"
                 )));
@@ -422,17 +426,17 @@ fn validate_ciff_ifd_inner(
         return Ok(());
     }
     if end < 4 || end > buf.len() || start >= end {
-        return Err(BeamError::RawDecode("Corrupted CIFF: invalid block range".into()));
+        return Err(BeamError::RawDecode(
+            "Corrupted CIFF: invalid block range".into(),
+        ));
     }
-    let valuedata_size = u32::from_le_bytes([
-        buf[end - 4],
-        buf[end - 3],
-        buf[end - 2],
-        buf[end - 1],
-    ]) as usize;
+    let valuedata_size =
+        u32::from_le_bytes([buf[end - 4], buf[end - 3], buf[end - 2], buf[end - 1]]) as usize;
     let dir_offset = start.saturating_add(valuedata_size);
     if dir_offset.saturating_add(2) > end {
-        return Err(BeamError::RawDecode("Corrupted CIFF: directory offset out of range".into()));
+        return Err(BeamError::RawDecode(
+            "Corrupted CIFF: directory offset out of range".into(),
+        ));
     }
     let dircount = u16::from_le_bytes([buf[dir_offset], buf[dir_offset + 1]]) as usize;
     if dircount > 1024
@@ -441,7 +445,9 @@ fn validate_ciff_ifd_inner(
             .saturating_add(dircount.saturating_mul(10))
             > end
     {
-        return Err(BeamError::RawDecode("Corrupted CIFF: directory entries exceed bounds".into()));
+        return Err(BeamError::RawDecode(
+            "Corrupted CIFF: directory entries exceed bounds".into(),
+        ));
     }
     for i in 0..dircount {
         let entry_offset = dir_offset + 2 + i * 10;
@@ -468,7 +474,9 @@ fn validate_ciff_ifd_inner(
             _ => continue,
         };
         if data_offset.saturating_add(bytesize) > buf.len() {
-            return Err(BeamError::RawDecode("Corrupted CIFF: entry data exceeds file length".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted CIFF: entry data exceeds file length".into(),
+            ));
         }
         if typ == 0x2800 || typ == 0x3000 {
             if data_offset <= start {
@@ -481,7 +489,13 @@ fn validate_ciff_ifd_inner(
                     "Corrupted CIFF: cycle detected in subIFD hierarchy".into(),
                 ));
             }
-            validate_ciff_ifd_inner(buf, data_offset, data_offset.saturating_add(bytesize), depth + 1, visited)?;
+            validate_ciff_ifd_inner(
+                buf,
+                data_offset,
+                data_offset.saturating_add(bytesize),
+                depth + 1,
+                visited,
+            )?;
         }
     }
     Ok(())
@@ -489,10 +503,14 @@ fn validate_ciff_ifd_inner(
 
 fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
     if bytes.len() < 16 {
-        return Err(BeamError::RawDecode("Corrupted BMFF container: truncated".into()));
+        return Err(BeamError::RawDecode(
+            "Corrupted BMFF container: truncated".into(),
+        ));
     }
     if &bytes[4..8] != b"ftyp" {
-        return Err(BeamError::RawDecode("Corrupted BMFF: first box must be ftyp".into()));
+        return Err(BeamError::RawDecode(
+            "Corrupted BMFF: first box must be ftyp".into(),
+        ));
     }
 
     let mut offset: usize = 0;
@@ -506,7 +524,9 @@ fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
 
         let box_size = if size32 == 1 {
             if offset.saturating_add(16) > bytes.len() {
-                return Err(BeamError::RawDecode("Corrupted BMFF box header: 64-bit size truncated".into()));
+                return Err(BeamError::RawDecode(
+                    "Corrupted BMFF box header: 64-bit size truncated".into(),
+                ));
             }
             let size64 = u64::from_be_bytes([
                 bytes[offset + 8],
@@ -519,22 +539,30 @@ fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
                 bytes[offset + 15],
             ]);
             if size64 < 16 || size64 > bytes.len() as u64 {
-                return Err(BeamError::RawDecode("Corrupted BMFF box: 64-bit size out of range".into()));
+                return Err(BeamError::RawDecode(
+                    "Corrupted BMFF box: 64-bit size out of range".into(),
+                ));
             }
             size64 as usize
         } else if size32 < 8 {
-            return Err(BeamError::RawDecode("Corrupted BMFF box: box size less than 8 bytes".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted BMFF box: box size less than 8 bytes".into(),
+            ));
         } else {
             size32
         };
 
         let tag = &bytes[offset + 4..offset + 8];
         if tag == b"ftyp" && (offset != 0 || box_size < 16 || box_size % 4 != 0) {
-            return Err(BeamError::RawDecode("Corrupted BMFF ftyp box: invalid ftyp box".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted BMFF ftyp box: invalid ftyp box".into(),
+            ));
         }
 
         if offset.saturating_add(box_size) > bytes.len() {
-            return Err(BeamError::RawDecode("Corrupted BMFF box: size exceeds file length".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted BMFF box: size exceeds file length".into(),
+            ));
         }
         offset = offset.saturating_add(box_size);
     }
@@ -544,7 +572,9 @@ fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
 /// Validate RAW container bounds (TIFF, X3F, BMFF, etc.) to prevent third-party parser panics and unbounded allocations.
 pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
     if bytes.len() < 8 {
-        return Err(BeamError::RawDecode("RAW container truncated (< 8 bytes)".into()));
+        return Err(BeamError::RawDecode(
+            "RAW container truncated (< 8 bytes)".into(),
+        ));
     }
 
     let is_known_container = bytes.starts_with(b"\0MRM")
@@ -560,7 +590,9 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         || bytes.starts_with(b"MM");
 
     if !is_known_container {
-        return Err(BeamError::RawDecode("Unsupported or unrecognized RAW container format".into()));
+        return Err(BeamError::RawDecode(
+            "Unsupported or unrecognized RAW container format".into(),
+        ));
     }
 
     validate_tiff_raw_structure(bytes, bytes.len())?;
@@ -571,7 +603,9 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
 
     if bytes.starts_with(b"FOVb") {
         if bytes.len() < 16 {
-            return Err(BeamError::RawDecode("Corrupted X3F container: header truncated".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted X3F container: header truncated".into(),
+            ));
         }
         let offset = u32::from_le_bytes([
             bytes[bytes.len() - 4],
@@ -634,7 +668,9 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
 
     if bytes.len() >= 14 && &bytes[6..14] == b"HEAPCCDR" {
         if bytes.len() < 26 {
-            return Err(BeamError::RawDecode("Corrupted CIFF container: truncated".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted CIFF container: truncated".into(),
+            ));
         }
         if !bytes.starts_with(b"II\x1a\0\0\0") && !bytes.starts_with(b"MM\0\x1a\0\0") {
             return Err(BeamError::RawDecode(
@@ -647,16 +683,22 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
 
     if bytes.starts_with(b"FUJIFILM") {
         if bytes.len() < 104 {
-            return Err(BeamError::RawDecode("Corrupted RAF container: truncated header".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted RAF container: truncated header".into(),
+            ));
         }
-        let tiff1_offset = u32::from_be_bytes([bytes[84], bytes[85], bytes[86], bytes[87]]) as usize;
+        let tiff1_offset =
+            u32::from_be_bytes([bytes[84], bytes[85], bytes[86], bytes[87]]) as usize;
         let tiff1_start = tiff1_offset.saturating_add(12);
         if tiff1_start >= bytes.len() {
-            return Err(BeamError::RawDecode("Corrupted RAF header: TIFF offset exceeds file".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted RAF header: TIFF offset exceeds file".into(),
+            ));
         }
         validate_tiff_raw_structure(&bytes[tiff1_start..], bytes.len() - tiff1_start)?;
 
-        let tiff2_offset = u32::from_be_bytes([bytes[100], bytes[101], bytes[102], bytes[103]]) as usize;
+        let tiff2_offset =
+            u32::from_be_bytes([bytes[100], bytes[101], bytes[102], bytes[103]]) as usize;
         if tiff2_offset < bytes.len() {
             validate_tiff_raw_structure(&bytes[tiff2_offset..], bytes.len() - tiff2_offset)?;
         }
@@ -664,7 +706,9 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
 
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF, 0xE1]) {
         if bytes.len() < 22 {
-            return Err(BeamError::RawDecode("Corrupted JPEG/EXIF container: truncated".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted JPEG/EXIF container: truncated".into(),
+            ));
         }
         let app1_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
         // APP1 must contain: 2 bytes len + 6 bytes "Exif\0\0" + 8 bytes TIFF header + 2 bytes IFD entry count = 18 bytes minimum
@@ -680,7 +724,8 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
             ));
         }
         let tiff_start = 12;
-        if !bytes[tiff_start..].starts_with(b"II*\0") && !bytes[tiff_start..].starts_with(b"MM\0*") {
+        if !bytes[tiff_start..].starts_with(b"II*\0") && !bytes[tiff_start..].starts_with(b"MM\0*")
+        {
             return Err(BeamError::RawDecode(
                 "Corrupted JPEG/EXIF container: invalid TIFF header in EXIF APP1".into(),
             ));
@@ -696,7 +741,9 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
 
     if bytes.starts_with(b"\0MRM") {
         if bytes.len() < 40 {
-            return Err(BeamError::RawDecode("Corrupted MRW container: truncated".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted MRW container: truncated".into(),
+            ));
         }
         let data_offset = (u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize)
             .saturating_add(8);
@@ -708,8 +755,18 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         let mut currpos: usize = 8;
         let mut tiffpos: usize = 0;
         while currpos.saturating_add(8) <= data_offset {
-            let tag = u32::from_be_bytes([bytes[currpos], bytes[currpos + 1], bytes[currpos + 2], bytes[currpos + 3]]);
-            let len = u32::from_be_bytes([bytes[currpos + 4], bytes[currpos + 5], bytes[currpos + 6], bytes[currpos + 7]]) as usize;
+            let tag = u32::from_be_bytes([
+                bytes[currpos],
+                bytes[currpos + 1],
+                bytes[currpos + 2],
+                bytes[currpos + 3],
+            ]);
+            let len = u32::from_be_bytes([
+                bytes[currpos + 4],
+                bytes[currpos + 5],
+                bytes[currpos + 6],
+                bytes[currpos + 7],
+            ]) as usize;
             if tag == 0x545457 {
                 tiffpos = currpos.saturating_add(8);
             }
@@ -719,15 +776,26 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
             currpos = currpos.saturating_add(len.saturating_add(8));
         }
         if tiffpos == 0 {
-            return Err(BeamError::RawDecode("Corrupted MRW container: missing TTW block".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted MRW container: missing TTW block".into(),
+            ));
         }
         let ifd_target = tiffpos.saturating_add(8);
         if ifd_target.saturating_add(2) > bytes.len() {
-            return Err(BeamError::RawDecode("Corrupted MRW container: IFD offset out of range".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted MRW container: IFD offset out of range".into(),
+            ));
         }
         let entry_count = u16::from_be_bytes([bytes[ifd_target], bytes[ifd_target + 1]]) as usize;
-        if entry_count > 4096 || ifd_target.saturating_add(2).saturating_add(entry_count.saturating_mul(12)) > bytes.len() {
-            return Err(BeamError::RawDecode("Corrupted MRW container: IFD entries exceed file length".into()));
+        if entry_count > 4096
+            || ifd_target
+                .saturating_add(2)
+                .saturating_add(entry_count.saturating_mul(12))
+                > bytes.len()
+        {
+            return Err(BeamError::RawDecode(
+                "Corrupted MRW container: IFD entries exceed file length".into(),
+            ));
         }
         for i in 0..entry_count {
             let entry_offset = ifd_target + 2 + i * 12;
@@ -746,18 +814,26 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
                 bytes[entry_offset + 7],
             ]) as usize;
             if count.saturating_mul(type_size) > bytes.len() || count > bytes.len() {
-                return Err(BeamError::RawDecode("Corrupted MRW IFD entry data size out of range".into()));
+                return Err(BeamError::RawDecode(
+                    "Corrupted MRW IFD entry data size out of range".into(),
+                ));
             }
         }
     }
 
     if bytes.starts_with(b"qktk") || bytes.starts_with(b"qktn") {
         if bytes.len() < 750 {
-            return Err(BeamError::RawDecode("Corrupted QTK container: truncated".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted QTK container: truncated".into(),
+            ));
         }
         let height = u16::from_be_bytes([bytes[544], bytes[545]]) as usize;
         let width = u16::from_be_bytes([bytes[546], bytes[547]]) as usize;
-        let (min_dim, max_dim) = if height > width { (width, height) } else { (height, width) };
+        let (min_dim, max_dim) = if height > width {
+            (width, height)
+        } else {
+            (height, width)
+        };
         if (max_dim != 640 || min_dim != 480) && (max_dim != 320 || min_dim != 240) {
             return Err(BeamError::RawDecode(format!(
                 "Corrupted QTK header: invalid QuickTake dimensions {width}x{height}"
@@ -767,7 +843,9 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         let offset = if hint == 30 { 738 } else { 736 };
         let min_required = offset + (max_dim * min_dim * 3) / 8;
         if bytes.len() < min_required {
-            return Err(BeamError::RawDecode("Corrupted QTK container: truncated payload".into()));
+            return Err(BeamError::RawDecode(
+                "Corrupted QTK container: truncated payload".into(),
+            ));
         }
     }
 
@@ -790,7 +868,8 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             validate_tiff_raw_structure(&head[..n], file_size)?;
             if file_size <= 65536 {
                 validate_raw_container(&head[..n])?;
-            } else if head.starts_with(b"FOVb") || (head.len() >= 14 && &head[6..14] == b"HEAPCCDR") {
+            } else if head.starts_with(b"FOVb") || (head.len() >= 14 && &head[6..14] == b"HEAPCCDR")
+            {
                 if let Ok(whole) = std::fs::read(path) {
                     validate_raw_container(&whole)?;
                 }
@@ -800,14 +879,17 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
         }
     }
 
-    let decode_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rawler::decode_file(path)
-    }));
+    let decode_result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rawler::decode_file(path)));
 
     let rawimage = match decode_result {
         Ok(Ok(img)) => img,
         Ok(Err(e)) => return Err(BeamError::RawDecode(format!("RAW decode failed: {e:?}"))),
-        Err(_) => return Err(BeamError::RawDecode("RAW parser panicked on corrupted input".into())),
+        Err(_) => {
+            return Err(BeamError::RawDecode(
+                "RAW parser panicked on corrupted input".into(),
+            ))
+        }
     };
 
     let orig_w = rawimage.width as u32;
@@ -2052,11 +2134,9 @@ mod tests {
         // Reproducer oom-662b8ff128146682485447ad5aaecb821636dd18 from fuzz_raw_decode
         // Declares 65535 IFD entries in a 37-byte file which previously triggered malloc(4294967295)
         let oom_bytes: &[u8] = &[
-            0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08,
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x01, 0x01,
-            0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00,
-            0x01, 0x00, 0x00, 0x00, 0x00,
+            0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let validation_res = validate_tiff_raw_header(oom_bytes);
@@ -2073,12 +2153,15 @@ mod tests {
         std::fs::write(&raw_path, oom_bytes).unwrap();
 
         let res = decode_image(&raw_path);
-        assert!(res.is_err(), "Must cleanly fail decoding without allocating 4.29 GB");
+        assert!(
+            res.is_err(),
+            "Must cleanly fail decoding without allocating 4.29 GB"
+        );
 
         // Fuzz reproducer 2: IFD entry count declared 4294967041 elements
         let oom_bytes_2: &[u8] = &[
-            77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 255, 255, 255, 255, 255, 255, 255, 1, 18, 32, 3, 0,
-            0, 0, 1, 0, 0, 0, 8, 0, 0,
+            77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 255, 255, 255, 255, 255, 255, 255, 1, 18, 32, 3, 0, 0,
+            0, 1, 0, 0, 0, 8, 0, 0,
         ];
         let val_res_2 = validate_tiff_raw_header(oom_bytes_2);
         assert!(val_res_2.is_err());
@@ -2136,14 +2219,14 @@ mod tests {
 
         // Fuzz reproducer 7: RAF container with corrupted embedded TIFF structure
         let oom_bytes_7: &[u8] = &[
-            70, 85, 74, 73, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0,
-            1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 1, 18, 0,
-            0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 77, 77, 77, 0, 42, 0, 49, 0, 0, 0, 0, 0, 0, 8,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            70, 85, 74, 73, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1,
+            3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 1, 18, 0, 0, 3,
+            0, 0, 0, 1, 0, 1, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 49, 77, 77, 77, 0, 42, 0, 49, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 1,
-            18, 0, 32, 3, 0, 16, 0, 18, 248,
+            255, 255, 255, 255, 255, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 1, 18, 0, 32, 3, 0,
+            16, 0, 18, 248,
         ];
         let val_res_7 = validate_tiff_raw_header(oom_bytes_7);
         assert!(val_res_7.is_err());
@@ -2153,9 +2236,7 @@ mod tests {
         assert!(res_7.is_err());
 
         // Fuzz reproducer 8: JPEG/EXIF malformed APP1 triggering rawler Jfif infinite loop hang
-        let oom_bytes_8: &[u8] = &[
-            255, 216, 255, 225, 199, 77, 77, 0, 255, 216, 255, 225, 0,
-        ];
+        let oom_bytes_8: &[u8] = &[255, 216, 255, 225, 199, 77, 77, 0, 255, 216, 255, 225, 0];
         let val_res_8 = validate_tiff_raw_header(oom_bytes_8);
         assert!(val_res_8.is_err());
         let raw_path_8 = temp_dir.join("corrupted_jfif.dng");
@@ -2166,10 +2247,10 @@ mod tests {
         // Fuzz reproducer 9: CIFF container with subIFD valuedata_size out of bounds (1.14 GB in 116-byte file)
         let oom_bytes_9: &[u8] = &[
             88, 73, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 127, 7, 0, 2, 2, 0, 113, 107,
-            116, 110, 37, 0, 247, 9, 68, 82, 0, 127, 7, 0, 2, 2, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 19, 0, 0, 0,
+            116, 110, 37, 0, 247, 9, 68, 82, 0, 127, 7, 0, 2, 2, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            6, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 19, 0, 0, 0,
         ];
         let val_res_9 = validate_tiff_raw_header(oom_bytes_9);
         assert!(val_res_9.is_err());
@@ -2180,9 +2261,9 @@ mod tests {
 
         // Fuzz reproducer 10: MRW container with data_offset out of range (2.77 MB in 77-byte file)
         let oom_bytes_10: &[u8] = &[
-            0, 77, 82, 77, 0, 42, 86, 0, 0, 0, 0, 0, 0, 0, 37, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 97, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0,
-            2, 40, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0,
+            0, 77, 82, 77, 0, 42, 86, 0, 0, 0, 0, 0, 0, 0, 37, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 97, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 2,
+            40, 0, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0,
         ];
         let val_res_10 = validate_tiff_raw_header(oom_bytes_10);
         assert!(val_res_10.is_err());
@@ -2193,18 +2274,18 @@ mod tests {
 
         // Fuzz reproducer 11: MRW container with corrupted IFD entries declaring 4GB allocation
         let oom_bytes_11: &[u8] = &[
-            0, 77, 82, 77, 0, 0, 0, 8, 0, 9, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
+            0, 77, 82, 77, 0, 0, 0, 8, 0, 9, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
             143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
             143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
             143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
             143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
             143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
             143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143, 143,
-            143, 143, 143, 143, 1, 0, 0, 8, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 16, 0,
-            0, 0, 0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 196, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 9, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 176, 0, 0, 0, 0, 0, 0, 0, 0, 219, 255, 255, 248,
-            18, 0, 3, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0,
+            143, 143, 143, 1, 0, 0, 8, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 16, 0, 0, 0,
+            0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 196, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0,
+            1, 0, 0, 0, 0, 0, 0, 1, 0, 176, 0, 0, 0, 0, 0, 0, 0, 0, 219, 255, 255, 248, 18, 0, 3,
+            0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0,
         ];
         let val_res_11 = validate_tiff_raw_header(oom_bytes_11);
         assert!(val_res_11.is_err());
@@ -2239,8 +2320,8 @@ mod tests {
 
         // Fuzz reproducer 14: CIFF container with corrupted subIFD bounds (49 bytes)
         let oom_bytes_14: &[u8] = &[
-            88, 73, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 127, 255, 0, 2, 1, 0, 0, 106,
-            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 171, 49, 72, 0, 0, 0, 0, 0, 0, 0, 19, 0, 0, 0,
+            88, 73, 0, 0, 0, 0, 72, 69, 65, 80, 67, 67, 68, 82, 0, 127, 255, 0, 2, 1, 0, 0, 106, 2,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 171, 49, 72, 0, 0, 0, 0, 0, 0, 0, 19, 0, 0, 0,
         ];
         let val_res_14 = validate_tiff_raw_header(oom_bytes_14);
         assert!(val_res_14.is_err());
@@ -2264,7 +2345,35 @@ mod tests {
 
         // Fuzz reproducer 16: QTK container with invalid dimensions (Apple QuickTake)
         let oom_bytes_16: &[u8] = &[
-            113, 107, 116, 107, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 77, 0, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 239, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 171, 10, 185, 90, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 0, 0, 183, 0, 42, 3, 0, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 77, 77, 0, 0, 1, 58, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 0, 0, 0, 8, 0, 1, 1, 18, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 224, 252, 0, 1, 109, 0, 0, 149, 0, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 77, 0, 149, 42, 0, 77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
+            113, 107, 116, 107, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0,
+            1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 149, 0, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 77, 0, 77,
+            8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0,
+            8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0,
+            77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0,
+            0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 64, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0,
+            42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 239, 0,
+            9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 171, 10, 185, 90, 77, 8, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 73, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 39,
+            0, 0, 0, 0, 0, 0, 0, 183, 0, 42, 3, 0, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70,
+            73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0,
+            0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0,
+            0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 77, 77, 0, 0, 1, 58, 1, 0, 0, 0, 46, 0, 0,
+            1, 0, 0, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1,
+            0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 149, 0, 0, 0, 0, 8, 0, 1, 1, 18, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 59, 0, 0, 0, 0, 224, 252, 0, 1, 109, 0, 0, 149, 0, 3, 1,
+            0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 77, 0, 149, 42, 0, 77, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255,
         ];
         let val_res_16 = validate_tiff_raw_header(oom_bytes_16);
         assert!(val_res_16.is_err());
@@ -2275,7 +2384,38 @@ mod tests {
 
         // Fuzz reproducer 17: QTK container with truncated bitpump payload (Apple QuickTake)
         let oom_bytes_17: &[u8] = &[
-            113, 107, 116, 107, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 77, 0, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 0, 0, 0, 245, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 64, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 16, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 239, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 171, 10, 185, 90, 77, 8, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 73, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 39, 0, 0, 0, 0, 0, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 77, 77, 0, 42, 161, 0, 0, 8, 0, 1, 73, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 11, 0, 0, 0, 1, 183, 3, 0, 77, 0, 0, 0, 0, 73, 77, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 0, 0, 183, 0, 42, 3, 0, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 8, 0, 0, 0, 2, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 91, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 77, 77, 0, 0, 1, 58, 1, 0, 0, 0, 46, 0, 0, 43, 1, 0, 0, 70, 73, 76, 77, 77, 77, 76, 77, 0, 0, 0, 245, 77, 77, 0, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 47, 0, 0, 0, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 0, 0, 0, 8, 0, 1, 1, 18, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149,
+            113, 107, 116, 107, 70, 73, 76, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0,
+            1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 77,
+            0, 77, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0, 0, 149, 77, 77, 0, 42, 0,
+            0, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77, 76, 77, 77, 77, 0, 42, 0,
+            0, 77, 77, 0, 0, 0, 245, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0,
+            8, 0, 9, 1, 0, 0, 0, 0, 64, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 16, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 8, 0, 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 1, 77, 77,
+            76, 77, 77, 77, 0, 42, 0, 0, 77, 77, 42, 0, 0, 0, 8, 0, 9, 1, 0, 8, 0, 1, 0, 1, 3, 1,
+            0, 0, 0, 0, 239, 0, 9, 1, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 171, 10,
+            185, 90, 77, 8, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 73, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 39,
+            0, 0, 0, 0, 0, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+            126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+            126, 126, 126, 126, 126, 126, 126, 126, 126, 77, 77, 0, 42, 161, 0, 0, 8, 0, 1, 73, 0,
+            0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255, 255, 255,
+            3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0,
+            9, 1, 11, 0, 0, 0, 1, 183, 3, 0, 77, 0, 0, 0, 0, 73, 77, 126, 126, 126, 126, 126, 126,
+            126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+            126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+            126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126,
+            126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 0, 0, 183, 0, 42,
+            3, 0, 0, 0, 1, 52, 1, 0, 0, 0, 46, 0, 0, 1, 0, 0, 70, 73, 76, 255, 255, 255, 255, 255,
+            255, 255, 3, 77, 77, 77, 76, 77, 77, 77, 0, 42, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0,
+            0, 8, 0, 9, 1, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 63, 0, 128, 0, 0, 0, 0, 0,
+            9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 9, 1, 0, 0, 8,
+            0, 0, 0, 2, 0, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 91, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+            0, 0, 77, 77, 0, 0, 1, 58, 1, 0, 0, 0, 46, 0, 0, 43, 1, 0, 0, 70, 73, 76, 77, 77, 77,
+            76, 77, 0, 0, 0, 245, 77, 77, 0, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 65, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 47, 0, 0, 0, 0, 0, 0, 8, 0, 1, 0, 1, 3, 1, 0, 0, 0, 0, 8, 0, 9, 1, 0, 0,
+            0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 149, 0, 0, 0, 0, 8,
+            0, 1, 1, 18, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 77, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 149,
         ];
         let val_res_17 = validate_tiff_raw_header(oom_bytes_17);
         assert!(val_res_17.is_err());
@@ -2316,8 +2456,8 @@ mod tests {
             0, 0, 0, 11, 0, 77, 73, 73, 42, 0, 12, 0, 0, 0, 1, 255, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 66, 2, 42, 190, 0, 1, 2, 16, 0,
-            0, 0, 8, 2, 4, 1, 0, 0, 0,
+            255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 66, 2, 42, 190, 0, 1, 2, 16, 0, 0,
+            0, 8, 2, 4, 1, 0, 0, 0,
         ];
         let val_res_20 = validate_tiff_raw_header(oom_bytes_20);
         assert!(val_res_20.is_err());
@@ -2329,10 +2469,10 @@ mod tests {
         // Fuzz reproducer 21: BMFF ftyp box zero size causing underflow panic (98 bytes)
         let oom_bytes_21: &[u8] = &[
             0, 0, 0, 0, 102, 116, 121, 112, 0, 8, 0, 1, 1, 18, 32, 3, 0, 0, 0, 0, 0, 8, 0, 0, 1, 0,
-            0, 0, 0, 0, 0, 0, 77, 77, 77, 0, 42, 0, 49, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0,
-            0, 129, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
-            255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 37, 0,
+            0, 0, 0, 0, 0, 0, 77, 77, 77, 0, 42, 0, 49, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0,
+            0, 0, 129, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 37, 0,
         ];
         let val_res_21 = validate_tiff_raw_header(oom_bytes_21);
         assert!(val_res_21.is_err());
@@ -2343,8 +2483,8 @@ mod tests {
 
         // Fuzz reproducer 22: JPEG/EXIF container with root IFD offset 0 causing JFIF infinite loop (60 bytes)
         let oom_bytes_22: &[u8] = &[
-            255, 216, 255, 225, 0, 36, 69, 120, 105, 102, 0, 0, 77, 77, 0, 42, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
+            255, 216, 255, 225, 0, 36, 69, 120, 105, 102, 0, 0, 77, 77, 0, 42, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
             255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 16, 0, 16,
         ];
         let val_res_22 = validate_tiff_raw_header(oom_bytes_22);
@@ -2356,8 +2496,8 @@ mod tests {
 
         // Fuzz reproducer 23: JPEG/EXIF container with IFD entry count 0 causing JFIF infinite loop (40 bytes)
         let oom_bytes_23: &[u8] = &[
-            255, 216, 255, 225, 0, 36, 69, 120, 105, 102, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 0,
-            0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 27, 77, 16,
+            255, 216, 255, 225, 0, 36, 69, 120, 105, 102, 0, 0, 77, 77, 0, 42, 0, 0, 0, 8, 0, 0, 0,
+            0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 27, 77, 16,
         ];
         let val_res_23 = validate_tiff_raw_header(oom_bytes_23);
         assert!(val_res_23.is_err());
@@ -2393,8 +2533,8 @@ mod tests {
         assert!(res_25.is_err());
         // Fuzz reproducer 26: JPEG/EXIF container with truncated APP1 TIFF header causing rawler infinite loop (42 bytes)
         let oom_bytes_26: &[u8] = &[
-            255, 216, 255, 225, 0, 14, 69, 120, 105, 102, 0, 0, 73, 73, 42, 0, 77, 14, 69, 120, 106,
-            0, 42, 0, 0, 8, 252, 9, 1, 48, 33, 0, 32, 1, 122, 0, 0, 0, 1, 216, 255, 65,
+            255, 216, 255, 225, 0, 14, 69, 120, 105, 102, 0, 0, 73, 73, 42, 0, 77, 14, 69, 120,
+            106, 0, 42, 0, 0, 8, 252, 9, 1, 48, 33, 0, 32, 1, 122, 0, 0, 0, 1, 216, 255, 65,
         ];
         let val_res_26 = validate_tiff_raw_header(oom_bytes_26);
         assert!(val_res_26.is_err());

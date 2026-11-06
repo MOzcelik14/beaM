@@ -1803,10 +1803,16 @@ mod tests {
         assert!(max_dim > 0);
 
         let res_w = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, max_dim + 1, 1, &[]);
-        assert!(res_w.is_err(), "Must reject width exceeding max_texture_dimension_2d");
+        assert!(
+            res_w.is_err(),
+            "Must reject width exceeding max_texture_dimension_2d"
+        );
 
         let res_h = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, 1, max_dim + 1, &[]);
-        assert!(res_h.is_err(), "Must reject height exceeding max_texture_dimension_2d");
+        assert!(
+            res_h.is_err(),
+            "Must reject height exceeding max_texture_dimension_2d"
+        );
     }
 
     #[test]

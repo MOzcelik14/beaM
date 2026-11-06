@@ -429,6 +429,25 @@ welcome_title = beaM. Fotoğraf Stüdyosu
 welcome_subtitle = Saf Rust ile geliştirilmiş, donanım hızlandırmalı ve tahribatsız RAW fotoğraf düzenleyicisi
 welcome_drag_drop = Fotoğrafları veya klasörleri buraya sürükleyip bırakabilirsiniz
 welcome_open_file = Fotoğraf Aç (Ctrl+O)
-welcome_import_folder = Klasör İçe Aktar (Ctrl+Shift+O)
+welcome_import_folder = Klasör Seç (Ctrl+Shift+O)
 welcome_tip = İpucu: Kütüphane (G) ve Geliştir (D) tuşlarıyla modlar arasında hızla geçiş yapabilirsiniz.
+
+# Dosya Gezgini (RawTherapee Modeli)
+browser_title = Dosya Gezgini
+browser_places = Hızlı Erişim
+browser_folders = Klasörler
+browser_home = Ev Dizini
+browser_desktop = Masaüstü
+browser_pictures = Resimler
+browser_downloads = İndirilenler
+browser_parent = Üst Dizin
+browser_refresh = Yenile
+browser_bookmark_add = Yer İmlerine Ekle
+browser_bookmark_remove = Yer İmini Kaldır
+browser_recursive = Alt klasörleri dahil et
+browser_no_photos = Bu klasörde desteklenen fotoğraf bulunamadı
+browser_empty_tip = Sol paneldeki klasör ağacından bir dizin seçin veya fotoğrafları buraya sürükleyin
+browser_choose_folder = Klasör Seç...
+browser_open_folder = Klasör Aç
+browser_folder_photos_count = {$count} fotoğraf
 
