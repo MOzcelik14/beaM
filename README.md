@@ -1,248 +1,224 @@
 <p align="center">
-  <img src="assets/logo.png" alt="beaM. Logo" width="160" />
+  <img src="assets/logo.png" alt="beaM. Logo" width="180" />
 </p>
 
 <h1 align="center">beaM.</h1>
 
 <p align="center">
-  <strong>Open-source, non-destructive RAW photo editor and library manager for Linux and Windows</strong><br>
-  <em>A modern, pure-Rust alternative to Adobe Lightroom built with wgpu and egui</em>
+  <strong>Professional, Non-Destructive RAW Photo Editor and Library Manager</strong><br>
+  Built from first principles in 100% pure Rust, powered by wgpu and egui.
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Rust-1.90%2B-orange?logo=rust" alt="Rust" />
-  <img src="https://img.shields.io/badge/wgpu-30.0-blue?logo=webgpu" alt="wgpu" />
-  <img src="https://img.shields.io/badge/egui-0.37-green" alt="egui" />
-  <img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="License: GPL-3.0" />
+  <a href="README.md"><strong>English</strong></a> | <a href="README.tr.md"><strong>Türkçe</strong></a>
+</p>
+
+<p align="center">
+  <strong>Version:</strong> 0.1.1 &nbsp;|&nbsp;
+  <strong>License:</strong> GNU General Public License v3.0 &nbsp;|&nbsp;
+  <strong>Platforms:</strong> Linux, Windows &nbsp;|&nbsp;
+  <strong>Architecture:</strong> x86_64
 </p>
 
 ---
 
-## Key Features & Core Principles
+## Executive Overview
 
-1. **Non-destructive Editing**: The original RAW file is never altered. Edits are recorded in human-readable sidecar files (`<filename>.beam` and standalone `.beam` projects, with backward-compatible support for legacy `<filename>.beam.ron`).
-2. **GPU Pipeline**: Modular WGSL shaders executing discrete adjustment stages over linear floating-point textures.
-3. **Color Correctness**: Operates internally in a wide-gamut, linear working space (**linear Rec.2020**), transforming to sRGB for SDR display presentation and export.
-4. **Pure Rust Decoding**: Decodes camera RAW formats natively without LibRaw or C++ dependencies using the `rawler` crate.
-5. **Responsive Off-Thread Architecture**: Decoding and heavy operations execute asynchronously on background threads; the egui UI never blocks.
+**beaM.** is an independent, high-performance desktop photo editing application engineered for photographers, imaging specialists, and visual artists who require complete control, color fidelity, and privacy over their creative assets.
 
----
+Unlike legacy desktop suites burdened by monolithic C/C++ runtimes or cloud subscriptions, beaM. is built entirely in Rust. It utilizes **WebGPU (wgpu)** for hardware-accelerated image manipulation and **egui** for an immediate-mode user interface.
 
-## Repository Architecture
-
-```
-beam/
-├── Cargo.toml                # Workspace manifest with shared dependencies
-├── crates/
-│   ├── beam-app/             # Binary application: egui UI, viewport, state management
-│   ├── beam-core/            # Display name constant (beaM.), edit model, sidecars, color science, errors
-│   ├── beam-gpu/             # wgpu pipeline, texture management, shader passes
-│   ├── beam-media/           # Camera RAW decoding via rawler, demosaicing, raster fallbacks
-│   └── beam-library/         # SQLite library catalog, import, ratings, filters
-├── shaders/                  # WGSL shaders
-│   └── display_transform.wgsl# Linear Rec.2020 to sRGB display transfer pass
-└── README.md
-```
+Every adjustment in beaM. is strictly non-destructive: original capture files remain bit-for-bit immutable on disk, while edits are stored in lightweight, versioned sidecar files.
 
 ---
 
-## Build and Run Instructions
+## Engineering Highlights
 
-### Prerequisites
-- **Rust**: Stable toolchain (1.89+ recommended, tested on Rust 1.99).
-- **Vulkan / GPU Drivers**:
-  - **Linux**: Mesa Vulkan drivers (`mesa-vulkan-drivers`) or proprietary Nvidia drivers.
-  - **Windows**: Modern GPU drivers supporting Vulkan or DirectX 12.
+### 1. Non-Destructive Sidecar Pipeline
+The original capture data is never altered. Adjustments, tone curves, crops, and metadata are written to human-readable, git-diffable [RON](https://github.com/ron-rs/ron) sidecar files (`<filename>.beam` or standalone `.beam` project packages). Should you migrate, rename, or backup files, your edit history and camera raw data remain completely decoupled and preserved.
 
-### Building
-Clone the repository and compile the workspace:
+### 2. Linear Rec.2020 Working Color Space
+Digital sensors capture physical photon counts that have a linear relationship to scene luminance. beaM. conducts all internal exposure, chromatic adaptation, and tonal transformations in **Linear Rec.2020 (ITU-R BT.2020)**:
+- **Exposure scaling** performs physical photon doubling ($I' = I \cdot 2^{\text{EV}}$) without clipping artifacts.
+- **Midtone contrast** pivots around 18% middle-gray ($M = 0.18$) using an exponential slope function:
+  $$x' = M \cdot \left(\frac{x}{M}\right)^{2^{C / 100}}$$
+- **White balance** applies chromatic adaptation coefficients derived from correlated color temperature (Kelvin) and Green-Magenta tint adjustments directly to linear channel amplitudes.
+- Prior to screen rendering or file export, values are transferred to target color spaces (sRGB, Display P3, or Adobe RGB 1998) with standard embedded ICC profile generation.
+
+### 3. Hardware-Accelerated wgpu Pipeline
+Adjustments are executed on the GPU as discrete, modular WGSL shader passes between intermediate 32-bit floating-point textures (`Rgba32Float`). Interactive slider manipulation operates on an in-memory GPU proxy texture, delivering sub-millisecond redraws at native monitor refresh rates.
+
+### 4. Zero-Seam Tiled Export Architecture
+Exporting ultra-high-resolution images (40 MP, 60 MP, 100+ MP) often causes out-of-memory crashes on conventional image editors. beaM. features a specialized tiled export subsystem that partitions images exceeding 2048px into discrete processing blocks. Tiling runs with zero seam boundaries, keeping GPU memory usage strictly bounded below 70 MB regardless of output resolution.
+
+### 5. Pure-Rust Media Stack
+beaM. completely eliminates legacy C/C++ dependencies like LibRaw, libpng, or LibTIFF. Camera RAW parsing and demosaicing are handled natively through `rawler`. Standard raster formats (JPEG, PNG, TIFF, WebP) are decoded via pure-Rust crates, with ICC profile conversions orchestrated by `moxcms` and EXIF metadata extracted through `kamadak-exif`.
+
+### 6. Local SQLite Photo Catalog
+Library operations leverage an embedded, ACID-compliant SQLite catalog (`beam-library`). It indexes photo directories, tracks star ratings (0–5), color labels, and camera metadata, and maintains a thread-safe thumbnail cache without background queue deadlocks.
+
+---
+
+## Application Modules
+
+### Develop Module
+- **Primary Tone**: Exposure (-5.0 to +5.0 EV), Contrast (-100 to +100), Highlights, Shadows.
+- **Color Balance**: Temperature (2000K to 12000K), Tint (-100 to +100).
+- **Tone Curve**: Interactive spline editor supporting parametric and point curve adjustments.
+- **8-Band HSL**: Dedicated Hue, Saturation, and Luminance sliders for Red, Orange, Yellow, Green, Aqua, Blue, Purple, and Magenta bands.
+- **Crop & Geometry**: Freeform and aspect-constrained cropping (1:1, 4:5, 3:2, 16:9), 90-degree rotations, horizontal/vertical flips, and a high-precision continuous straighten slider (-45.0° to +45.0°).
+- **Comparison Views**:
+  - *Toggle (`\`)*: Rapid single-key switch between processed and original proxy.
+  - *Split View*: Draggable interactive divider comparing before and after slices in a unified viewport.
+  - *Side-by-Side*: Concurrent dual-viewport inspection with synchronized zoom and pan.
+- **Inspection**: Live RGB and luminance histogram with clipping indicator overlays (`J`) for blown highlights and crushed shadows.
+- **History & Presets**: 50-step linear undo/redo stack with jump-to-step history panel, reusable user presets, and cross-photo settings synchronization.
+
+### Library Module
+- **Directory Ingestion**: Fast folder scanning with protection against recursive symlink cycles.
+- **Metadata Inspection**: Lens, focal length, ISO, shutter speed, aperture, and camera model display.
+- **Filtering & Search**: Filter by star rating, color label, file extension, or text query.
+- **Filmstrip Navigation**: Collapsible bottom tray in Develop mode for rapid image switching.
+
+### Export Subsystem
+- **Format Support**: 8-bit JPEG (configurable quality 1–100) and 8/16-bit PNG.
+- **Color Profiles**: sRGB, Display P3, and Adobe RGB (1998) with embedded ICC tags.
+- **Rescaling & Sharpening**: Lanczos3 scaling (original, long-edge, percentage, explicit dimensions) and configurable unsharp mask (Screen or Print).
+- **Batch Processing**: Background batch exporter with live progress monitoring, cancellation support, and dynamic filename templates (`{name}`, `{date}`, `{rating}`, `{counter}`).
+
+---
+
+## Supported File Formats
+
+| Category | Formats / Extensions | Bit Depth & Capabilities |
+| :--- | :--- | :--- |
+| **Camera RAW** | `.arw`, `.cr2`, `.cr3`, `.nef`, `.raf`, `.rw2`, `.dng`, `.pef`, `.orf` | Native pure-Rust decode, demosaicing, linear sensor response |
+| **Raster Formats** | JPEG (`.jpg`, `.jpeg`), PNG (`.png`), TIFF (`.tif`, `.tiff`), WebP (`.webp`) | 8-bit and 16-bit channel preservation, embedded ICC transforms |
+| **Sidecars & Projects** | `.beam`, `.beam.ron` | Human-readable RON format, lossless migration, backward-compatible |
+
+---
+
+## System Requirements
+
+- **Operating System**: Linux (glibc 2.31+, modern desktop environment) or Windows 10/11 (64-bit).
+- **Graphics Hardware**: GPU with Vulkan 1.2+ support (Linux/Windows) or DirectX 12 support (Windows).
+  - *Linux*: Mesa Vulkan drivers (`mesa-vulkan-drivers`) or proprietary Nvidia drivers (525+).
+  - *Windows*: Modern Intel, AMD, or Nvidia graphics drivers.
+- **Memory**: 4 GB RAM minimum (8 GB recommended for large batch exports).
+- **Storage**: Approximately 50 MB disk space for the binary.
+
+---
+
+## Installation and Quick Start
+
+### Pre-built Binaries
+Download the latest pre-compiled release archive for your platform from the [GitHub Releases](https://github.com/MOzcelik14/beaM/releases) page. Extract the archive and execute the standalone `beam` binary:
+
 ```bash
+tar -xzf beam-v0.1.1-linux-x86_64.tar.gz
+cd beam-v0.1.1-linux-x86_64
+./beam
+```
+
+### Building from Source
+
+Ensure you have a modern Rust toolchain installed (Rust 1.89+ recommended, 2021 edition):
+
+```bash
+# Clone the repository
 git clone https://github.com/MOzcelik14/beaM.git
 cd beaM
+
+# Build optimized binary
 cargo build --release
+
+# Launch application
+./target/release/beam
 ```
 
-### Running the App
-Run the native application:
+You can pass an image path directly to open it immediately:
 ```bash
-cargo run --release -p beam-app
+./target/release/beam /path/to/photograph.ARW
 ```
 
-Or pass an image directly via command line:
-```bash
-cargo run --release -p beam-app -- /path/to/sample.ARW
-```
+### Testing and Code Quality
+The codebase is validated with comprehensive unit, property, and integration tests:
 
-### Running Tests and Linting
 ```bash
-# Run all unit and integration tests across the workspace
+# Run workspace test suite
 cargo test --workspace
 
-# Check formatting
+# Validate formatting and linter guidelines
 cargo fmt --check
-
-# Check linter warnings
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ---
 
-## Roadmap
+## Keyboard Shortcuts
 
-- [x] **Milestone 1 – Skeleton**:
-  - Cargo workspace with 5 modular crates.
-  - Display name `APP_NAME = "beaM."` centralized in `beam-core`.
-  - Pure-Rust RAW decoding with `rawler` and bilinear demosaicing.
-  - Linear wide-gamut (Rec.2020) color transformation and gamma transfer function math.
-  - `wgpu` rendering pipeline executing WGSL shader (`shaders/display_transform.wgsl`) to render directly in `egui`.
-  - Non-blocking async background decoding channel.
-  - Sidecar format (`.beam.ron`) serialization with migration test.
-  - SQLite database initialization (`beam-library`).
-- [x] **Milestone 2 – Edit pipeline**:
-  - Develop view with right-side adjustment panel.
-  - GPU shader stages: exposure (`exposure.wgsl`), white balance (`white_balance.wgsl`), contrast (`contrast.wgsl`).
-  - Ping-pong intermediate rendering pipeline with reorderable and skippable passes.
-  - Live preview on proxy image (~1920px max dimension) for sub-millisecond slider interaction.
-  - Reset-per-slider `↺` and Reset All adjustments buttons.
-  - Sidecar persistence: automatically loads edits on file open and saves on edit change.
-  - Golden-image test with GPU readback verifying mathematical exposure doubling.
-- [x] **Milestone 3 – More adjustments**:
-  - Highlights/shadows tone mapping.
-  - Draggable tone curve widget.
-  - 8-band HSL adjustments (hue, saturation, luminance).
-  - Fast histogram widget.
-- [x] **Milestone 4 – Library**:
-  - Folder import and SQLite photo cataloging.
-  - Thumbnail grid with on-disk thumbnail cache.
-  - Star ratings, color labels, and search filters.
-- [x] **Milestone 5 – Export**:
-  - Full-resolution rendering pipeline export to JPEG and PNG.
-  - Selectable dimensions, quality, and color spaces.
-  - Batch export with progress tracking.
-- [x] **Milestone 6 – Fix: Library thumbnails display & background generator**:
-  - Root cause diagnosis: resolved background queue deadlocks and missing UI repaint requests.
-  - Lazy thumbnail texture loading with LRU cache in `egui`.
-  - Non-blocking background worker thread for thumbnail decoding and generation.
-- [x] **Milestone 7 – Support standard image formats (JPEG, PNG, TIFF, WebP)**:
-  - Native pure-Rust decoding for JPEG, PNG, TIFF (8-bit & 16-bit), and WebP alongside Camera RAW.
-  - Embedded ICC profile extraction and color transformation via `moxcms` into linear Rec.2020.
-  - 16-bit channel depth preservation without quantization to 8-bit.
-  - EXIF metadata extraction (orientation, ISO, shutter speed, aperture, camera make/model).
-  - Library filtering by format (All, RAW, JPEG, PNG, TIFF, WebP).
-
-- [x] **Milestone 8 – Localization (English + Turkish)**:
-  - High-performance, thread-safe localization layer using Mozilla's Project Fluent (`fluent-bundle`).
-  - Full translation catalogs for English (`locales/en.ftl`) and Turkish (`locales/tr.ftl`) covering 100% of UI elements (menus, status bar, library, develop sliders, HSL, curves, export, settings, about dialog).
-  - Accurate photography terminology in Turkish (*Pozlama, Kontrast, Beyaz Dengesi, Sıcaklık, Renk Tonu, Doygunluk, Parlaklık, Işıklar, Gölgeler, Ton Eğrisi, Histogram, Dışa Aktar, Kütüphane, Geliştir, Ayarlar*).
-  - Automatic system language detection on startup with user preference stored in `~/.config/beam/config.ron` (Linux) or `%APPDATA%\beam\config.ron` (Windows).
-  - Settings dialog (`Ctrl+,`) with instant live language switching and reactive repaint.
-  - Automated compile-time key parity unit testing.
-
-- [x] **Milestone 9 – Complete the export options**:
-  - Color space conversion on export: sRGB, Display P3, and Adobe RGB (1998) via GPU shader stage and linear algebra transformation matrices.
-  - Standard embedded ICC profiles generated pure-Rust via `moxcms` (`new_srgb()`, `new_display_p3()`, `new_adobe_rgb()`) and tagged directly into JPEG/PNG metadata.
-  - Image resizing options: original dimensions, long-edge scaling, percentage scaling, and exact dimensions with aspect ratio lock, using high-quality Lanczos3 filtering.
-  - Output sharpening: configurable unsharp mask for Screen or Print with separable Gaussian blur.
-  - EXIF metadata preservation: transfers camera capture metadata while normalizing the orientation tag to upright (1).
-  - Flexible file naming template engine supporting variables (`{name}`, `{date}`, `{counter}`, `{rating}`) with dynamic preview.
-  - Collision-avoidance logic preventing accidental source or existing file overwrite.
-  - Zero-seam tiled GPU processing: automatically divides images exceeding 2048px into discrete tiles, strictly bounding GPU memory (< 70 MB) even for 40+ MP and 100 MP images.
-  - Full bilingual localization in English and Turkish.
-
-- [x] **Milestone 10 – Undo/redo, history, before/after**:
-  - Linear undo/redo stack (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`, Edit menu) supporting up to 50 operations.
-  - Intelligent grouping semantics: continuous slider drags and curve point movements group into a single commit on pointer release, while discrete actions (resets, checkboxes, Reset All) commit immediately.
-  - Collapsible History panel on the left side of the Develop view with jump-to-any-step on click, past/future visual indicators, and persistent step numbering.
-  - Sidecar persistence: history stack and active history index are serialized to and restored from `.beam` (with backward compatibility for `.beam.ron`).
-  - Zero-latency Before/After comparison modes powered by cached original unedited proxy texture:
-    - **Toggle Mode (`\`)**: Rapidly switch between edited image and original with a subtle `BEFORE` badge overlay.
-    - **Split View Mode**: Interactive split screen with draggable divider bar (`↔` handle) and zero-seam UV slicing in the viewport painter.
-    - **Side-by-Side Mode**: Dual-viewport comparison displaying before and after versions simultaneously with aligned aspect ratios and badges.
-  - Complete English and Turkish localization for all history entries, comparison toolbar labels, and tooltips.
-
-- [x] **Milestone 11 – Crop, rotate, straighten**:
-  - Interactive crop overlay widget in viewport with draggable L-bracket corner and edge handles, rule-of-thirds compositional grid, dimmed exterior mask, and live cursor feedback.
-  - Aspect ratio constraint presets: Original, 1:1 Square, 4:5 (8:10), 3:2, 16:9, and Free/Custom, with automatic centered crop box positioning.
-  - Lossless 90° clockwise and counter-clockwise rotation and horizontal/vertical flipping.
-  - High-precision continuous straighten slider (-45.0° to +45.0°) with 1-click reset.
-  - Hardware-accelerated GPU display shader pipeline with universal 4-tap manual bilinear texture sampling (`sample_input_bilinear`) ensuring crisp, artifact-free subpixel rendering on all hardware.
-  - Dual display modes: shows uncropped photo under crop overlay during active editing mode (`C` shortcut / `Enter` or `Esc` to finish), and seamlessly clips to cropped aspect ratio during normal viewing.
-  - Full export pipeline and thumbnail generation integration: applies orientation, flips, straighten, and crop box before resizing and sharpening.
-  - Complete English and Turkish localization across all UI elements, presets, and history records.
-
-- [x] **Milestone 12 – Presets and settings sync**:
-  - Save current adjustments as a named preset, with granular group selection masks (White Balance, Exposure, Highlights/Shadows, Contrast, Tone Curve, HSL, Crop).
-  - Presets stored as human-readable, versioned RON files (`.beam.preset.ron`) in user configuration directory (`~/.config/beam/presets` on Linux, `%APPDATA%\beam\presets` on Windows).
-  - Left dock Preset panel with tab selector (`[ Presets ]  [ History ]`), live hover preview with instant original restoration on pointer leave, and 1-click apply with history commit.
-  - Built-in presets (Neutral, Vivid, Matte, Black & White, Warm Film, Cool Cinematic, Punchy Contrast, Moody Landscape) with full bilingual localization.
-  - Preset file import and export dialogs (`.ron`).
-  - Copy & paste settings (`Ctrl+C`, `Ctrl+V`, Edit menu) with selective group mask dialog.
-  - Multi-photo settings synchronization in Library view: apply adjustments from active photo across all selected targets with sidecar and thumbnail persistence.
-  - Full English and Turkish localization across all preset names, dialogs, and actions.
-
-- [x] **Milestone 13 – Workflow polish**:
-  - Full keyboard shortcut suite: ratings (0–5), color labels (6: Red, 7: Yellow, 8: Green, 9: Blue), image navigation (Left/Right arrows, PageUp/PageDown), fullscreen (F11/F), zoom to 100% / Fit (Z), and clipping warnings toggle (J).
-  - Configurable shortcut profiles in Settings modal (`Lightroom` vs `Standard` vs custom toggles).
-  - Smooth mouse-wheel zoom and middle/drag pan with 1:1 view automatically switching to full-resolution RAW rendering.
-  - Interactive Filmstrip bottom panel in Develop view for swift photo switching with thumbnail caching and hide/show toggle.
-  - Highlight and shadow clipping warning overlays in WGSL display shader stage (blown highlights in pure red, crushed shadows in pure blue) toggled from histogram buttons (`◺`, `◸`) or `J` key.
-  - Session layout persistence: window size, panel dimensions, filmstrip state, shortcuts profile, and last-opened folder preserved across application restarts in `config.ron`.
-  - Full bilingual localization in English and Turkish.
+| Shortcut | Context | Action |
+| :--- | :--- | :--- |
+| `G` | Global | Switch to Library Grid View |
+| `D` | Global | Switch to Develop View |
+| `Ctrl + O` | Global | Open Image File |
+| `Ctrl + Shift + O` | Global | Import Folder to Library |
+| `Ctrl + S` | Develop | Save Current Edits to Sidecar / Project |
+| `Ctrl + Shift + S` | Develop | Save Project As... |
+| `Ctrl + W` | Develop | Close Project (with Unsaved Changes prompt) |
+| `Ctrl + E` | Global | Open Export Dialog |
+| `Ctrl + Z` | Develop | Undo Edit Step |
+| `Ctrl + Shift + Z` / `Ctrl + Y` | Develop | Redo Edit Step |
+| `\` | Develop | Toggle Before / After View |
+| `C` | Develop | Toggle Interactive Crop Tool |
+| `J` | Develop | Toggle Highlight / Shadow Clipping Overlays |
+| `Z` | Develop | Toggle Zoom to Fit / 100% (1:1) View |
+| `F` / `F11` | Global | Toggle Fullscreen Mode |
+| `0` – `5` | Global | Set Photo Star Rating (0 to 5 stars) |
+| `6` – `9` | Global | Set Color Label (Red, Yellow, Green, Blue) |
+| `Left` / `Right` Arrow | Global | Navigate to Previous / Next Photograph |
+| `Ctrl + ,` | Global | Open Application Settings |
 
 ---
 
-## Adding a New Language
+## Architecture Overview
 
-beaM. uses Mozilla's **Project Fluent** format (`.ftl`) for flexible, natural localization.
-
-To contribute a new language (e.g. German, French, Spanish):
-
-1. **Create the Catalog File**:
-   Copy `locales/en.ftl` to `locales/<lang_code>.ftl` (e.g., `locales/de.ftl`):
-   ```bash
-   cp locales/en.ftl locales/de.ftl
-   ```
-   Translate each message while keeping the identifiers and arguments (such as `{$count}` or `{$band}`) unchanged.
-
-2. **Register the Language in `beam-core`**:
-   Open `crates/beam-core/src/i18n.rs`:
-   - Add the FTL file inclusion:
-     ```rust
-     const DE_FTL: &str = include_str!("../../../locales/de.ftl");
-     ```
-   - Add the variant to the `Language` enum:
-     ```rust
-     pub enum Language {
-         En,
-         Tr,
-         De, // New language
-     }
-     ```
-   - Implement `code()` (e.g. `"de"`), `display_name()` (e.g. `"Deutsch"`), and update `from_locale_str()`.
-   - Add the bundle instantiation in `I18n::new()`.
-
-3. **Verify Catalog Parity**:
-   Run the parity test to ensure all translation keys match:
-   ```bash
-   cargo test -p beam-core test_translations_parity
-   ```
-
-4. **Register in the Settings UI**:
-   In `crates/beam-app/src/app.rs`, add the new `Language` variant to the language selection loop in `show_settings_dialog_window()`.
+```
+beaM/
+├── Cargo.toml                # Workspace manifest defining shared crate dependencies
+├── crates/
+│   ├── beam-app/             # Desktop application shell, egui UI layout, event loop
+│   ├── beam-core/            # EditStack models, linear Rec.2020 color math, sidecars, i18n
+│   ├── beam-gpu/             # wgpu context, render pipeline, WGSL shader passes
+│   ├── beam-media/           # RAW decoding, raster format handling, tiled export, EXIF/ICC
+│   └── beam-library/         # SQLite photo catalog, metadata indexing, thumbnail worker
+├── locales/                  # Mozilla Project Fluent translation catalogs (en.ftl, tr.ftl)
+├── shaders/                  # Hardware-accelerated WGSL shaders
+└── docs/                     # Documentation and official GitHub Pages website
+```
 
 ---
 
-## Design Decisions
+## Internationalization
 
-1. **Working Color Space**: We selected **Linear Rec.2020** as the primary working space. Rec.2020 encompasses virtually all real-world surface colors and modern camera sensor gamuts while maintaining physically accurate linearity for exposure, white balance, and contrast mathematics.
-2. **Ping-Pong Modular Pipeline**: Adjustments are structured as independent WGSL shader passes executing between two ping-pong intermediate textures (`Rgba32Float`). Each stage receives its own dedicated uniform buffer, ensuring passes can be reordered, bypassed, or extended without rebuilding pipeline resources.
-3. **Linear Contrast & White Balance**:
-   - Contrast operates in linear light pivoted around middle-gray ($M = 0.18$) using an exponential slope: $x' = M \cdot (x / M)^{2^{C / 100}}$. This preserves midtone tonality without harsh clipping.
-   - White balance computes chromatic adaptation gains $(G_r, G_g, G_b)$ from Kelvin temperature and Green-Magenta tint offsets, applied directly to linear channel amplitudes.
-4. **Proxy for Interactive Responsiveness**: Decoded RAW files generate a fast bilinear proxy (~1920px max dimension). Sliders manipulate the proxy on the GPU in <1ms without re-uploading texture data, guaranteeing 60+ FPS responsiveness.
-5. **WGSL Shader Sampling & Texel Loading**: For HDR 32-bit floating point textures (`Rgba32Float`), standard hardware samplers often require vendor-specific filterable extensions. We utilize unfilterable texture bindings with direct texel loading (`textureLoad`) in the display pass, avoiding any GPU driver compatibility issues across Intel, Nvidia, AMD, and software rasterizers.
-6. **First-Class Standard Image Formats & Color Management**: Standard raster formats (JPEG, PNG, TIFF 8/16-bit, WebP) are fully supported first-class formats alongside Camera RAW. Unlike RAW files, they are display-referred: embedded ICC profiles are parsed via `moxcms` and transformed into linear Rec.2020 (falling back to sRGB transfer when absent). 16-bit TIFF/PNG channels are preserved directly into `f32` normalized values without intermediate 8-bit quantization. EXIF tags and image orientation (1..=8) are parsed natively via `kamadak-exif` and applied losslessly.
-7. **Sidecar Format**: We use human-readable [RON](https://github.com/ron-rs/ron) format with an explicit `format_version: u32` header, allowing human inspectability, git diffability, and version migration.
-8. **Internationalization & Typography**: We chose Mozilla's **Project Fluent** (`fluent-bundle`) over gettext. Fluent natively supports grammatical gender, plural rules, and natural bidirectional strings. To avoid UI spacing anomalies with desktop GUI toolkits, bundles are initialized with Unicode isolating marks disabled (`bundle.set_use_isolating(false)`). All Turkish Latin Extended-A characters (`ç`, `Ç`, `ğ`, `Ğ`, `ı`, `I`, `i`, `İ`, `ö`, `Ö`, `ş`, `Ş`, `ü`, `Ü`) are natively supported by egui's default typography without requiring auxiliary font packs.
+beaM. includes complete bilingual localization for **English** and **Turkish**, powered by Mozilla Project Fluent (`fluent-bundle`). Language preferences can be changed dynamically in Settings (`Ctrl+,`) with instant UI repainting, and catalogs are verified at compile time for 100% key parity.
 
+To contribute a new translation catalog, refer to the documentation in [crates/beam-core/src/i18n.rs](crates/beam-core/src/i18n.rs).
 
+---
+
+## Security and Robustness
+
+beaM. underwent an in-depth security and robustness audit. Key security properties include:
+- Zero `unsafe` blocks and zero memory transmutation throughout application code.
+- Continuous 10-minute fuzzing coverage across RAW decoders, raster parsers, EXIF blocks, and ICC profile engines.
+- Strict path sanitization preventing path traversal attacks during file export and sidecar serialization.
+- Hardened protection against decompression bombs, cyclic symlinks, and malformed container structures.
+
+For full audit records and reproducibility metrics, review [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
+
+---
+
+## License
+
+beaM. is free and open-source software distributed under the terms of the **GNU General Public License v3.0 (GPL-3.0-only)**. See the [LICENSE](LICENSE) file for details.
