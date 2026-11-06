@@ -352,6 +352,21 @@ impl BeamApp {
         let preset_dir = default_presets_dir();
         let user_presets = load_user_presets(&preset_dir);
 
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            cc.egui_ctx.style_mut_of(theme, |s| {
+                s.spacing.item_spacing = egui::vec2(8.0, 7.0);
+                s.spacing.button_padding = egui::vec2(10.0, 5.0);
+                s.spacing.indent = 16.0;
+                s.visuals.window_corner_radius = 8.0.into();
+                s.visuals.menu_corner_radius = 6.0.into();
+                s.visuals.widgets.noninteractive.corner_radius = 6.0.into();
+                s.visuals.widgets.inactive.corner_radius = 6.0.into();
+                s.visuals.widgets.hovered.corner_radius = 6.0.into();
+                s.visuals.widgets.active.corner_radius = 6.0.into();
+                s.visuals.widgets.open.corner_radius = 6.0.into();
+            });
+        }
+
         let logo_texture = {
             let img = image::load_from_memory(include_bytes!("../../../assets/logo.png"))
                 .expect("Valid embedded logo asset")
@@ -1480,27 +1495,31 @@ impl eframe::App for BeamApp {
                     self.logo_texture.id(),
                     Vec2::new(18.0, 18.0),
                 ));
-                ui.add_space(2.0);
+                ui.add_space(4.0);
                 ui.label(RichText::new(APP_NAME).strong().size(15.0));
+                ui.add_space(6.0);
                 ui.separator();
+                ui.add_space(6.0);
 
                 // Navigation View Tabs
                 let is_lib = self.current_view == AppView::Library;
-                if ui
-                    .selectable_label(is_lib, format!("{} (G)", t!("view_library")))
-                    .clicked()
-                {
+                let lib_text = RichText::new(format!("{} (G)", t!("view_library")))
+                    .size(12.5)
+                    .strong();
+                if ui.selectable_label(is_lib, lib_text).clicked() {
                     self.current_view = AppView::Library;
                 }
+                ui.add_space(2.0);
                 let is_dev = self.current_view == AppView::Develop;
-                if ui
-                    .selectable_label(is_dev, format!("{} (D)", t!("view_develop")))
-                    .clicked()
-                {
+                let dev_text = RichText::new(format!("{} (D)", t!("view_develop")))
+                    .size(12.5)
+                    .strong();
+                if ui.selectable_label(is_dev, dev_text).clicked() {
                     self.current_view = AppView::Develop;
                 }
-
+                ui.add_space(6.0);
                 ui.separator();
+                ui.add_space(4.0);
 
                 ui.menu_button(t!("menu_file"), |ui| {
                     if ui.button(t!("menu_import_folder_shortcut")).clicked() {
@@ -1957,6 +1976,59 @@ impl eframe::App for BeamApp {
                                 self.show_sync_dialog = true;
                             }
                         }
+                    }
+                    LibraryAction::OpenFileDialog => {
+                        self.request_open_file_dialog();
+                    }
+                    LibraryAction::RelocatePhoto(photo_id, old_path) => {
+                        let locate_title = t!("library_locate_title");
+                        let mut dialog = rfd::FileDialog::new().set_title(locate_title);
+                        if let Some(parent) = old_path.parent() {
+                            if parent.exists() {
+                                dialog = dialog.set_directory(parent);
+                            }
+                        }
+                        if let Some(name) = old_path.file_name().and_then(|n| n.to_str()) {
+                            dialog = dialog.set_file_name(name);
+                        }
+                        if let Some(new_file) = dialog.pick_file() {
+                            let _ = self.library_db.update_photo_path(photo_id, &new_file);
+                            if let (Some(old_parent), Some(new_parent)) =
+                                (old_path.parent(), new_file.parent())
+                            {
+                                if old_parent != new_parent {
+                                    let _ = self.library_db.relink_folder(old_parent, new_parent);
+                                }
+                            }
+                            self.library_state.needs_refresh = true;
+                        }
+                    }
+                    LibraryAction::RelinkFolder => {
+                        let relink_title = t!("library_relink_folder_title");
+                        if let Some(new_dir) =
+                            rfd::FileDialog::new().set_title(relink_title).pick_folder()
+                        {
+                            let mut old_dirs = std::collections::HashSet::new();
+                            for id in &self.library_state.missing_photo_ids {
+                                if let Ok(Some(photo)) = self.library_db.get_photo(*id) {
+                                    if let Some(parent) = Path::new(&photo.file_path).parent() {
+                                        old_dirs.insert(parent.to_path_buf());
+                                    }
+                                }
+                            }
+                            for old_dir in old_dirs {
+                                let _ = self.library_db.relink_folder(&old_dir, &new_dir);
+                            }
+                            self.library_state.needs_refresh = true;
+                        }
+                    }
+                    LibraryAction::CleanMissingPhotos => {
+                        let _ = self.library_db.remove_missing_photos();
+                        self.library_state.needs_refresh = true;
+                    }
+                    LibraryAction::RemovePhoto(photo_id) => {
+                        let _ = self.library_db.delete_photo(photo_id);
+                        self.library_state.needs_refresh = true;
                     }
                     LibraryAction::None => {}
                 }

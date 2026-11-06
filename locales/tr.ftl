@@ -406,3 +406,29 @@ unsaved_save = Kaydet
 unsaved_save_and_exit = Kaydet
 unsaved_discard_and_exit = Kaydetmeden Çık
 unsaved_cancel = İptal
+
+# Kayıp Dosya ve Yeniden Bağlama
+library_missing_badge = Kayıp
+library_missing_tooltip = Orijinal dosya diskte bulunamadı:
+    {$path}
+    Dosya taşınmış, silinmiş veya harici sürücü çıkarılmış olabilir.
+library_relink_file = Dosyayı Yeniden Konumlandır...
+library_remove_from_catalog = Kütüphaneden Kaldır
+library_missing_banner = {$count} fotoğraf diskte bulunamadı.
+library_relink_folder = Klasörü Yeniden Bağla...
+library_clean_missing = Kayıpları Temizle
+library_locate_title = Kayıp Fotoğrafı Konumlandır
+library_relink_folder_title = Taşınan Klasörü Seç
+library_relocate_success = Fotoğraf başarıyla yeni konumuna bağlandı
+library_relocate_bulk_success = Fotoğraf ve aynı klasördeki {$count} ek fotoğraf yeni konumlarına bağlandı
+library_relink_folder_success = {$count} fotoğraf yeni klasöre başarıyla bağlandı
+library_clean_missing_success = {$count} kayıp fotoğraf kütüphaneden temizlendi
+
+# Karşılama ve Boş Durum
+welcome_title = beaM. Fotoğraf Stüdyosu
+welcome_subtitle = Saf Rust ile geliştirilmiş, donanım hızlandırmalı ve tahribatsız RAW fotoğraf düzenleyicisi
+welcome_drag_drop = Fotoğrafları veya klasörleri buraya sürükleyip bırakabilirsiniz
+welcome_open_file = Fotoğraf Aç (Ctrl+O)
+welcome_import_folder = Klasör İçe Aktar (Ctrl+Shift+O)
+welcome_tip = İpucu: Kütüphane (G) ve Geliştir (D) tuşlarıyla modlar arasında hızla geçiş yapabilirsiniz.
+

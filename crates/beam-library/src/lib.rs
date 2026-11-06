@@ -667,6 +667,81 @@ impl LibraryDb {
             .map_err(|e| BeamError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Update the file path and file name for a photo (e.g. after moving or relocating a file).
+    pub fn update_photo_path(&self, photo_id: i64, new_path: &Path) -> Result<()> {
+        let new_path_str = new_path.to_string_lossy().to_string();
+        let new_name = new_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let sidecar_p = Sidecar::find_sidecar_for(new_path).unwrap_or_else(|| Sidecar::path_for(new_path));
+        let sidecar_str = if sidecar_p.exists() {
+            Some(sidecar_p.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        self.conn
+            .execute(
+                "UPDATE photos SET file_path = ?1, file_name = ?2, sidecar_path = ?3 WHERE id = ?4",
+                params![new_path_str, new_name, sidecar_str, photo_id],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Delete a single photo record from the database.
+    pub fn delete_photo(&self, photo_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM photos WHERE id = ?1", params![photo_id])
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Delete multiple photo records from the database.
+    pub fn delete_photos(&self, photo_ids: &[i64]) -> Result<usize> {
+        let mut count = 0;
+        for &id in photo_ids {
+            if self.delete_photo(id).is_ok() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Scan all photo records in the catalog and delete any whose file does not exist on disk.
+    pub fn remove_missing_photos(&self) -> Result<usize> {
+        let all_photos = self.query_photos(&LibraryFilter::default())?;
+        let mut removed = 0;
+        for photo in all_photos {
+            if !Path::new(&photo.file_path).exists() && self.delete_photo(photo.id).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Relink all photos residing under an old directory to a new directory.
+    /// If a file exists in `new_dir` matching the relative path from `old_dir`, updates the database.
+    /// Returns the number of successfully remapped photos.
+    pub fn relink_folder(&self, old_dir: &Path, new_dir: &Path) -> Result<usize> {
+        let all_photos = self.query_photos(&LibraryFilter::default())?;
+        let mut remapped = 0;
+
+        for photo in all_photos {
+            let current_p = Path::new(&photo.file_path);
+            if let Ok(rel) = current_p.strip_prefix(old_dir) {
+                let candidate = new_dir.join(rel);
+                if candidate.is_file() && self.update_photo_path(photo.id, &candidate).is_ok() {
+                    remapped += 1;
+                }
+            }
+        }
+
+        Ok(remapped)
+    }
 }
 
 #[cfg(test)]
@@ -1056,6 +1131,62 @@ mod tests {
         let thumb_dir = temp_dir.join("thumbs");
         let count = db.scan_and_import_folder(&temp_dir, &thumb_dir, true).unwrap();
         assert_eq!(count, 1, "Must scan deep tree without stack overflow");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_photo_path_update_delete_and_relink() {
+        let temp_dir = std::env::temp_dir().join("beam_library_relink_test");
+        let _ = fs::remove_dir_all(&temp_dir);
+        let old_folder = temp_dir.join("old_desktop_folder");
+        let new_folder = temp_dir.join("new_desktop_folder");
+        fs::create_dir_all(&old_folder).unwrap();
+        fs::create_dir_all(&new_folder).unwrap();
+
+        let img_path1 = old_folder.join("image_a.png");
+        let img_path2 = old_folder.join("image_b.png");
+        let thumb_dir = temp_dir.join("thumbs");
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(10, 10, Rgba([10, 20, 30, 255]));
+        img.save(&img_path1).unwrap();
+        img.save(&img_path2).unwrap();
+
+        let db = LibraryDb::open_in_memory().unwrap();
+        let p1 = db.import_file(&img_path1, &thumb_dir).unwrap();
+        let p2 = db.import_file(&img_path2, &thumb_dir).unwrap();
+
+        assert_eq!(db.query_photos(&LibraryFilter::default()).unwrap().len(), 2);
+
+        // 1. Move image_a to new location and test update_photo_path
+        let relocated_a = new_folder.join("image_a_renamed.png");
+        fs::rename(&img_path1, &relocated_a).unwrap();
+        db.update_photo_path(p1.id, &relocated_a).unwrap();
+
+        let updated_p1 = db.get_photo(p1.id).unwrap().unwrap();
+        assert_eq!(updated_p1.file_path, relocated_a.to_string_lossy());
+        assert_eq!(updated_p1.file_name, "image_a_renamed.png");
+
+        // 2. Move image_b to new_folder/image_b.png and test relink_folder
+        let moved_b = new_folder.join("image_b.png");
+        fs::rename(&img_path2, &moved_b).unwrap();
+        let remapped_count = db.relink_folder(&old_folder, &new_folder).unwrap();
+        assert_eq!(remapped_count, 1);
+
+        let updated_p2 = db.get_photo(p2.id).unwrap().unwrap();
+        assert_eq!(updated_p2.file_path, moved_b.to_string_lossy());
+        assert!(Path::new(&updated_p2.file_path).exists());
+
+        // 3. Test remove_missing_photos
+        // Delete image_b from disk so it's missing
+        fs::remove_file(&moved_b).unwrap();
+        let missing_removed = db.remove_missing_photos().unwrap();
+        assert_eq!(missing_removed, 1);
+        assert_eq!(db.query_photos(&LibraryFilter::default()).unwrap().len(), 1);
+
+        // 4. Test delete_photo
+        db.delete_photo(p1.id).unwrap();
+        assert_eq!(db.query_photos(&LibraryFilter::default()).unwrap().len(), 0);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

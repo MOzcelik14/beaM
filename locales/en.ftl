@@ -406,3 +406,29 @@ unsaved_save = Save
 unsaved_save_and_exit = Save
 unsaved_discard_and_exit = Exit Without Saving
 unsaved_cancel = Cancel
+
+# Missing File & Relinking
+library_missing_badge = Missing
+library_missing_tooltip = Original file not found on disk:
+    {$path}
+    The file may have been moved, deleted, or the drive disconnected.
+library_relink_file = Relocate File...
+library_remove_from_catalog = Remove from Library
+library_missing_banner = {$count} photos cannot be found on disk.
+library_relink_folder = Relink Folder...
+library_clean_missing = Clean Missing
+library_locate_title = Locate Missing Photo
+library_relink_folder_title = Select Relocated Folder
+library_relocate_success = Photo successfully linked to new location
+library_relocate_bulk_success = Photo and {$count} additional photos in the same folder successfully relinked
+library_relink_folder_success = {$count} photos successfully relinked to new folder
+library_clean_missing_success = Cleaned {$count} missing photos from library
+
+# Welcome & Empty State
+welcome_title = beaM. Photo Studio
+welcome_subtitle = Pure Rust, hardware-accelerated, non-destructive RAW photo editor
+welcome_drag_drop = Drag and drop photos or folders here to begin
+welcome_open_file = Open Photo (Ctrl+O)
+welcome_import_folder = Import Folder (Ctrl+Shift+O)
+welcome_tip = Tip: Press G for Library and D for Develop view to switch workflows quickly.
+
