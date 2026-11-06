@@ -1,0 +1,17 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=beaM.
+GenericName=RAW Photo Editor
+GenericName[tr]=RAW Fotoğraf Düzenleyicisi
+Comment=Hardware-accelerated, non-destructive RAW photo editor and library manager
+Comment[tr]=Donanım hızlandırmalı, tahribatsız RAW fotoğraf düzenleyicisi ve kütüphane yöneticisi
+Icon=beam
+Exec=beam %F
+Terminal=false
+Categories=Graphics;Photography;RasterGraphics;2DGraphics;Viewer;
+MimeType=image/x-sony-arw;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-adobe-dng;image/x-fuji-raf;image/x-panasonic-rw2;image/x-olympus-orf;image/x-pentax-pef;image/jpeg;image/png;image/tiff;image/webp;application/x-beam-project;
+StartupNotify=true
+StartupWMClass=beam
+Keywords=photo;raw;editor;photography;darkroom;color;develop;library;catalog;
+Keywords[tr]=fotoğraf;raw;düzenleyici;karanlık oda;renk;geliştir;kütüphane;katalog;

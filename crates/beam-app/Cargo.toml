@@ -23,3 +23,41 @@ log = { workspace = true }
 env_logger = { workspace = true }
 pollster = { workspace = true }
 image = { workspace = true }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[package.metadata.deb]
+name = "beam"
+maintainer = "beaM. Contributors <https://github.com/MOzcelik14/beaM>"
+copyright = "2026, beaM. Contributors"
+license-file = ["../../LICENSE", "4"]
+extended-description = """\
+beaM. is an independent, high-performance desktop photographic darkroom and \
+asset manager built in 100% pure Rust, powered by wgpu and egui."""
+section = "graphics"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["../../target/release/beam", "usr/bin/beam", "755"],
+    ["../../packaging/beam.desktop", "usr/share/applications/beam.desktop", "644"],
+    ["../../packaging/com.github.mozcelik14.beam.metainfo.xml", "usr/share/metainfo/com.github.mozcelik14.beam.metainfo.xml", "644"],
+    ["../../packaging/beam-mime.xml", "usr/share/mime/packages/beam-mime.xml", "644"],
+    ["../../packaging/icons/hicolor/16x16/apps/beam.png", "usr/share/icons/hicolor/16x16/apps/beam.png", "644"],
+    ["../../packaging/icons/hicolor/32x32/apps/beam.png", "usr/share/icons/hicolor/32x32/apps/beam.png", "644"],
+    ["../../packaging/icons/hicolor/48x48/apps/beam.png", "usr/share/icons/hicolor/48x48/apps/beam.png", "644"],
+    ["../../packaging/icons/hicolor/64x64/apps/beam.png", "usr/share/icons/hicolor/64x64/apps/beam.png", "644"],
+    ["../../packaging/icons/hicolor/128x128/apps/beam.png", "usr/share/icons/hicolor/128x128/apps/beam.png", "644"],
+    ["../../packaging/icons/hicolor/256x256/apps/beam.png", "usr/share/icons/hicolor/256x256/apps/beam.png", "644"],
+    ["../../packaging/icons/hicolor/512x512/apps/beam.png", "usr/share/icons/hicolor/512x512/apps/beam.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "../../target/release/beam", dest = "/usr/bin/beam", mode = "755" },
+    { source = "../../packaging/beam.desktop", dest = "/usr/share/applications/beam.desktop", mode = "644" },
+    { source = "../../packaging/com.github.mozcelik14.beam.metainfo.xml", dest = "/usr/share/metainfo/com.github.mozcelik14.beam.metainfo.xml", mode = "644" },
+    { source = "../../packaging/beam-mime.xml", dest = "/usr/share/mime/packages/beam-mime.xml", mode = "644" },
+    { source = "../../packaging/icons/hicolor/256x256/apps/beam.png", dest = "/usr/share/icons/hicolor/256x256/apps/beam.png", mode = "644" },
+]
+

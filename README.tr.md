@@ -111,14 +111,37 @@ Kütüphane yönetimi, gömülü ve ACID uyumlu bir SQLite kataloğu (`beam-libr
 
 ## Kurulum ve Hızlı Başlangıç
 
-### Hazır İkili Dosyalar (Pre-built Binaries)
-İşletim sisteminize uygun derlenmiş son sürüm arşivini [GitHub Sürümleri](https://github.com/MOzcelik14/beaM/releases) sayfasından indirin. Arşivi açıp doğrudan çalıştırabilirsiniz:
+### Dağıtım Paketleri ve Hazır İkililer
+İşletim sisteminize uygun derlenmiş son sürüm dağıtım paketlerini [GitHub Sürümleri](https://github.com/MOzcelik14/beaM/releases) sayfasından edinebilirsiniz:
 
-```bash
-tar -xzf beam-v0.1.1-linux-x86_64.tar.gz
-cd beam-v0.1.1-linux-x86_64
-./beam
-```
+- **Debian / Ubuntu / Pop!_OS (`.deb`)**:
+  ```bash
+  sudo dpkg -i beam_0.1.1_amd64.deb
+  sudo apt-get install -f  # eksik bağımlılıkları tamamlamak için
+  ```
+- **Fedora / RHEL / Rocky Linux (`.rpm`)**:
+  ```bash
+  sudo rpm -i beam-0.1.1-1.x86_64.rpm
+  ```
+- **Evrensel Taşınabilir Linux (`.AppImage`)**:
+  ```bash
+  chmod +x beaM-0.1.1-x86_64.AppImage
+  ./beaM-0.1.1-x86_64.AppImage
+  ```
+- **Windows Kurulum (`.exe`) ve Taşınabilir (`.zip`)**:
+  - Başlat menüsü kısayolları ve `.beam`/RAW dosya ilişkilendirmeleriyle tam kurulum için `beaM-v0.1.1-windows-x86_64-setup.exe` çalıştırın.
+  - Veya `beaM-v0.1.1-windows-x86_64.zip` arşivini açıp doğrudan `beam.exe` dosyasını çalıştırın.
+
+### Kaynaktan Paket Oluşturma
+`packaging/` dizinindeki birleşik betiklerle tüm dağıtım paketlerini yerel ortamınızda oluşturabilirsiniz:
+- **Linux (`.deb`, `.rpm`, `.AppImage`, `.tar.gz`)**:
+  ```bash
+  ./packaging/linux/build-linux.sh
+  ```
+- **Windows (Taşınabilir `.zip` ve Inno Setup `.exe`)**:
+  ```powershell
+  .\packaging\windows\build-windows.ps1
+  ```
 
 ### Kaynak Koddan Derleme
 

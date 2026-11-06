@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.mozcelik14.beam</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>beaM.</name>
+  <summary>Professional, non-destructive RAW photo editor and library manager</summary>
+  <summary xml:lang="tr">Profesyonel, tahribatsız RAW fotoğraf düzenleyicisi ve kütüphane yöneticisi</summary>
+  
+  <description>
+    <p>
+      beaM. is an independent, high-performance desktop photographic darkroom and asset manager built in 100% pure Rust, powered by wgpu and egui.
+    </p>
+    <p xml:lang="tr">
+      beaM., saf Rust diliyle sıfırdan geliştirilmiş, wgpu ve egui altyapısıyla çalışan bağımsız ve yüksek performanslı masaüstü RAW fotoğraf düzenleme yazılımıdır.
+    </p>
+    <ul>
+      <li>GPU-accelerated non-destructive 32-bit floating point color pipeline</li>
+      <li>RawTherapee-style in-app directory navigator with places, bookmarks, and subfolder browsing</li>
+      <li>Tone mapping, white balance (temperature/tint), HSL 8-band color equalizer, sharpening, and contrast</li>
+      <li>Non-destructive .beam sidecar architecture and standalone project saving</li>
+      <li>Batch exporter with Lanczos3 resampling and custom naming templates</li>
+    </ul>
+    <ul xml:lang="tr">
+      <li>GPU hızlandırmalı tahribatsız 32-bit kayan nokta renk işleme hattı</li>
+      <li>RawTherapee tarzı yerleşik dosya gezgini, hızlı erişim konumları ve yer imleri</li>
+      <li>Ton eğrisi, beyaz dengesi, 8 bantlı HSL renk dengeleyici ve keskinleştirme</li>
+      <li>Tahribatsız .beam yan dosya mimarisi ve bağımsız proje kaydetme</li>
+      <li>Lanczos3 ölçekleme ve şablonlu toplu dışa aktarıcı</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">beam.desktop</launchable>
+
+  <url type="homepage">https://mozcelik14.github.io/beaM/</url>
+  <url type="bugtracker">https://github.com/MOzcelik14/beaM/issues</url>
+  <url type="vcs-browser">https://github.com/MOzcelik14/beaM</url>
+
+  <developer id="com.github.mozcelik14">
+    <name>beaM. Contributors</name>
+  </developer>
+
+  <provides>
+    <binary>beam</binary>
+    <mediatype>application/x-beam-project</mediatype>
+    <mediatype>image/x-sony-arw</mediatype>
+    <mediatype>image/x-canon-cr2</mediatype>
+    <mediatype>image/x-canon-cr3</mediatype>
+    <mediatype>image/x-nikon-nef</mediatype>
+    <mediatype>image/x-adobe-dng</mediatype>
+  </provides>
+
+  <releases>
+    <release version="0.1.1" date="2026-11-06">
+      <description>
+        <p>Introduced RawTherapee-style file browser, .beam extension standardization, unsaved changes confirmation dialog, and parser robustness hardening.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-28">
+      <description>
+        <p>Initial public release of beaM. featuring non-destructive editing and wgpu pipeline.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>

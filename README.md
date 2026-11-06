@@ -111,14 +111,37 @@ Library operations leverage an embedded, ACID-compliant SQLite catalog (`beam-li
 
 ## Installation and Quick Start
 
-### Pre-built Binaries
-Download the latest pre-compiled release archive for your platform from the [GitHub Releases](https://github.com/MOzcelik14/beaM/releases) page. Extract the archive and execute the standalone `beam` binary:
+### Packages and Pre-built Binaries
+Download the latest pre-compiled distribution packages for your operating system from the [GitHub Releases](https://github.com/MOzcelik14/beaM/releases) page:
 
-```bash
-tar -xzf beam-v0.1.1-linux-x86_64.tar.gz
-cd beam-v0.1.1-linux-x86_64
-./beam
-```
+- **Debian / Ubuntu / Pop!_OS (`.deb`)**:
+  ```bash
+  sudo dpkg -i beam_0.1.1_amd64.deb
+  sudo apt-get install -f  # resolve any missing recommended runtime dependencies
+  ```
+- **Fedora / RHEL / Rocky Linux (`.rpm`)**:
+  ```bash
+  sudo rpm -i beam-0.1.1-1.x86_64.rpm
+  ```
+- **Universal Linux Portable (`.AppImage`)**:
+  ```bash
+  chmod +x beaM-0.1.1-x86_64.AppImage
+  ./beaM-0.1.1-x86_64.AppImage
+  ```
+- **Windows Setup (`.exe`) & Portable (`.zip`)**:
+  - Run `beaM-v0.1.1-windows-x86_64-setup.exe` for full installation with Start Menu shortcuts and `.beam`/RAW file associations.
+  - Or extract `beaM-v0.1.1-windows-x86_64.zip` and run `beam.exe` standalone.
+
+### Packaging from Source
+You can generate all distribution packages locally using the unified scripts in `packaging/`:
+- **Linux (`.deb`, `.rpm`, `.AppImage`, `.tar.gz`)**:
+  ```bash
+  ./packaging/linux/build-linux.sh
+  ```
+- **Windows (Portable `.zip` and Inno Setup `.exe`)**:
+  ```powershell
+  .\packaging\windows\build-windows.ps1
+  ```
 
 ### Building from Source
 

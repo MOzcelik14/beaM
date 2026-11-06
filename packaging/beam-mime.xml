@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-beam-project">
+    <comment>beaM. Project File</comment>
+    <comment xml:lang="tr">beaM. Proje Dosyası</comment>
+    <icon name="beam"/>
+    <glob pattern="*.beam"/>
+    <glob pattern="*.beam.ron"/>
+    <sub-class-of type="text/plain"/>
+  </mime-type>
+</mime-info>
