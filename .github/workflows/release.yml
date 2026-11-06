@@ -4,14 +4,58 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - master
+    paths:
+      - 'Cargo.toml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  check-version:
+    name: Check Version & Tag
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag_name: ${{ steps.check.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine if release should run
+        id: check
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG_NAME#v}"
+            echo "Triggered by tag push: ${TAG_NAME}"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            VERSION=$(grep -m1 '^version' Cargo.toml | awk -F '"' '{print $2}')
+            TAG_NAME="v${VERSION}"
+            echo "Current version in Cargo.toml: ${VERSION} (tag: ${TAG_NAME})"
+            if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
+              echo "Tag ${TAG_NAME} already exists. Skipping duplicate release."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "New version detected (${TAG_NAME}). Triggering automated release!"
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+              echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+              echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   build-linux:
     name: Build Linux Packages
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
@@ -36,7 +80,7 @@ jobs:
       - name: Build release packages (deb, rpm, AppImage, tar.gz)
         run: |
           chmod +x packaging/linux/*.sh
-          ./packaging/linux/build-linux.sh
+          ./packaging/linux/build-linux.sh "${{ needs.check-version.outputs.version }}"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -47,6 +91,8 @@ jobs:
 
   build-windows:
     name: Build Windows Packages
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -65,7 +111,7 @@ jobs:
       - name: Build Windows release, portable zip, and installer
         shell: pwsh
         run: |
-          .\packaging\windows\build-windows.ps1
+          .\packaging\windows\build-windows.ps1 -Version "${{ needs.check-version.outputs.version }}"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -76,9 +122,9 @@ jobs:
 
   publish-release:
     name: Publish GitHub Release
-    needs: [build-linux, build-windows]
+    needs: [check-version, build-linux, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: needs.check-version.outputs.should_release == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -99,8 +145,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release_assets/*
-          name: "beaM. ${{ github.ref_name }}"
+          tag_name: ${{ needs.check-version.outputs.tag_name }}
+          name: "beaM. ${{ needs.check-version.outputs.tag_name }}"
           draft: false
           prerelease: false
           generate_release_notes: true
+          files: release_assets/*
