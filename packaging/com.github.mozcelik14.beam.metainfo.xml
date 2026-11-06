@@ -51,6 +51,11 @@
   </provides>
 
   <releases>
+    <release version="0.2.0" date="2026-11-06">
+      <description>
+        <p>beaM. 0.2.0: Added RawTherapee file browser, cross-platform packaging system (.deb, .rpm, .AppImage, Windows installer and portable zip), and .beam format standardization.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-06">
       <description>
         <p>Introduced RawTherapee-style file browser, .beam extension standardization, unsaved changes confirmation dialog, and parser robustness hardening.</p>

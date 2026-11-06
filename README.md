@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <strong>Version:</strong> 0.1.1 &nbsp;|&nbsp;
+  <strong>Version:</strong> 0.2.0 &nbsp;|&nbsp;
   <strong>License:</strong> GNU General Public License v3.0 &nbsp;|&nbsp;
   <strong>Platforms:</strong> Linux, Windows &nbsp;|&nbsp;
   <strong>Architecture:</strong> x86_64
@@ -116,21 +116,21 @@ Download the latest pre-compiled distribution packages for your operating system
 
 - **Debian / Ubuntu / Pop!_OS (`.deb`)**:
   ```bash
-  sudo dpkg -i beam_0.1.1_amd64.deb
+  sudo dpkg -i beam_0.2.0_amd64.deb
   sudo apt-get install -f  # resolve any missing recommended runtime dependencies
   ```
 - **Fedora / RHEL / Rocky Linux (`.rpm`)**:
   ```bash
-  sudo rpm -i beam-0.1.1-1.x86_64.rpm
+  sudo rpm -i beam-0.2.0-1.x86_64.rpm
   ```
 - **Universal Linux Portable (`.AppImage`)**:
   ```bash
-  chmod +x beaM-0.1.1-x86_64.AppImage
-  ./beaM-0.1.1-x86_64.AppImage
+  chmod +x beaM-0.2.0-x86_64.AppImage
+  ./beaM-0.2.0-x86_64.AppImage
   ```
 - **Windows Setup (`.exe`) & Portable (`.zip`)**:
-  - Run `beaM-v0.1.1-windows-x86_64-setup.exe` for full installation with Start Menu shortcuts and `.beam`/RAW file associations.
-  - Or extract `beaM-v0.1.1-windows-x86_64.zip` and run `beam.exe` standalone.
+  - Run `beaM-v0.2.0-windows-x86_64-setup.exe` for full installation with Start Menu shortcuts and `.beam`/RAW file associations.
+  - Or extract `beaM-v0.2.0-windows-x86_64.zip` and run `beam.exe` standalone.
 
 ### Packaging from Source
 You can generate all distribution packages locally using the unified scripts in `packaging/`:

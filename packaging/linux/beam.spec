@@ -1,5 +1,5 @@
 Name:           beam
-Version:        0.1.1
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Professional, non-destructive RAW photo editor and library manager
 License:        GPL-3.0-only
@@ -70,6 +70,8 @@ fi
 %{_datadir}/icons/hicolor/*/apps/beam.png
 
 %changelog
+* Fri Nov 06 2026 beaM. Contributors <https://github.com/MOzcelik14/beaM> - 0.2.0-1
+- beaM. 0.2.0: RawTherapee file browser, cross-platform packaging system (deb, rpm, AppImage, Windows).
 * Fri Nov 06 2026 beaM. Contributors <https://github.com/MOzcelik14/beaM> - 0.1.1-1
 - RawTherapee-style file browser, .beam extension standardization, unsaved changes dialog.
 * Wed Oct 28 2026 beaM. Contributors <https://github.com/MOzcelik14/beaM> - 0.1.0-1
