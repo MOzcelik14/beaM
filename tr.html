@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>beaM. — Profesyonel, Tahribatsız RAW Fotoğraf Düzenleyici ve Kütüphane Yöneticisi</title>
+  <meta name="description" content="Saf Rust ile sıfırdan geliştirilmiş, wgpu ve egui ile güçlendirilmiş, Linux ve Windows için açık kaynaklı tahribatsız RAW fotoğraf düzenleyicisi ve kütüphane yöneticisi.">
+  <link rel="icon" type="image/png" href="assets/icon_64.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Navigation Bar -->
+  <header class="site-header">
+    <div class="nav-container">
+      <a href="#top" class="brand">
+        <img src="assets/icon.png" alt="beaM. Icon" class="brand-icon">
+        <span>beaM.</span>
+      </a>
+
+      <nav>
+        <ul class="nav-links">
+          <li>
+            <a href="#overview" class="content-en">Overview</a>
+            <a href="#overview" class="content-tr" style="display:none;">Genel Bakış</a>
+          </li>
+          <li>
+            <a href="#architecture" class="content-en">Architecture</a>
+            <a href="#architecture" class="content-tr" style="display:none;">Mimari</a>
+          </li>
+          <li>
+            <a href="#features" class="content-en">Capabilities</a>
+            <a href="#features" class="content-tr" style="display:none;">Yetenekler</a>
+          </li>
+          <li>
+            <a href="#formats" class="content-en">Formats</a>
+            <a href="#formats" class="content-tr" style="display:none;">Biçimler</a>
+          </li>
+          <li>
+            <a href="#shortcuts" class="content-en">Shortcuts</a>
+            <a href="#shortcuts" class="content-tr" style="display:none;">Kısayollar</a>
+          </li>
+          <li>
+            <a href="#installation" class="content-en">Installation</a>
+            <a href="#installation" class="content-tr" style="display:none;">Kurulum</a>
+          </li>
+        </ul>
+      </nav>
+
+      <div class="nav-actions">
+        <div class="lang-switch" role="group" aria-label="Language selection">
+          <button type="button" class="lang-btn lang-btn-en active">EN</button>
+          <button type="button" class="lang-btn lang-btn-tr">TR</button>
+        </div>
+        <a href="https://github.com/MOzcelik14/beaM" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="container hero-content">
+        <div class="hero-meta">
+          <span class="meta-item">v0.1.1</span>
+          <span>&bull;</span>
+          <span class="meta-item">Linux &amp; Windows</span>
+          <span>&bull;</span>
+          <span class="meta-item">GPL-3.0 License</span>
+        </div>
+
+        <!-- English Hero Header -->
+        <div class="content-en">
+          <h1 class="hero-title">Professional, Non-Destructive RAW Photo Editing.</h1>
+          <p class="hero-subtitle">
+            An independent, high-performance desktop photographic darkroom and library manager built from first principles in 100% pure Rust, powered by wgpu and egui.
+          </p>
+        </div>
+
+        <!-- Turkish Hero Header -->
+        <div class="content-tr" style="display:none;">
+          <h1 class="hero-title">Profesyonel ve Tahribatsız RAW Fotoğraf Düzenleme.</h1>
+          <p class="hero-subtitle">
+            Saf Rust ile sıfırdan geliştirilmiş, wgpu ve egui ile güçlendirilmiş, tam denetim ve renk doğruluğu sunan bağımsız masaüstü fotoğraf işleme yazılımı.
+          </p>
+        </div>
+
+        <div class="hero-tags">
+          <span class="spec-tag">Pure Rust</span>
+          <span class="spec-tag">WebGPU (wgpu 30)</span>
+          <span class="spec-tag">egui 0.37</span>
+          <span class="spec-tag">Linear Rec.2020 Working Space</span>
+          <span class="spec-tag">Non-Destructive Sidecars</span>
+          <span class="spec-tag">Zero C/C++ Dependencies</span>
+        </div>
+
+        <div class="hero-buttons">
+          <div class="content-en">
+            <a href="https://github.com/MOzcelik14/beaM/releases" class="btn btn-primary" target="_blank" rel="noopener noreferrer">Download Release</a>
+            <a href="#installation" class="btn btn-secondary">Build from Source</a>
+          </div>
+          <div class="content-tr" style="display:none;">
+            <a href="https://github.com/MOzcelik14/beaM/releases" class="btn btn-primary" target="_blank" rel="noopener noreferrer">Sürümü İndir</a>
+            <a href="#installation" class="btn btn-secondary">Kaynaktan Derle</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Overview Section -->
+    <section id="overview" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label">Overview</div>
+          
+          <div class="content-en">
+            <h2 class="section-title">Built for color fidelity, speed, and asset privacy.</h2>
+            <p class="section-desc">
+              beaM. eliminates the overhead of legacy monolithic image editors. It provides an immediate-mode desktop experience where raw sensor data is preserved untouched, adjustments happen on the GPU in real time, and catalog metadata remains strictly local.
+            </p>
+          </div>
+
+          <div class="content-tr" style="display:none;">
+            <h2 class="section-title">Renk doğruluğu, hız ve veri gizliliği için tasarlandı.</h2>
+            <p class="section-desc">
+              beaM., monolitik eski fotoğraf düzenleyicilerin hantallığını ortadan kaldırır. Ham sensör verilerinin asla değiştirilmediği, GPU üzerinde gerçek zamanlı ayarlamaların yapıldığı ve katalog verilerinin tamamen yerel kaldığı anlık bir masaüstü deneyimi sunar.
+            </p>
+          </div>
+        </div>
+
+        <!-- Architectural Highlights (English) -->
+        <div class="grid-4 content-en">
+          <div class="card">
+            <div class="card-number">01</div>
+            <h3 class="card-title">Non-Destructive Sidecars</h3>
+            <p class="card-text">
+              Original RAW and raster files remain bit-for-bit immutable. Adjustments, curves, and crops are recorded in human-readable, git-diffable RON sidecar files (.beam).
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-number">02</div>
+            <h3 class="card-title">Linear Rec.2020 Gamut</h3>
+            <p class="card-text">
+              Internal tone mathematics execute in wide-gamut linear light. Physical exposure scaling, middle-gray contrast, and chromatic adaptation avoid gamut clipping.
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-number">03</div>
+            <h3 class="card-title">wgpu Hardware Pipeline</h3>
+            <p class="card-text">
+              Discrete WGSL shader passes operate across 32-bit floating-point textures. Proxy rendering ensures sub-millisecond slider interaction at monitor refresh rates.
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-number">04</div>
+            <h3 class="card-title">Tiled Export Subsystem</h3>
+            <p class="card-text">
+              High-resolution captures (40 MP, 60 MP, 100+ MP) are processed through a zero-seam tiled pipeline, keeping peak GPU memory consumption strictly bounded under 70 MB.
+            </p>
+          </div>
+        </div>
+
+        <!-- Architectural Highlights (Turkish) -->
+        <div class="grid-4 content-tr" style="display:none;">
+          <div class="card">
+            <div class="card-number">01</div>
+            <h3 class="card-title">Tahribatsız Yan Dosyalar</h3>
+            <p class="card-text">
+              Orijinal RAW ve piksel dosyaları disk üzerinde hiçbir zaman değiştirilmez. Tüm düzenlemeler, eğriler ve kırpmalar okunabilir RON yan dosyalarına (.beam) yazılır.
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-number">02</div>
+            <h3 class="card-title">Doğrusal Rec.2020 Uzayı</h3>
+            <p class="card-text">
+              Tüm ton hesaplamaları geniş gamutlu doğrusal ışıkta yürütülür. Fiziksel pozlama ölçekleme ve orta gri kontrastı renk kırpılmalarını tamamen engeller.
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-number">03</div>
+            <h3 class="card-title">wgpu Donanım Hattı</h3>
+            <p class="card-text">
+              Bağımsız WGSL gölgelendirici geçişleri 32-bit kayan noktalı dokular üzerinde çalışır. Vekil doku yaklaşımı kaydırıcılarda milisaniyenin altında akıcılık sunar.
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-number">04</div>
+            <h3 class="card-title">Parçalı Dışa Aktarma</h3>
+            <p class="card-text">
+              Yüksek çözünürlüklü fotoğraflar (40 MP, 60 MP, 100+ MP) dikişsiz parçalı işleme hattından geçer; GPU bellek tüketimi 70 MB'ın altında sabit tutulur.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Architecture & Color Science Section -->
+    <section id="architecture" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label content-en">Color Science</div>
+          <div class="section-label content-tr" style="display:none;">Renk Bilimi</div>
+
+          <div class="content-en">
+            <h2 class="section-title">Physically grounded, linear tone processing.</h2>
+            <p class="section-desc">
+              Camera sensors record photons linearly. Conventional photo editors often apply adjustments in non-linear gamma spaces, creating muddy shadows and unnatural color shifts.
+            </p>
+          </div>
+
+          <div class="content-tr" style="display:none;">
+            <h2 class="section-title">Fiziksel temelli, doğrusal ton işleme mimarisi.</h2>
+            <p class="section-desc">
+              Kamera sensörleri fotonları doğrusal olarak yakalar. Geleneksel yazılımlar genellikle doğrusal olmayan gama uzaylarında işlem yaparak çamurlu gölgelere ve renk sapmalarına yol açar.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel-preview">
+            <div class="panel-preview-header">
+              <span>COLOR PIPELINE STAGES</span>
+              <span>WGSL / wgpu</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">Sensor RAW Data</span>
+              <span class="panel-val">Native 14/16-bit CFA</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">Demosaicing</span>
+              <span class="panel-val">Bilinear / rawler</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">Internal Working Space</span>
+              <span class="panel-val">Linear Rec.2020 (f32)</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">Exposure Multiplier</span>
+              <span class="panel-val">I * 2^(EV)</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">Midtone Contrast Pivot</span>
+              <span class="panel-val">M = 0.18 (18% Gray)</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">White Balance Adaptation</span>
+              <span class="panel-val">Kelvin + Tint Gains</span>
+            </div>
+            <div class="panel-row">
+              <span class="panel-label">Export Color Profiles</span>
+              <span class="panel-val">sRGB / P3 / Adobe RGB</span>
+            </div>
+          </div>
+
+          <div class="feature-info">
+            <div class="content-en">
+              <h3>Precision from RAW to Output</h3>
+              <p>
+                Every step of the pipeline respects the physical properties of light. When you adjust exposure by +1 EV, values are doubled in linear space rather than stretched non-linearly.
+              </p>
+              <ul class="feature-list">
+                <li><strong>Middle-Gray Pivot:</strong> Contrast scales exponentially around 18% gray, preventing harsh shoulder clipping in bright highlights.</li>
+                <li><strong>Chromatic Adaptation:</strong> White balance coefficients are calculated directly from Kelvin temperature and Green-Magenta tint coordinates.</li>
+                <li><strong>Unfilterable Texel Loading:</strong> Direct texel access in display shaders ensures wide compatibility across Intel, AMD, and Nvidia drivers without driver extension dependencies.</li>
+                <li><strong>Embedded ICC Profiles:</strong> Exported files feature standard embedded ICC tags generated natively via moxcms.</li>
+              </ul>
+            </div>
+
+            <div class="content-tr" style="display:none;">
+              <h3>RAW'dan Çıktıya Kesintisiz Hassasiyet</h3>
+              <p>
+                İşleme hattının her aşaması ışığın fiziksel davranışına sadık kalır. Pozlamayı +1 EV artırdığınızda değerler yapay olarak gerilmez; doğrusal uzayda tam 2 katına çıkarılır.
+              </p>
+              <ul class="feature-list">
+                <li><strong>Orta Gri Ekseni:</strong> Kontrast %18 gri ekseninde üstel olarak ölçeklenir; parlak alanlarda sert kırpılmalar önlenir.</li>
+                <li><strong>Kromatik Uyarlama:</strong> Beyaz dengesi katsayıları doğrudan Kelvin sıcaklığı ve Yeşil-Macenta koordinatlarından türetilir.</li>
+                <li><strong>Doğrudan Doku Erişimi:</strong> Ekran gölgelendiricilerinde doğrudan piksel yükleme (texel load) kullanılarak sürücü uyumsuzlukları bertaraf edilir.</li>
+                <li><strong>Gömülü ICC Profilleri:</strong> Dışa aktarılan dosyalara moxcms tarafından saf Rust ile üretilmiş standart ICC profilleri işlenir.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Key Capabilities Section -->
+    <section id="features" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label content-en">Capabilities</div>
+          <div class="section-label content-tr" style="display:none;">Yetenekler</div>
+
+          <div class="content-en">
+            <h2 class="section-title">Designed for demanding digital darkroom workflows.</h2>
+            <p class="section-desc">
+              An integrated toolset covering the complete journey from initial card ingestion to finalized master exports.
+            </p>
+          </div>
+
+          <div class="content-tr" style="display:none;">
+            <h2 class="section-title">Kapsamlı karanlık oda iş akışları için geliştirildi.</h2>
+            <p class="section-desc">
+              Karttan içe aktarmadan nihai yüksek çözünürlüklü dışa aktarıma kadar tüm süreci kapsayan bütünleşik araç seti.
+            </p>
+          </div>
+        </div>
+
+        <div class="feature-row">
+          <!-- Feature 1: Develop Panel -->
+          <div class="feature-block">
+            <div class="feature-info">
+              <div class="content-en">
+                <h3>Develop &amp; Tonal Adjustments</h3>
+                <p>
+                  Fine-tune your photographs with fine-grained parametric controls. Sliders provide live GPU feedback with zero latency.
+                </p>
+                <ul class="feature-list">
+                  <li><strong>Tone &amp; White Balance:</strong> Exposure, Contrast, Highlights, Shadows, Kelvin Temperature (2000K–12000K), and Tint.</li>
+                  <li><strong>Spline Tone Curve:</strong> Interactive curve widget supporting parametric adjustments and arbitrary point placement.</li>
+                  <li><strong>8-Band HSL:</strong> Dedicated Hue, Saturation, and Luminance bands for red, orange, yellow, green, aqua, blue, purple, and magenta.</li>
+                  <li><strong>Clipping Warnings:</strong> Real-time highlight blowout and shadow crush visualizers activated via the J shortcut.</li>
+                </ul>
+              </div>
+
+              <div class="content-tr" style="display:none;">
+                <h3>Geliştirme ve Tonal Ayarlamalar</h3>
+                <p>
+                  Fotoğraflarınızı hassas parametrik denetimlerle işleyin. Kaydırıcılar GPU üzerinde sıfır gecikmeyle anlık görsel geri bildirim sunar.
+                </p>
+                <ul class="feature-list">
+                  <li><strong>Ton ve Beyaz Dengesi:</strong> Pozlama, Kontrast, Işıklar, Gölgeler, Kelvin Sıcaklığı (2000K–12000K) ve Renk Tonu.</li>
+                  <li><strong>Spline Ton Eğrisi:</strong> Parametrik ayarları ve serbest kontrol noktalarını destekleyen etkileşimli ton eğrisi.</li>
+                  <li><strong>8 Bant HSL:</strong> Kırmızıdan macentaya 8 bağımsız renk bandı için Renk Tonu, Doygunluk ve Parlaklık denetimi.</li>
+                  <li><strong>Kırpılma Uyarıları:</strong> J kısayoluyla açılan canlı patlayan açık ton ve tıkanan koyu ton görselleştiricisi.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="panel-preview">
+              <div class="panel-preview-header">
+                <span>DEVELOP CONTROLS</span>
+                <span>RANGE</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Exposure</span>
+                <span class="panel-val">-5.00 to +5.00 EV</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Contrast</span>
+                <span class="panel-val">-100 to +100</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Temperature</span>
+                <span class="panel-val">2,000K to 12,000K</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Tint</span>
+                <span class="panel-val">-100 to +100</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Highlights / Shadows</span>
+                <span class="panel-val">-100 to +100</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Tone Curve</span>
+                <span class="panel-val">Natural Cubic Spline</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">HSL Bands</span>
+                <span class="panel-val">8 Channels (H, S, L)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Feature 2: Composition & Comparisons -->
+          <div class="feature-block reverse">
+            <div class="feature-info">
+              <div class="content-en">
+                <h3>Composition &amp; Comparison Views</h3>
+                <p>
+                  Evaluate adjustments with side-by-side accuracy and reframe compositions with dedicated geometry tools.
+                </p>
+                <ul class="feature-list">
+                  <li><strong>Three Comparison Modes:</strong> Toggle mode (\), interactive split screen with draggable divider, and concurrent dual side-by-side viewports.</li>
+                  <li><strong>Interactive Crop:</strong> Aspect ratio constraints (1:1, 4:5, 3:2, 16:9, Free) with rule-of-thirds grid overlay.</li>
+                  <li><strong>Continuous Straighten:</strong> Fine-angle horizon alignment (-45.0° to +45.0°) with 1-click reset.</li>
+                  <li><strong>50-Step History Stack:</strong> Linear undo/redo with point-in-time jump support and grouped slider commit semantics.</li>
+                </ul>
+              </div>
+
+              <div class="content-tr" style="display:none;">
+                <h3>Kompozisyon ve Karşılaştırma Modları</h3>
+                <p>
+                  Düzenlemelerinizi hassas karşılaştırma görünümleriyle değerlendirin, geometri araçlarıyla kompozisyonunuzu kusursuzlaştırın.
+                </p>
+                <ul class="feature-list">
+                  <li><strong>Üç Karşılaştırma Modu:</strong> Hızlı geçiş (\), sürüklenebilir ayırıcılı bölünmüş ekran ve eşzamanlı yan yana görünüm.</li>
+                  <li><strong>Etkileşimli Kırpma:</strong> Sabit oran kilitleri (1:1, 4:5, 3:2, 16:9, Serbest) ve 1/3 kılavuz ızgarası.</li>
+                  <li><strong>Sürekli Doğrultma:</strong> Ufuk çizgisini ayarlamak için hassas açı kaydırıcısı (-45.0° ile +45.0°).</li>
+                  <li><strong>50 Adımlı Geçmiş:</strong> İstenilen ana tek tıkla dönülebilen doğrusal geri alma/yineleme geçmişi.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="panel-preview">
+              <div class="panel-preview-header">
+                <span>VIEWPORT TOOLS</span>
+                <span>SHORTCUT</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Before / After Toggle</span>
+                <span class="panel-val">\</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Interactive Crop Tool</span>
+                <span class="panel-val">C</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Zoom 100% / Fit</span>
+                <span class="panel-val">Z</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Undo / Redo</span>
+                <span class="panel-val">Ctrl+Z / Ctrl+Y</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Filmstrip Tray</span>
+                <span class="panel-val">Toggle in View</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Aspect Ratios</span>
+                <span class="panel-val">1:1, 4:5, 3:2, 16:9, Free</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Feature 3: Library & Ingestion -->
+          <div class="feature-block">
+            <div class="feature-info">
+              <div class="content-en">
+                <h3>Library &amp; Asset Cataloging</h3>
+                <p>
+                  Keep sessions organized without cloud dependence. An embedded, thread-safe SQLite database catalogues your shoots locally.
+                </p>
+                <ul class="feature-list">
+                  <li><strong>Fast Folder Ingestion:</strong> Deep directory scanning protected against symlink recursion cycles.</li>
+                  <li><strong>Ratings &amp; Color Labels:</strong> Single-key rating (0–5) and label assignment (Red, Yellow, Green, Blue).</li>
+                  <li><strong>Full EXIF Inspection:</strong> Aperture, shutter speed, ISO, focal length, lens, camera body, and orientation tags.</li>
+                  <li><strong>Settings Synchronization:</strong> Copy and paste adjustments across single or multi-selected photographs with selective group masking.</li>
+                </ul>
+              </div>
+
+              <div class="content-tr" style="display:none;">
+                <h3>Kütüphane ve Varlık Yönetimi</h3>
+                <p>
+                  Çekimlerinizi buluta bağımlı olmadan yerel olarak düzenleyin. Gömülü ve iş parçacığı güvenli SQLite veritabanı tüm arşivi hızla kataloglar.
+                </p>
+                <ul class="feature-list">
+                  <li><strong>Hızlı Klasör Tarama:</strong> Döngüsel sembolik bağ kilitlenmelerine karşı korumalı derin dizin taraması.</li>
+                  <li><strong>Puanlama ve Renk Etiketleri:</strong> Tek tuşla yıldız puanı verme (0–5) ve renk etiketi atama (Kırmızı, Sarı, Yeşil, Mavi).</li>
+                  <li><strong>Tam EXIF İncelemesi:</strong> Diyafram, enstantane, ISO, odak uzaklığı, lens ve kamera gövdesi gösterimi.</li>
+                  <li><strong>Ayar Senkronizasyonu:</strong> Seçilen fotoğraflar arasında ayarları seçici grup maskeleriyle kopyalayıp uygulama.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="panel-preview">
+              <div class="panel-preview-header">
+                <span>CATALOG ENGINE</span>
+                <span>SPECIFICATION</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Database Backend</span>
+                <span class="panel-val">Embedded SQLite (ACID)</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Star Ratings</span>
+                <span class="panel-val">0 to 5 Stars (Keys 0-5)</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Color Labels</span>
+                <span class="panel-val">Red, Yellow, Green, Blue (6-9)</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Thumbnail Cache</span>
+                <span class="panel-val">Disk + LRU In-Memory</span>
+              </div>
+              <div class="panel-row">
+                <span class="panel-label">Folder Filtering</span>
+                <span class="panel-val">Format, Rating, Label, Query</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Supported Formats Section -->
+    <section id="formats" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label content-en">File Compatibility</div>
+          <div class="section-label content-tr" style="display:none;">Dosya Uyumluluğu</div>
+
+          <div class="content-en">
+            <h2 class="section-title">Extensive RAW &amp; Raster Format Support.</h2>
+            <p class="section-desc">
+              Decoded natively in pure Rust without external shared C libraries.
+            </p>
+          </div>
+
+          <div class="content-tr" style="display:none;">
+            <h2 class="section-title">Kapsamlı RAW ve Standart Piksel Desteği.</h2>
+            <p class="section-desc">
+              Harici C kütüphanelerine ihtiyaç duyulmadan saf Rust ile doğrudan kod çözümü.
+            </p>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th class="content-en">Category</th>
+                <th class="content-tr" style="display:none;">Kategori</th>
+                <th class="content-en">Formats &amp; Extensions</th>
+                <th class="content-tr" style="display:none;">Biçimler ve Uzantılar</th>
+                <th class="content-en">Processing Capabilities</th>
+                <th class="content-tr" style="display:none;">İşleme Yetenekleri</th>
+                <th class="content-en">Engine</th>
+                <th class="content-tr" style="display:none;">Motor</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Sony</strong></td>
+                <td class="mono-cell">.ARW</td>
+                <td class="content-en">Native 14-bit RAW decode, demosaicing, linear Rec.2020</td>
+                <td class="content-tr" style="display:none;">Doğrudan 14-bit RAW açma, mozaiksizleştirme, doğrusal Rec.2020</td>
+                <td class="mono-cell">rawler</td>
+              </tr>
+              <tr>
+                <td><strong>Canon</strong></td>
+                <td class="mono-cell">.CR2, .CR3</td>
+                <td class="content-en">TIFF and BMFF container parsing, lossless raw recovery</td>
+                <td class="content-tr" style="display:none;">TIFF ve BMFF kapsayıcı ayrıştırma, kayıpsız ham veri çıkarımı</td>
+                <td class="mono-cell">rawler</td>
+              </tr>
+              <tr>
+                <td><strong>Nikon</strong></td>
+                <td class="mono-cell">.NEF</td>
+                <td class="content-en">Lossless and uncompressed 12/14-bit raw support</td>
+                <td class="content-tr" style="display:none;">Kayıpsız ve sıkıştırmasız 12/14-bit raw desteği</td>
+                <td class="mono-cell">rawler</td>
+              </tr>
+              <tr>
+                <td><strong>Fujifilm</strong></td>
+                <td class="mono-cell">.RAF</td>
+                <td class="content-en">Bayer &amp; X-Trans embedded container parsing</td>
+                <td class="content-tr" style="display:none;">Bayer ve X-Trans gömülü kapsayıcı desteği</td>
+                <td class="mono-cell">rawler</td>
+              </tr>
+              <tr>
+                <td><strong>Panasonic &amp; Olympus</strong></td>
+                <td class="mono-cell">.RW2, .ORF</td>
+                <td class="content-en">Native IFD validation and linear curve demosaicing</td>
+                <td class="content-tr" style="display:none;">Doğrudan IFD doğrulaması ve doğrusal eğri dönüşümü</td>
+                <td class="mono-cell">rawler</td>
+              </tr>
+              <tr>
+                <td><strong>Adobe &amp; Open RAW</strong></td>
+                <td class="mono-cell">.DNG</td>
+                <td class="content-en">Digital Negative container parsing and linear mapping</td>
+                <td class="content-tr" style="display:none;">Digital Negative kapsayıcı ayrıştırma ve doğrusal haritalama</td>
+                <td class="mono-cell">rawler</td>
+              </tr>
+              <tr>
+                <td><strong>Standard Raster</strong></td>
+                <td class="mono-cell">JPEG, PNG, TIFF, WebP</td>
+                <td class="content-en">8-bit &amp; 16-bit channel depth preservation, ICC profile conversion</td>
+                <td class="content-tr" style="display:none;">8-bit ve 16-bit kanal derinliği koruması, ICC profili dönüşümü</td>
+                <td class="mono-cell">image + moxcms</td>
+              </tr>
+              <tr>
+                <td><strong>Project &amp; Sidecar</strong></td>
+                <td class="mono-cell">.beam, .beam.ron</td>
+                <td class="content-en">Human-readable, versioned RON serialization format</td>
+                <td class="content-tr" style="display:none;">Okunabilir, sürümlendirilmiş RON serileştirme biçimi</td>
+                <td class="mono-cell">beam-core</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Keyboard Shortcuts Section -->
+    <section id="shortcuts" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label content-en">Workflow</div>
+          <div class="section-label content-tr" style="display:none;">İş Akışı</div>
+
+          <div class="content-en">
+            <h2 class="section-title">Comprehensive keyboard controls.</h2>
+            <p class="section-desc">
+              Designed for rapid, mouse-optional culling, rating, and adjustment workflows.
+            </p>
+          </div>
+
+          <div class="content-tr" style="display:none;">
+            <h2 class="section-title">Kapsamlı klavye denetimleri.</h2>
+            <p class="section-desc">
+              Hızlı fotoğraf seçimi, puanlama ve düzenleme akışları için optimize edilmiş kısayollar.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th class="content-en">Navigation &amp; Views</th>
+                  <th class="content-tr" style="display:none;">Gezinme ve Görünümler</th>
+                  <th>Key</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="content-en">Switch to Library Grid View</td>
+                  <td class="content-tr" style="display:none;">Kütüphane Görünümüne Geç</td>
+                  <td><span class="kbd">G</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Switch to Develop View</td>
+                  <td class="content-tr" style="display:none;">Geliştirme Görünümüne Geç</td>
+                  <td><span class="kbd">D</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Toggle Before / After View</td>
+                  <td class="content-tr" style="display:none;">Öncesi / Sonrası Karşılaştırma</td>
+                  <td><span class="kbd">\</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Toggle Crop &amp; Straighten Tool</td>
+                  <td class="content-tr" style="display:none;">Kırpma ve Doğrultma Aracını Aç</td>
+                  <td><span class="kbd">C</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Toggle Highlight / Shadow Clipping</td>
+                  <td class="content-tr" style="display:none;">Kırpılma Uyarı Katmanları</td>
+                  <td><span class="kbd">J</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Toggle Zoom to Fit / 100% (1:1)</td>
+                  <td class="content-tr" style="display:none;">Ekrana Sığdır / %100 Birebir Yakınlaştır</td>
+                  <td><span class="kbd">Z</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Toggle Fullscreen Mode</td>
+                  <td class="content-tr" style="display:none;">Tam Ekran Modu</td>
+                  <td><span class="kbd">F</span> / <span class="kbd">F11</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th class="content-en">File &amp; Culling Actions</th>
+                  <th class="content-tr" style="display:none;">Dosya ve Derecelendirme</th>
+                  <th>Key</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="content-en">Open File / Import Folder</td>
+                  <td class="content-tr" style="display:none;">Dosya Aç / Klasör Aktar</td>
+                  <td><span class="kbd">Ctrl+O</span> / <span class="kbd">Ctrl+Shift+O</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Save Project / Save As...</td>
+                  <td class="content-tr" style="display:none;">Projeyi Kaydet / Farklı Kaydet</td>
+                  <td><span class="kbd">Ctrl+S</span> / <span class="kbd">Ctrl+Shift+S</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Close Project (with Unsaved Check)</td>
+                  <td class="content-tr" style="display:none;">Projeyi Kapat (Onay Penceresi ile)</td>
+                  <td><span class="kbd">Ctrl+W</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Open Export Dialog</td>
+                  <td class="content-tr" style="display:none;">Dışa Aktarma Penceresini Aç</td>
+                  <td><span class="kbd">Ctrl+E</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Undo / Redo Edit Step</td>
+                  <td class="content-tr" style="display:none;">İşlemi Geri Al / Yinele</td>
+                  <td><span class="kbd">Ctrl+Z</span> / <span class="kbd">Ctrl+Y</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Set Star Rating (0 to 5)</td>
+                  <td class="content-tr" style="display:none;">Yıldız Puanı Ata (0-5)</td>
+                  <td><span class="kbd">0</span> – <span class="kbd">5</span></td>
+                </tr>
+                <tr>
+                  <td class="content-en">Set Color Label (Red, Yellow, Green, Blue)</td>
+                  <td class="content-tr" style="display:none;">Renk Etiketi Ata (Kırmızı, Sarı, Yeşil, Mavi)</td>
+                  <td><span class="kbd">6</span> – <span class="kbd">9</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Installation & Quick Start Section -->
+    <section id="installation" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="section-label content-en">Getting Started</div>
+          <div class="section-label content-tr" style="display:none;">Başlarken</div>
+
+          <div class="content-en">
+            <h2 class="section-title">Installation and Execution.</h2>
+            <p class="section-desc">
+              Pre-compiled release packages are available for Linux x86_64, or compile natively using standard Cargo tools.
+            </p>
+          </div>
+
+          <div class="content-tr" style="display:none;">
+            <h2 class="section-title">Kurulum ve Çalıştırma.</h2>
+            <p class="section-desc">
+              Linux x86_64 için hazır ikili paketler mevcuttur; dilerseniz standart Cargo araçlarıyla kaynaktan doğrudan derleyebilirsiniz.
+            </p>
+          </div>
+        </div>
+
+        <div class="terminal-box">
+          <div class="terminal-header">
+            <span>bash / terminal</span>
+            <span>BUILD FROM SOURCE</span>
+          </div>
+          <pre class="terminal-code"><code><span class="code-comment"># 1. Clone the repository</span>
+<span class="code-cmd">git clone</span> https://github.com/MOzcelik14/beaM.git
+<span class="code-cmd">cd</span> beaM
+
+<span class="code-comment"># 2. Build the optimized release binary</span>
+<span class="code-cmd">cargo build</span> --release
+
+<span class="code-comment"># 3. Launch the desktop application</span>
+<span class="code-cmd">./target/release/beam</span>
+
+<span class="code-comment"># Optional: Launch and open a photograph directly</span>
+<span class="code-cmd">./target/release/beam</span> /path/to/photograph.ARW</code></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Site Footer -->
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <h4>beaM.</h4>
+          <p class="content-en">
+            Open-source, non-destructive RAW photo editor and library manager built in 100% pure Rust, powered by wgpu and egui.
+          </p>
+          <p class="content-tr" style="display:none;">
+            Saf Rust ile sıfırdan geliştirilmiş, wgpu ve egui ile güçlendirilmiş açık kaynaklı tahribatsız RAW fotoğraf düzenleyicisi.
+          </p>
+        </div>
+
+        <div class="footer-col">
+          <h5 class="content-en">Documentation</h5>
+          <h5 class="content-tr" style="display:none;">Belgeler</h5>
+          <ul>
+            <li><a href="https://github.com/MOzcelik14/beaM/blob/master/README.md" target="_blank" rel="noopener noreferrer">README (EN)</a></li>
+            <li><a href="https://github.com/MOzcelik14/beaM/blob/master/README.tr.md" target="_blank" rel="noopener noreferrer">README (TR)</a></li>
+            <li><a href="https://github.com/MOzcelik14/beaM/blob/master/SECURITY_AUDIT.md" target="_blank" rel="noopener noreferrer">Security Audit</a></li>
+            <li><a href="https://github.com/MOzcelik14/beaM/releases" target="_blank" rel="noopener noreferrer">Releases</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <h5 class="content-en">Project</h5>
+          <h5 class="content-tr" style="display:none;">Proje</h5>
+          <ul>
+            <li><a href="https://github.com/MOzcelik14/beaM" target="_blank" rel="noopener noreferrer">GitHub Repository</a></li>
+            <li><a href="https://github.com/MOzcelik14/beaM/issues" target="_blank" rel="noopener noreferrer">Issue Tracker</a></li>
+            <li><a href="https://github.com/MOzcelik14/beaM/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">GPL-3.0 License</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <span>&copy; beaM. Project &bull; Distributed under the GNU General Public License v3.0 (GPL-3.0-only).</span>
+        <span>Version 0.1.1 &bull; 100% Pure Rust</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
