@@ -49,8 +49,12 @@
     <mediatype>image/x-nikon-nef</mediatype>
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
-
   <releases>
+    <release version="0.8.0" date="2026-11-07">
+      <description>
+        <p>beaM. 0.8.0: Studio UI modernization, strict layout alignment, CPU and memory footprint optimizations, instant folder scan, and 8-bit fast-path thumbnailing.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-06">
       <description>
         <p>beaM. 0.2.0: Added RawTherapee file browser, cross-platform packaging system (.deb, .rpm, .AppImage, Windows installer and portable zip), and .beam format standardization.</p>

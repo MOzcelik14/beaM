@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <strong>Sürüm:</strong> 0.2.0 &nbsp;|&nbsp;
+  <strong>Sürüm:</strong> 0.8.0 &nbsp;|&nbsp;
   <strong>Lisans:</strong> GNU Genel Kamu Lisansı v3.0 &nbsp;|&nbsp;
   <strong>Platformlar:</strong> Linux, Windows &nbsp;|&nbsp;
   <strong>Mimari:</strong> x86_64
@@ -116,21 +116,21 @@ Kütüphane yönetimi, gömülü ve ACID uyumlu bir SQLite kataloğu (`beam-libr
 
 - **Debian / Ubuntu / Pop!_OS (`.deb`)**:
   ```bash
-  sudo dpkg -i beam_0.2.0_amd64.deb
+  sudo dpkg -i beam_0.8.0_amd64.deb
   sudo apt-get install -f  # eksik bağımlılıkları tamamlamak için
   ```
 - **Fedora / RHEL / Rocky Linux (`.rpm`)**:
   ```bash
-  sudo rpm -i beam-0.2.0-1.x86_64.rpm
+  sudo rpm -i beam-0.8.0-1.x86_64.rpm
   ```
 - **Evrensel Taşınabilir Linux (`.AppImage`)**:
   ```bash
-  chmod +x beaM-0.2.0-x86_64.AppImage
-  ./beaM-0.2.0-x86_64.AppImage
+  chmod +x beaM-0.8.0-x86_64.AppImage
+  ./beaM-0.8.0-x86_64.AppImage
   ```
 - **Windows Kurulum (`.exe`) ve Taşınabilir (`.zip`)**:
-  - Başlat menüsü kısayolları ve `.beam`/RAW dosya ilişkilendirmeleriyle tam kurulum için `beaM-v0.2.0-windows-x86_64-setup.exe` çalıştırın.
-  - Veya `beaM-v0.2.0-windows-x86_64.zip` arşivini açıp doğrudan `beam.exe` dosyasını çalıştırın.
+  - Başlat menüsü kısayolları ve `.beam`/RAW dosya ilişkilendirmeleriyle tam kurulum için `beaM-v0.8.0-windows-x86_64-setup.exe` çalıştırın.
+  - Veya `beaM-v0.8.0-windows-x86_64.zip` arşivini açıp doğrudan `beam.exe` dosyasını çalıştırın.
 
 ### Kaynaktan Paket Oluşturma
 `packaging/` dizinindeki birleşik betiklerle tüm dağıtım paketlerini yerel ortamınızda oluşturabilirsiniz:
