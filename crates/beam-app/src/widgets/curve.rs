@@ -16,11 +16,11 @@ pub fn show_tone_curve(ui: &mut egui::Ui, points: &mut Vec<ToneCurvePoint>) -> b
     let rect = response.rect;
 
     // Background
-    painter.rect_filled(rect, 4.0, Color32::from_rgb(22, 22, 25));
+    painter.rect_filled(rect, 6.0, Color32::from_rgb(14, 15, 19));
     painter.rect_stroke(
         rect,
-        4.0,
-        Stroke::new(1.0, Color32::from_rgb(45, 45, 50)),
+        6.0,
+        Stroke::new(1.0, Color32::from_rgb(34, 38, 48)),
         egui::StrokeKind::Inside,
     );
 
@@ -30,11 +30,11 @@ pub fn show_tone_curve(ui: &mut egui::Ui, points: &mut Vec<ToneCurvePoint>) -> b
             Pos2::new(rect.left(), rect.bottom()),
             Pos2::new(rect.right(), rect.top()),
         ],
-        Stroke::new(1.0, Color32::from_rgb(38, 38, 44)),
+        Stroke::new(1.0, Color32::from_rgb(36, 40, 52)),
     );
 
     // Grid lines (25%, 50%, 75%)
-    let grid_stroke = Stroke::new(1.0, Color32::from_rgb(32, 32, 36));
+    let grid_stroke = Stroke::new(1.0, Color32::from_rgb(26, 28, 36));
     for i in 1..4 {
         let frac = i as f32 / 4.0;
         let x = rect.left() + rect.width() * frac;
@@ -172,14 +172,14 @@ pub fn show_tone_curve(ui: &mut egui::Ui, points: &mut Vec<ToneCurvePoint>) -> b
 
         let radius = if is_being_dragged { 6.0 } else { 4.5 };
         let fill_col = if is_being_dragged {
-            Color32::from_rgb(80, 160, 255)
+            Color32::from_rgb(59, 130, 246)
         } else {
-            Color32::from_rgb(20, 20, 22)
+            Color32::from_rgb(18, 20, 26)
         };
         let stroke_col = if is_being_dragged {
             Color32::WHITE
         } else {
-            Color32::from_rgb(210, 210, 215)
+            Color32::from_rgb(200, 205, 220)
         };
 
         painter.circle_filled(screen_pt, radius, fill_col);

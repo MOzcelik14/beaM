@@ -4,9 +4,10 @@ pub mod decoder;
 pub mod export;
 
 pub use decoder::{
-    apply_orientation, apply_orientation_f32, decode_image, decode_raster_image, generate_proxy,
-    generate_thumbnail, generate_thumbnail_with_edits, is_raster_file, save_thumbnail,
-    srgb_to_rec2020_linear, thumbnail_cache_path, DecodedImage, ImageMetadata, PROXY_MAX_DIMENSION,
+    apply_orientation, apply_orientation_f32, decode_image, decode_raster_image,
+    extract_exif_metadata, extract_image_dimensions, generate_proxy, generate_thumbnail,
+    generate_thumbnail_with_edits, is_raster_file, save_thumbnail, srgb_to_rec2020_linear,
+    thumbnail_cache_path, DecodedImage, ImageMetadata, PROXY_MAX_DIMENSION,
 };
 pub use export::{
     apply_crop_and_orientation, apply_unsharp_mask, calculate_target_dimensions,

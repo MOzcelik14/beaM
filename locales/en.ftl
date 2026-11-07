@@ -298,7 +298,7 @@ settings_close = Close
 # About Dialog
 about_title = About beaM.
 about_description = A modern, non-destructive RAW photo editor and library manager for Linux and Windows.
-about_version = Version 0.2.0
+about_version = Version 0.8.0
 about_license = Licensed under GNU General Public License v3.0 (GPL-3.0).
 about_license_text = License: GNU General Public License v3.0 (GPL-3.0)
 about_desc_1 = A non-destructive RAW photo editor and library manager.
@@ -450,4 +450,4 @@ browser_empty_tip = Select a folder from the tree on the left or drag and drop p
 browser_choose_folder = Select Folder...
 browser_open_folder = Open Folder
 browser_folder_photos_count = {$count} photos
-
+browser_no_subfolders = No subfolders

@@ -298,7 +298,7 @@ settings_close = Kapat
 # About Dialog
 about_title = beaM. Hakkında
 about_description = Linux ve Windows için modern, tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi.
-about_version = Sürüm 0.2.0
+about_version = Sürüm 0.8.0
 about_license = GNU Genel Kamu Lisansı v3.0 (GPL-3.0) kapsamında lisanslanmıştır.
 about_license_text = Lisans: GNU Genel Kamu Lisansı v3.0 (GPL-3.0)
 about_desc_1 = Tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi.
@@ -450,4 +450,4 @@ browser_empty_tip = Sol paneldeki klasör ağacından bir dizin seçin veya foto
 browser_choose_folder = Klasör Seç...
 browser_open_folder = Klasör Aç
 browser_folder_photos_count = {$count} fotoğraf
-
+browser_no_subfolders = Alt klasör yok

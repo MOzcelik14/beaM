@@ -1033,6 +1033,15 @@ pub struct ExifMetadata {
     pub focal_length: Option<f32>,
 }
 
+/// Extract fast image dimensions from header without full image decoding.
+pub fn extract_image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    if is_raster_file(path) {
+        image::image_dimensions(path).ok()
+    } else {
+        None
+    }
+}
+
 /// Extract EXIF metadata (orientation, make, model, iso, shutter, aperture, focal_length) using kamadak-exif.
 pub fn extract_exif_metadata(path: &Path) -> ExifMetadata {
     let mut meta = ExifMetadata {
@@ -1555,6 +1564,18 @@ pub fn generate_thumbnail_with_edits(
     edit_stack: Option<&EditStack>,
     max_dim: u32,
 ) -> Result<image::RgbaImage> {
+    let has_edits = edit_stack
+        .map(|s| s != &EditStack::default())
+        .unwrap_or(false);
+    if !has_edits && is_raster_file(path) {
+        if let Ok(img) = image::open(path) {
+            let thumb = img.thumbnail(max_dim, max_dim).to_rgba8();
+            let exif = extract_exif_metadata(path);
+            let oriented = apply_orientation(thumb, exif.orientation);
+            return Ok(oriented);
+        }
+    }
+
     let decoded = decode_image(path)?;
     let (thumb_w, thumb_h, thumb_floats) = generate_proxy(
         decoded.proxy_width,

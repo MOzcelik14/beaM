@@ -355,16 +355,50 @@ impl BeamApp {
 
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
             cc.egui_ctx.style_mut_of(theme, |s| {
-                s.spacing.item_spacing = egui::vec2(8.0, 7.0);
-                s.spacing.button_padding = egui::vec2(10.0, 5.0);
+                s.spacing.item_spacing = egui::vec2(8.0, 8.0);
+                s.spacing.button_padding = egui::vec2(10.0, 6.0);
                 s.spacing.indent = 16.0;
-                s.visuals.window_corner_radius = 8.0.into();
-                s.visuals.menu_corner_radius = 6.0.into();
-                s.visuals.widgets.noninteractive.corner_radius = 6.0.into();
-                s.visuals.widgets.inactive.corner_radius = 6.0.into();
-                s.visuals.widgets.hovered.corner_radius = 6.0.into();
-                s.visuals.widgets.active.corner_radius = 6.0.into();
-                s.visuals.widgets.open.corner_radius = 6.0.into();
+                s.spacing.slider_width = 140.0;
+
+                let v = &mut s.visuals;
+                v.panel_fill = Color32::from_rgb(22, 23, 28);
+                v.window_fill = Color32::from_rgb(26, 28, 34);
+                v.faint_bg_color = Color32::from_rgb(18, 19, 23);
+                v.extreme_bg_color = Color32::from_rgb(14, 15, 18);
+                v.code_bg_color = Color32::from_rgb(18, 19, 23);
+
+                v.window_corner_radius = 8.0.into();
+                v.menu_corner_radius = 7.0.into();
+
+                v.widgets.noninteractive.corner_radius = 7.0.into();
+                v.widgets.noninteractive.bg_fill = Color32::from_rgb(26, 28, 34);
+                v.widgets.noninteractive.bg_stroke =
+                    Stroke::new(1.0, Color32::from_rgb(38, 41, 50));
+                v.widgets.noninteractive.fg_stroke =
+                    Stroke::new(1.0, Color32::from_rgb(185, 190, 202));
+
+                v.widgets.inactive.corner_radius = 7.0.into();
+                v.widgets.inactive.bg_fill = Color32::from_rgb(32, 35, 43);
+                v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(46, 50, 62));
+                v.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(215, 220, 230));
+
+                v.widgets.hovered.corner_radius = 7.0.into();
+                v.widgets.hovered.bg_fill = Color32::from_rgb(44, 49, 60);
+                v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(70, 78, 96));
+                v.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::from_rgb(250, 252, 255));
+
+                v.widgets.active.corner_radius = 7.0.into();
+                v.widgets.active.bg_fill = Color32::from_rgb(52, 60, 78);
+                v.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(90, 110, 150));
+                v.widgets.active.fg_stroke = Stroke::new(1.0, Color32::from_rgb(255, 255, 255));
+
+                v.widgets.open.corner_radius = 7.0.into();
+                v.widgets.open.bg_fill = Color32::from_rgb(36, 40, 50);
+                v.widgets.open.bg_stroke = Stroke::new(1.0, Color32::from_rgb(60, 68, 84));
+
+                v.selection.bg_fill = Color32::from_rgba_unmultiplied(59, 130, 246, 180);
+                v.selection.stroke = Stroke::new(1.5, Color32::from_rgb(96, 165, 250));
+                v.slider_trailing_fill = true;
             });
         }
 
@@ -1321,9 +1355,6 @@ impl BeamApp {
         if self.is_one_to_one {
             self.ensure_full_res_rendered(frame);
         }
-
-        // Save sidecar automatically
-        self.save_sidecar();
     }
 
     /// Push a new history step onto the history stack.
@@ -1546,176 +1577,232 @@ impl eframe::App for BeamApp {
 
         // Top menu bar
         Panel::top("menu_bar").show(ui, |ui| {
-            MenuBar::new().ui(ui, |ui| {
+            ui.horizontal(|ui| {
                 ui.image(egui::load::SizedTexture::new(
                     self.logo_texture.id(),
                     Vec2::new(18.0, 18.0),
                 ));
                 ui.add_space(4.0);
-                ui.label(RichText::new(APP_NAME).strong().size(15.0));
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                // Navigation View Tabs
-                let is_lib = self.current_view == AppView::Library;
-                let lib_text = RichText::new(format!("{} (G)", t!("view_library")))
-                    .size(12.5)
-                    .strong();
-                if ui.selectable_label(is_lib, lib_text).clicked() {
-                    self.current_view = AppView::Library;
-                }
-                ui.add_space(2.0);
-                let is_dev = self.current_view == AppView::Develop;
-                let dev_text = RichText::new(format!("{} (D)", t!("view_develop")))
-                    .size(12.5)
-                    .strong();
-                if ui.selectable_label(is_dev, dev_text).clicked() {
-                    self.current_view = AppView::Develop;
-                }
+                ui.label(RichText::new(APP_NAME).strong().size(14.5));
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(4.0);
 
-                ui.menu_button(t!("menu_file"), |ui| {
-                    if ui.button(t!("menu_import_folder_shortcut")).clicked() {
-                        self.request_import_folder_dialog();
-                    }
-                    if ui.button(t!("menu_open_photo_shortcut")).clicked() {
-                        self.request_open_file_dialog();
-                    }
-                    if ui.button(t!("menu_open_project_shortcut")).clicked() {
-                        self.request_open_project_dialog();
-                    }
-                    ui.separator();
-                    let can_save = self.current_image.is_some() || self.current_path.is_some();
-                    if ui
-                        .add_enabled(
-                            can_save,
-                            egui::Button::new(t!("menu_save_project_shortcut")),
-                        )
-                        .clicked()
-                    {
-                        self.save_project();
-                    }
-                    if ui
-                        .add_enabled(
-                            can_save,
-                            egui::Button::new(t!("menu_save_project_as_shortcut")),
-                        )
-                        .clicked()
-                    {
-                        self.save_project_as_dialog();
-                    }
-                    let can_close = self.current_image.is_some() || self.current_path.is_some();
-                    if ui
-                        .add_enabled(
-                            can_close,
-                            egui::Button::new(t!("menu_close_project_shortcut")),
-                        )
-                        .clicked()
-                    {
-                        self.request_close_project();
-                    }
-                    ui.separator();
-                    let can_export = (self.current_view == AppView::Develop
-                        && self.current_image.is_some())
-                        || (self.current_view == AppView::Library
-                            && !self.library_state.photos.is_empty());
-                    if ui
-                        .add_enabled(can_export, egui::Button::new(t!("menu_export_shortcut")))
-                        .clicked()
-                    {
-                        self.open_export_dialog();
-                    }
-                    ui.separator();
-                    if ui.button(t!("menu_quit")).clicked() {
-                        self.request_exit(ui.ctx());
-                    }
+                MenuBar::new().ui(ui, |ui| {
+                    ui.menu_button(t!("menu_file"), |ui| {
+                        if ui.button(t!("menu_import_folder_shortcut")).clicked() {
+                            self.request_import_folder_dialog();
+                        }
+                        if ui.button(t!("menu_open_photo_shortcut")).clicked() {
+                            self.request_open_file_dialog();
+                        }
+                        if ui.button(t!("menu_open_project_shortcut")).clicked() {
+                            self.request_open_project_dialog();
+                        }
+                        ui.separator();
+                        let can_save = self.current_image.is_some() || self.current_path.is_some();
+                        if ui
+                            .add_enabled(
+                                can_save,
+                                egui::Button::new(t!("menu_save_project_shortcut")),
+                            )
+                            .clicked()
+                        {
+                            self.save_project();
+                        }
+                        if ui
+                            .add_enabled(
+                                can_save,
+                                egui::Button::new(t!("menu_save_project_as_shortcut")),
+                            )
+                            .clicked()
+                        {
+                            self.save_project_as_dialog();
+                        }
+                        let can_close = self.current_image.is_some() || self.current_path.is_some();
+                        if ui
+                            .add_enabled(
+                                can_close,
+                                egui::Button::new(t!("menu_close_project_shortcut")),
+                            )
+                            .clicked()
+                        {
+                            self.request_close_project();
+                        }
+                        ui.separator();
+                        let can_export = (self.current_view == AppView::Develop
+                            && self.current_image.is_some())
+                            || (self.current_view == AppView::Library
+                                && !self.library_state.photos.is_empty());
+                        if ui
+                            .add_enabled(can_export, egui::Button::new(t!("menu_export_shortcut")))
+                            .clicked()
+                        {
+                            self.open_export_dialog();
+                        }
+                        ui.separator();
+                        if ui.button(t!("menu_quit")).clicked() {
+                            self.request_exit(ui.ctx());
+                        }
+                    });
+
+                    ui.menu_button(t!("menu_edit"), |ui| {
+                        let can_undo = self.history_index > 0 && !self.history.is_empty();
+                        if ui
+                            .add_enabled(can_undo, egui::Button::new(t!("menu_undo")))
+                            .clicked()
+                        {
+                            self.undo(frame);
+                            ui.close();
+                        }
+                        let can_redo = self.history_index + 1 < self.history.len();
+                        if ui
+                            .add_enabled(can_redo, egui::Button::new(t!("menu_redo")))
+                            .clicked()
+                        {
+                            self.redo(frame);
+                            ui.close();
+                        }
+                        ui.separator();
+                        let can_copy = self.current_image.is_some();
+                        if ui
+                            .add_enabled(
+                                can_copy,
+                                egui::Button::new(format!("{} (Ctrl+C)", t!("menu_copy_settings"))),
+                            )
+                            .clicked()
+                        {
+                            self.show_copy_dialog = true;
+                            self.copy_dialog_mask = PresetGroupMask::default();
+                            ui.close();
+                        }
+                        let can_paste =
+                            self.copied_settings.is_some() && self.current_image.is_some();
+                        if ui
+                            .add_enabled(
+                                can_paste,
+                                egui::Button::new(format!(
+                                    "{} (Ctrl+V)",
+                                    t!("menu_paste_settings")
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.paste_settings(frame);
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button(t!("menu_settings")).clicked() {
+                            self.show_settings = true;
+                            ui.close();
+                        }
+                    });
+
+                    ui.menu_button(t!("menu_library"), |ui| {
+                        if ui.button(t!("menu_import_folder_shortcut")).clicked() {
+                            self.import_folder_dialog();
+                        }
+                        ui.separator();
+                        if ui
+                            .button(t!("menu_rebuild_thumbnails"))
+                            .on_hover_text(t!("menu_rebuild_thumbnails_tooltip"))
+                            .clicked()
+                        {
+                            self.rebuild_thumbnails();
+                        }
+                    });
+
+                    ui.menu_button(t!("menu_view"), |ui| {
+                        ui.selectable_value(
+                            &mut self.current_view,
+                            AppView::Library,
+                            t!("menu_view_library"),
+                        );
+                        ui.selectable_value(
+                            &mut self.current_view,
+                            AppView::Develop,
+                            t!("menu_view_develop"),
+                        );
+                        ui.separator();
+                        ui.checkbox(&mut self.show_develop_panel, t!("menu_develop_panel"));
+                        ui.checkbox(&mut self.show_history_panel, t!("menu_history_panel"));
+                    });
+
+                    ui.menu_button(t!("menu_help"), |ui| {
+                        if ui.button(t!("menu_about")).clicked() {
+                            self.show_about = true;
+                        }
+                    });
                 });
 
-                ui.menu_button(t!("menu_edit"), |ui| {
-                    let can_undo = self.history_index > 0 && !self.history.is_empty();
-                    if ui
-                        .add_enabled(can_undo, egui::Button::new(t!("menu_undo")))
-                        .clicked()
-                    {
-                        self.undo(frame);
-                        ui.close();
-                    }
-                    let can_redo = self.history_index + 1 < self.history.len();
-                    if ui
-                        .add_enabled(can_redo, egui::Button::new(t!("menu_redo")))
-                        .clicked()
-                    {
-                        self.redo(frame);
-                        ui.close();
-                    }
-                    ui.separator();
-                    let can_copy = self.current_image.is_some();
-                    if ui
-                        .add_enabled(
-                            can_copy,
-                            egui::Button::new(format!("{} (Ctrl+C)", t!("menu_copy_settings"))),
-                        )
-                        .clicked()
-                    {
-                        self.show_copy_dialog = true;
-                        self.copy_dialog_mask = PresetGroupMask::default();
-                        ui.close();
-                    }
-                    let can_paste = self.copied_settings.is_some() && self.current_image.is_some();
-                    if ui
-                        .add_enabled(
-                            can_paste,
-                            egui::Button::new(format!("{} (Ctrl+V)", t!("menu_paste_settings"))),
-                        )
-                        .clicked()
-                    {
-                        self.paste_settings(frame);
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button(t!("menu_settings")).clicked() {
-                        self.show_settings = true;
-                        ui.close();
-                    }
-                });
+                // Right: Mode Switcher (Library / Develop) Segmented Pill Control
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    let is_lib = self.current_view == AppView::Library;
+                    let is_dev = self.current_view == AppView::Develop;
 
-                ui.menu_button(t!("menu_library"), |ui| {
-                    if ui.button(t!("menu_import_folder_shortcut")).clicked() {
-                        self.import_folder_dialog();
-                    }
-                    ui.separator();
-                    if ui
-                        .button(t!("menu_rebuild_thumbnails"))
-                        .on_hover_text(t!("menu_rebuild_thumbnails_tooltip"))
-                        .clicked()
-                    {
-                        self.rebuild_thumbnails();
-                    }
-                });
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(17, 18, 23))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(38, 41, 52)))
+                        .corner_radius(6.0)
+                        .inner_margin(egui::Margin::symmetric(2, 2))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
 
-                ui.menu_button(t!("menu_view"), |ui| {
-                    ui.selectable_value(
-                        &mut self.current_view,
-                        AppView::Library,
-                        t!("menu_view_library"),
-                    );
-                    ui.selectable_value(
-                        &mut self.current_view,
-                        AppView::Develop,
-                        t!("menu_view_develop"),
-                    );
-                    ui.separator();
-                    ui.checkbox(&mut self.show_develop_panel, t!("menu_develop_panel"));
-                    ui.checkbox(&mut self.show_history_panel, t!("menu_history_panel"));
-                });
+                                let (dev_bg, dev_stroke, dev_fg) = if is_dev {
+                                    (
+                                        Color32::from_rgb(46, 56, 78),
+                                        Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                        Color32::from_rgb(250, 252, 255),
+                                    )
+                                } else {
+                                    (
+                                        Color32::TRANSPARENT,
+                                        Stroke::NONE,
+                                        Color32::from_rgb(160, 166, 178),
+                                    )
+                                };
+                                let dev_btn = egui::Button::new(
+                                    RichText::new(format!("{} (D)", t!("view_develop")))
+                                        .size(11.5)
+                                        .color(dev_fg)
+                                        .strong(),
+                                )
+                                .fill(dev_bg)
+                                .stroke(dev_stroke)
+                                .corner_radius(4.0);
+                                if ui.add(dev_btn).clicked() {
+                                    self.current_view = AppView::Develop;
+                                }
 
-                ui.menu_button(t!("menu_help"), |ui| {
-                    if ui.button(t!("menu_about")).clicked() {
-                        self.show_about = true;
-                    }
+                                let (lib_bg, lib_stroke, lib_fg) = if is_lib {
+                                    (
+                                        Color32::from_rgb(46, 56, 78),
+                                        Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                        Color32::from_rgb(250, 252, 255),
+                                    )
+                                } else {
+                                    (
+                                        Color32::TRANSPARENT,
+                                        Stroke::NONE,
+                                        Color32::from_rgb(160, 166, 178),
+                                    )
+                                };
+                                let lib_btn = egui::Button::new(
+                                    RichText::new(format!("{} (G)", t!("view_library")))
+                                        .size(11.5)
+                                        .color(lib_fg)
+                                        .strong(),
+                                )
+                                .fill(lib_bg)
+                                .stroke(lib_stroke)
+                                .corner_radius(4.0);
+                                if ui.add(lib_btn).clicked() {
+                                    self.current_view = AppView::Library;
+                                }
+                            });
+                        });
                 });
             });
         });
@@ -2130,39 +2217,123 @@ impl eframe::App for BeamApp {
                 if self.show_history_panel && self.current_image.is_some() {
                     Panel::left("develop_history_panel")
                         .resizable(true)
-                        .default_size(240.0)
-                        .min_size(180.0)
+                        .default_size(250.0)
+                        .min_size(200.0)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(
-                                    &mut self.left_panel_tab,
-                                    LeftPanelTab::Presets,
-                                    t!("develop_presets"),
-                                );
-                                ui.selectable_value(
-                                    &mut self.left_panel_tab,
-                                    LeftPanelTab::History,
-                                    t!("develop_history"),
-                                );
-                            });
+                            egui::Frame::new()
+                                .fill(Color32::from_rgb(17, 18, 23))
+                                .stroke(Stroke::new(1.0, Color32::from_rgb(38, 41, 52)))
+                                .corner_radius(6.0)
+                                .inner_margin(egui::Margin::symmetric(2, 2))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        let tab_w = ((ui.available_width() - 2.0) / 2.0).max(10.0);
+                                        let is_presets =
+                                            self.left_panel_tab == LeftPanelTab::Presets;
+                                        let (p_bg, p_stroke, p_fg) = if is_presets {
+                                            (
+                                                Color32::from_rgb(46, 56, 78),
+                                                Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                                Color32::from_rgb(250, 252, 255),
+                                            )
+                                        } else {
+                                            (
+                                                Color32::TRANSPARENT,
+                                                Stroke::NONE,
+                                                Color32::from_rgb(160, 166, 178),
+                                            )
+                                        };
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new(t!("develop_presets"))
+                                                        .size(12.0)
+                                                        .color(p_fg)
+                                                        .strong(),
+                                                )
+                                                .fill(p_bg)
+                                                .stroke(p_stroke)
+                                                .corner_radius(5.0)
+                                                .min_size(Vec2::new(tab_w, 24.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.left_panel_tab = LeftPanelTab::Presets;
+                                        }
+
+                                        let is_hist = self.left_panel_tab == LeftPanelTab::History;
+                                        let (h_bg, h_stroke, h_fg) = if is_hist {
+                                            (
+                                                Color32::from_rgb(46, 56, 78),
+                                                Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                                Color32::from_rgb(250, 252, 255),
+                                            )
+                                        } else {
+                                            (
+                                                Color32::TRANSPARENT,
+                                                Stroke::NONE,
+                                                Color32::from_rgb(160, 166, 178),
+                                            )
+                                        };
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new(t!("develop_history"))
+                                                        .size(12.0)
+                                                        .color(h_fg)
+                                                        .strong(),
+                                                )
+                                                .fill(h_bg)
+                                                .stroke(h_stroke)
+                                                .corner_radius(5.0)
+                                                .min_size(Vec2::new(tab_w, 24.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.left_panel_tab = LeftPanelTab::History;
+                                        }
+                                    });
+                                });
+                            ui.add_space(4.0);
                             ui.separator();
+                            ui.add_space(4.0);
 
                             match self.left_panel_tab {
                                 LeftPanelTab::Presets => {
                                     ui.horizontal(|ui| {
-                                        if ui
-                                            .button(format!("+ {}", t!("preset_save_btn")))
-                                            .clicked()
-                                        {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let btn_w = ((ui.available_width() - 4.0) / 2.0).max(10.0);
+                                        let save_btn = egui::Button::new(
+                                            RichText::new(format!("+ {}", t!("preset_save_btn")))
+                                                .size(11.5)
+                                                .color(Color32::from_rgb(230, 240, 255))
+                                                .strong(),
+                                        )
+                                        .fill(Color32::from_rgb(36, 54, 86))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(62, 92, 148)))
+                                        .corner_radius(5.0)
+                                        .min_size(Vec2::new(btn_w, 26.0));
+                                        if ui.add(save_btn).clicked() {
                                             self.show_new_preset_dialog = true;
                                             self.new_preset_name = String::new();
                                             self.new_preset_mask = PresetGroupMask::default();
                                         }
-                                        if ui.button(t!("preset_import_btn")).clicked() {
+
+                                        let import_btn = egui::Button::new(
+                                            RichText::new(t!("preset_import_btn"))
+                                                .size(11.5)
+                                                .color(Color32::from_rgb(200, 208, 222)),
+                                        )
+                                        .fill(Color32::from_rgb(26, 28, 36))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(46, 50, 64)))
+                                        .corner_radius(5.0)
+                                        .min_size(Vec2::new(btn_w, 26.0));
+                                        if ui.add(import_btn).clicked() {
                                             self.import_preset_dialog();
                                         }
                                     });
-                                    ui.add_space(4.0);
+                                    ui.add_space(6.0);
 
                                     let mut apply_preset = None;
                                     let mut delete_preset_id = None;
@@ -2173,8 +2344,15 @@ impl eframe::App for BeamApp {
                                         ui,
                                         |ui| {
                                             // 1. Built-in Category
-                                            ui.strong(t!("preset_builtin_category"));
-                                            ui.add_space(2.0);
+                                            ui.label(
+                                                RichText::new(
+                                                    t!("preset_builtin_category").to_uppercase(),
+                                                )
+                                                .size(10.5)
+                                                .strong()
+                                                .color(Color32::from_rgb(130, 136, 150)),
+                                            );
+                                            ui.add_space(3.0);
                                             for preset in &built_in_presets() {
                                                 let localized_name = match preset.name.as_str() {
                                                     "preset_name_neutral" => {
@@ -2227,13 +2405,21 @@ impl eframe::App for BeamApp {
                                                     })
                                                     .unwrap_or_default();
 
-                                                let resp = ui
-                                                    .selectable_label(false, &localized_name)
-                                                    .on_hover_text(format!(
-                                                        "{}\n\n{}",
-                                                        desc,
-                                                        t!("preset_hover_preview")
-                                                    ));
+                                                let p_btn = egui::Button::new(
+                                                    RichText::new(format!("▸  {localized_name}"))
+                                                        .size(11.5)
+                                                        .color(Color32::from_rgb(205, 212, 225)),
+                                                )
+                                                .fill(Color32::TRANSPARENT)
+                                                .stroke(Stroke::NONE)
+                                                .corner_radius(4.0)
+                                                .min_size(Vec2::new(ui.available_width(), 24.0));
+
+                                                let resp = ui.add(p_btn).on_hover_text(format!(
+                                                    "{}\n\n{}",
+                                                    desc,
+                                                    t!("preset_hover_preview")
+                                                ));
                                                 if resp.hovered() {
                                                     current_hovered_preset = Some(preset.clone());
                                                 }
@@ -2245,24 +2431,49 @@ impl eframe::App for BeamApp {
 
                                             ui.add_space(8.0);
                                             ui.separator();
+                                            ui.add_space(4.0);
 
                                             // 2. User Presets Category
-                                            ui.strong(t!("preset_user_category"));
-                                            ui.add_space(2.0);
+                                            ui.label(
+                                                RichText::new(
+                                                    t!("preset_user_category").to_uppercase(),
+                                                )
+                                                .size(10.5)
+                                                .strong()
+                                                .color(Color32::from_rgb(130, 136, 150)),
+                                            );
+                                            ui.add_space(3.0);
                                             if self.user_presets.is_empty() {
                                                 ui.label(
                                                     RichText::new(t!("preset_empty_user"))
                                                         .weak()
-                                                        .small(),
+                                                        .size(11.0),
                                                 );
                                             } else {
                                                 for preset in &self.user_presets {
                                                     ui.horizontal(|ui| {
-                                                        let resp = ui
-                                                            .selectable_label(false, &preset.name)
-                                                            .on_hover_text(t!(
-                                                                "preset_hover_preview"
-                                                            ));
+                                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                                        let row_w =
+                                                            (ui.available_width() - 52.0).max(10.0);
+                                                        let p_btn =
+                                                            egui::Button::new(
+                                                                RichText::new(format!(
+                                                                    "★  {}",
+                                                                    preset.name
+                                                                ))
+                                                                .size(11.5)
+                                                                .color(Color32::from_rgb(
+                                                                    215, 222, 235,
+                                                                )),
+                                                            )
+                                                            .fill(Color32::TRANSPARENT)
+                                                            .stroke(Stroke::NONE)
+                                                            .corner_radius(4.0)
+                                                            .min_size(Vec2::new(row_w, 24.0));
+
+                                                        let resp = ui.add(p_btn).on_hover_text(t!(
+                                                            "preset_hover_preview"
+                                                        ));
                                                         if resp.hovered() {
                                                             current_hovered_preset =
                                                                 Some(preset.clone());
@@ -2274,33 +2485,44 @@ impl eframe::App for BeamApp {
                                                             ));
                                                         }
 
-                                                        ui.with_layout(
-                                                            egui::Layout::right_to_left(
-                                                                egui::Align::Center,
+                                                        let exp_btn = egui::Button::new(
+                                                            RichText::new("↗").size(11.0),
+                                                        )
+                                                        .fill(Color32::from_rgb(24, 26, 34))
+                                                        .stroke(Stroke::new(
+                                                            1.0,
+                                                            Color32::from_rgb(42, 46, 58),
+                                                        ))
+                                                        .corner_radius(3.0)
+                                                        .min_size(Vec2::new(22.0, 22.0));
+                                                        if ui
+                                                            .add(exp_btn)
+                                                            .on_hover_text(t!("preset_export_btn"))
+                                                            .clicked()
+                                                        {
+                                                            export_preset = Some(preset.clone());
+                                                        }
+
+                                                        let del_btn = egui::Button::new(
+                                                            RichText::new("✕").size(11.0).color(
+                                                                Color32::from_rgb(220, 100, 100),
                                                             ),
-                                                            |ui| {
-                                                                if ui
-                                                                    .small_button("✕")
-                                                                    .on_hover_text(t!(
-                                                                        "preset_delete_btn"
-                                                                    ))
-                                                                    .clicked()
-                                                                {
-                                                                    delete_preset_id =
-                                                                        Some(preset.id.clone());
-                                                                }
-                                                                if ui
-                                                                    .small_button("↗")
-                                                                    .on_hover_text(t!(
-                                                                        "preset_export_btn"
-                                                                    ))
-                                                                    .clicked()
-                                                                {
-                                                                    export_preset =
-                                                                        Some(preset.clone());
-                                                                }
-                                                            },
-                                                        );
+                                                        )
+                                                        .fill(Color32::from_rgb(28, 20, 20))
+                                                        .stroke(Stroke::new(
+                                                            1.0,
+                                                            Color32::from_rgb(58, 30, 30),
+                                                        ))
+                                                        .corner_radius(3.0)
+                                                        .min_size(Vec2::new(22.0, 22.0));
+                                                        if ui
+                                                            .add(del_btn)
+                                                            .on_hover_text(t!("preset_delete_btn"))
+                                                            .clicked()
+                                                        {
+                                                            delete_preset_id =
+                                                                Some(preset.id.clone());
+                                                        }
                                                     });
                                                 }
                                             }
@@ -2458,13 +2680,65 @@ impl eframe::App for BeamApp {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false; 2])
                                 .show(ui, |ui| {
-                                    ui.heading(t!("view_develop"));
+                                    ui.heading(
+                                        RichText::new(t!("view_develop"))
+                                            .strong()
+                                            .size(15.0)
+                                            .color(Color32::from_rgb(245, 247, 252)),
+                                    );
+                                    ui.add_space(4.0);
                                     ui.separator();
+                                    ui.add_space(6.0);
+
+                                    let card_frame = egui::Frame::new()
+                                        .fill(Color32::from_rgb(26, 28, 34))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(42, 45, 54)))
+                                        .corner_radius(8.0)
+                                        .inner_margin(egui::Margin::symmetric(12, 10));
+
+                                    let draw_slider_row =
+                                        |ui: &mut egui::Ui,
+                                         label: &str,
+                                         slider: Slider,
+                                         reset_tip: &str|
+                                         -> (egui::Response, bool) {
+                                            let mut changed_resp = None;
+                                            let mut reset_clicked = false;
+                                            ui.horizontal(|ui| {
+                                                ui.allocate_ui_with_layout(
+                                                    Vec2::new(76.0, ui.spacing().interact_size.y),
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            RichText::new(label)
+                                                                .size(12.0)
+                                                                .color(Color32::from_rgb(
+                                                                    185, 190, 202,
+                                                                )),
+                                                        );
+                                                    },
+                                                );
+                                                let slider_w =
+                                                    (ui.available_width() - 30.0).max(60.0);
+                                                let resp = ui.add_sized(
+                                                    [slider_w, ui.spacing().interact_size.y],
+                                                    slider,
+                                                );
+                                                changed_resp = Some(resp);
+                                                if ui.button("↺").on_hover_text(reset_tip).clicked()
+                                                {
+                                                    reset_clicked = true;
+                                                }
+                                            });
+                                            (changed_resp.unwrap(), reset_clicked)
+                                        };
 
                                     // 1. Histogram Widget
                                     let mut clipping_changed = false;
                                     if let Some(hist_data) = &self.histogram_data {
-                                        ui.group(|ui| {
+                                        card_frame.show(ui, |ui| {
                                             if show_histogram_with_clipping(
                                                 ui,
                                                 hist_data,
@@ -2475,7 +2749,7 @@ impl eframe::App for BeamApp {
                                                 clipping_changed = true;
                                             }
                                         });
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
                                     }
                                     if clipping_changed {
                                         self.re_render_edits(frame);
@@ -2483,9 +2757,14 @@ impl eframe::App for BeamApp {
                                     }
 
                                     // 2. Crop & Straighten Section
-                                    ui.group(|ui| {
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(t!("develop_crop_tool"));
+                                            ui.label(
+                                                RichText::new(t!("develop_crop_tool"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -2498,7 +2777,8 @@ impl eframe::App for BeamApp {
                                                         self.edit_stack.crop = Default::default();
                                                         edits_changed = true;
                                                         immediate_action = true;
-                                                        action_label = Some(t!("history_crop_reset"));
+                                                        action_label =
+                                                            Some(t!("history_crop_reset"));
                                                     }
 
                                                     // Toggle Crop Tool button
@@ -2507,11 +2787,45 @@ impl eframe::App for BeamApp {
                                                     } else {
                                                         t!("develop_crop_btn")
                                                     };
-                                                    let resp = ui.selectable_label(self.crop_mode_active, btn_text);
-                                                    if resp.clicked() {
-                                                        self.crop_mode_active = !self.crop_mode_active;
+                                                    let (btn_bg, btn_stroke, btn_fg) =
                                                         if self.crop_mode_active {
-                                                            self.before_after_mode = BeforeAfterMode::Normal;
+                                                            (
+                                                                Color32::from_rgb(46, 75, 135),
+                                                                Stroke::new(
+                                                                    1.0,
+                                                                    Color32::from_rgb(
+                                                                        70, 110, 195,
+                                                                    ),
+                                                                ),
+                                                                Color32::from_rgb(250, 252, 255),
+                                                            )
+                                                        } else {
+                                                            (
+                                                                Color32::from_rgb(32, 35, 43),
+                                                                Stroke::new(
+                                                                    1.0,
+                                                                    Color32::from_rgb(48, 52, 64),
+                                                                ),
+                                                                Color32::from_rgb(200, 205, 215),
+                                                            )
+                                                        };
+                                                    let resp = ui.add(
+                                                        egui::Button::new(
+                                                            RichText::new(btn_text)
+                                                                .size(11.5)
+                                                                .color(btn_fg)
+                                                                .strong(),
+                                                        )
+                                                        .fill(btn_bg)
+                                                        .stroke(btn_stroke)
+                                                        .corner_radius(5.0),
+                                                    );
+                                                    if resp.clicked() {
+                                                        self.crop_mode_active =
+                                                            !self.crop_mode_active;
+                                                        if self.crop_mode_active {
+                                                            self.before_after_mode =
+                                                                BeforeAfterMode::Normal;
                                                         }
                                                         edits_changed = true;
                                                         immediate_action = false;
@@ -2520,47 +2834,104 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         // Aspect Preset Selector
                                         ui.horizontal(|ui| {
-                                            ui.label(t!("develop_crop_aspect"));
+                                            ui.allocate_ui_with_layout(
+                                                Vec2::new(76.0, ui.spacing().interact_size.y),
+                                                egui::Layout::left_to_right(
+                                                    egui::Align::Center,
+                                                ),
+                                                |ui| {
+                                                    ui.label(
+                                                        RichText::new(t!("develop_crop_aspect"))
+                                                            .size(12.0)
+                                                            .color(Color32::from_rgb(
+                                                                185, 190, 202,
+                                                            )),
+                                                    );
+                                                },
+                                            );
                                             let current_preset = self.edit_stack.crop.preset;
                                             let mut selected_preset = current_preset;
                                             egui::ComboBox::from_id_salt("crop_aspect_combo")
+                                                .width(ui.available_width() - 4.0)
                                                 .selected_text(match current_preset {
-                                                    CropAspectPreset::Original => t!("develop_crop_aspect_original"),
-                                                    CropAspectPreset::Square => t!("develop_crop_aspect_1_1"),
-                                                    CropAspectPreset::Ratio4x5 => t!("develop_crop_aspect_4_5"),
-                                                    CropAspectPreset::Ratio3x2 => t!("develop_crop_aspect_3_2"),
-                                                    CropAspectPreset::Ratio16x9 => t!("develop_crop_aspect_16_9"),
-                                                    CropAspectPreset::Free => t!("develop_crop_aspect_free"),
+                                                    CropAspectPreset::Original => {
+                                                        t!("develop_crop_aspect_original")
+                                                    }
+                                                    CropAspectPreset::Square => {
+                                                        t!("develop_crop_aspect_1_1")
+                                                    }
+                                                    CropAspectPreset::Ratio4x5 => {
+                                                        t!("develop_crop_aspect_4_5")
+                                                    }
+                                                    CropAspectPreset::Ratio3x2 => {
+                                                        t!("develop_crop_aspect_3_2")
+                                                    }
+                                                    CropAspectPreset::Ratio16x9 => {
+                                                        t!("develop_crop_aspect_16_9")
+                                                    }
+                                                    CropAspectPreset::Free => {
+                                                        t!("develop_crop_aspect_free")
+                                                    }
                                                 })
                                                 .show_ui(ui, |ui| {
-                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Original, t!("develop_crop_aspect_original"));
-                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Square, t!("develop_crop_aspect_1_1"));
-                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Ratio4x5, t!("develop_crop_aspect_4_5"));
-                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Ratio3x2, t!("develop_crop_aspect_3_2"));
-                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Ratio16x9, t!("develop_crop_aspect_16_9"));
-                                                    ui.selectable_value(&mut selected_preset, CropAspectPreset::Free, t!("develop_crop_aspect_free"));
+                                                    ui.selectable_value(
+                                                        &mut selected_preset,
+                                                        CropAspectPreset::Original,
+                                                        t!("develop_crop_aspect_original"),
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut selected_preset,
+                                                        CropAspectPreset::Square,
+                                                        t!("develop_crop_aspect_1_1"),
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut selected_preset,
+                                                        CropAspectPreset::Ratio4x5,
+                                                        t!("develop_crop_aspect_4_5"),
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut selected_preset,
+                                                        CropAspectPreset::Ratio3x2,
+                                                        t!("develop_crop_aspect_3_2"),
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut selected_preset,
+                                                        CropAspectPreset::Ratio16x9,
+                                                        t!("develop_crop_aspect_16_9"),
+                                                    );
+                                                    ui.selectable_value(
+                                                        &mut selected_preset,
+                                                        CropAspectPreset::Free,
+                                                        t!("develop_crop_aspect_free"),
+                                                    );
                                                 });
 
                                             if selected_preset != current_preset {
                                                 self.edit_stack.crop.preset = selected_preset;
                                                 if let Some(img) = &self.current_image {
-                                                    let orig_aspect = if self.edit_stack.crop.rotation == 90
-                                                        || self.edit_stack.crop.rotation == 270
-                                                    {
-                                                        img.height as f32 / img.width as f32
-                                                    } else {
-                                                        img.width as f32 / img.height as f32
-                                                    };
-                                                    let (x, y, w, h) = create_centered_crop_rect(orig_aspect, selected_preset);
+                                                    let orig_aspect =
+                                                        if self.edit_stack.crop.rotation == 90
+                                                            || self.edit_stack.crop.rotation == 270
+                                                        {
+                                                            img.height as f32 / img.width as f32
+                                                        } else {
+                                                            img.width as f32 / img.height as f32
+                                                        };
+                                                    let (x, y, w, h) = create_centered_crop_rect(
+                                                        orig_aspect,
+                                                        selected_preset,
+                                                    );
                                                     self.edit_stack.crop.x = x;
                                                     self.edit_stack.crop.y = y;
                                                     self.edit_stack.crop.width = w;
                                                     self.edit_stack.crop.height = h;
-                                                    if selected_preset != CropAspectPreset::Free && (w < 0.999 || h < 0.999) {
+                                                    if selected_preset != CropAspectPreset::Free
+                                                        && (w < 0.999 || h < 0.999)
+                                                    {
                                                         self.edit_stack.crop.enabled = true;
                                                     }
                                                 }
@@ -2573,85 +2944,125 @@ impl eframe::App for BeamApp {
                                             }
                                         });
 
+                                        ui.add_space(4.0);
+
                                         // Rotate and Flip Buttons
                                         ui.horizontal(|ui| {
-                                            if ui.button("↶ 90°").on_hover_text(t!("develop_crop_rotate_ccw")).clicked() {
-                                                self.edit_stack.crop.rotation = (self.edit_stack.crop.rotation + 270) % 360;
+                                            if ui
+                                                .button("↶ 90°")
+                                                .on_hover_text(t!("develop_crop_rotate_ccw"))
+                                                .clicked()
+                                            {
+                                                self.edit_stack.crop.rotation =
+                                                    (self.edit_stack.crop.rotation + 270) % 360;
                                                 edits_changed = true;
                                                 immediate_action = true;
                                                 action_label = Some(t!(
                                                     "history_crop_rotate",
-                                                    "angle" => format!("{}°", self.edit_stack.crop.rotation)
+                                                    "angle" => {
+                                                        format!("{}°", self.edit_stack.crop.rotation)
+                                                    }
                                                 ));
                                             }
-                                            if ui.button("↷ 90°").on_hover_text(t!("develop_crop_rotate_cw")).clicked() {
-                                                self.edit_stack.crop.rotation = (self.edit_stack.crop.rotation + 90) % 360;
+                                            if ui
+                                                .button("↷ 90°")
+                                                .on_hover_text(t!("develop_crop_rotate_cw"))
+                                                .clicked()
+                                            {
+                                                self.edit_stack.crop.rotation =
+                                                    (self.edit_stack.crop.rotation + 90) % 360;
                                                 edits_changed = true;
                                                 immediate_action = true;
                                                 action_label = Some(t!(
                                                     "history_crop_rotate",
-                                                    "angle" => format!("{}°", self.edit_stack.crop.rotation)
+                                                    "angle" => {
+                                                        format!("{}°", self.edit_stack.crop.rotation)
+                                                    }
                                                 ));
                                             }
-                                            if ui.button("⇄ Flip H").on_hover_text(t!("develop_crop_flip_h")).clicked() {
-                                                self.edit_stack.crop.flip_h = !self.edit_stack.crop.flip_h;
+                                            if ui
+                                                .button("⇄ Flip H")
+                                                .on_hover_text(t!("develop_crop_flip_h"))
+                                                .clicked()
+                                            {
+                                                self.edit_stack.crop.flip_h =
+                                                    !self.edit_stack.crop.flip_h;
                                                 edits_changed = true;
                                                 immediate_action = true;
                                                 action_label = Some(t!("history_crop_flip_h"));
                                             }
-                                            if ui.button("⇅ Flip V").on_hover_text(t!("develop_crop_flip_v")).clicked() {
-                                                self.edit_stack.crop.flip_v = !self.edit_stack.crop.flip_v;
+                                            if ui
+                                                .button("⇅ Flip V")
+                                                .on_hover_text(t!("develop_crop_flip_v"))
+                                                .clicked()
+                                            {
+                                                self.edit_stack.crop.flip_v =
+                                                    !self.edit_stack.crop.flip_v;
                                                 edits_changed = true;
                                                 immediate_action = true;
                                                 action_label = Some(t!("history_crop_flip_v"));
                                             }
                                         });
 
+                                        ui.add_space(4.0);
+
                                         // Straighten slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_crop_straighten"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self.edit_stack.crop.straighten,
-                                                    -45.0..=45.0,
-                                                )
-                                                .suffix("°")
-                                                .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_crop_straighten",
-                                                    "val" => format!("{:+0.1}°", self.edit_stack.crop.straighten)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_crop_straighten_reset"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.crop.straighten = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_crop_straighten")
-                                                ));
-                                            }
-                                        });
+                                        let tip_straighten_reset =
+                                            t!("develop_crop_straighten_reset");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_crop_straighten"),
+                                            Slider::new(
+                                                &mut self.edit_stack.crop.straighten,
+                                                -45.0..=45.0,
+                                            )
+                                            .suffix("°")
+                                            .show_value(true),
+                                            tip_straighten_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_crop_straighten",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.1}°",
+                                                        self.edit_stack.crop.straighten
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.crop.straighten = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_crop_straighten")
+                                            ));
+                                        }
 
                                         if self.crop_mode_active {
                                             ui.add_space(2.0);
-                                            ui.label(RichText::new(t!("develop_crop_instruction")).weak().small());
+                                            ui.label(
+                                                RichText::new(t!("develop_crop_instruction"))
+                                                    .weak()
+                                                    .small(),
+                                            );
                                         }
                                     });
 
                                     ui.add_space(6.0);
 
                                     // 3. White Balance Section
-                                    ui.group(|ui| {
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(t!("develop_white_balance"));
+                                            ui.label(
+                                                RichText::new(t!("develop_white_balance"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -2689,79 +3100,88 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         // Temperature slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_temp_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self.edit_stack.white_balance.temperature,
-                                                    -100.0..=100.0,
-                                                )
-                                                .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_temperature",
-                                                    "val" => format!("{:+0.0}", self.edit_stack.white_balance.temperature)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_temp"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.white_balance.temperature = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_wb_temp")
-                                                ));
-                                            }
-                                        });
+                                        let tip_temp_reset = t!("develop_reset_temp");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_temp_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.white_balance.temperature,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_temp_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_temperature",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.white_balance.temperature
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.white_balance.temperature = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_wb_temp")
+                                            ));
+                                        }
 
                                         // Tint slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_tint_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self.edit_stack.white_balance.tint,
-                                                    -100.0..=100.0,
-                                                )
-                                                .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_tint",
-                                                    "val" => format!("{:+0.0}", self.edit_stack.white_balance.tint)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_tint"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.white_balance.tint = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_wb_tint")
-                                                ));
-                                            }
-                                        });
+                                        let tip_tint_reset = t!("develop_reset_tint");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_tint_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.white_balance.tint,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_tint_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_tint",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.white_balance.tint
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.white_balance.tint = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_wb_tint")
+                                            ));
+                                        }
                                     });
 
                                     ui.add_space(6.0);
 
-                                    // 3. Exposure Section
-                                    ui.group(|ui| {
+                                    // 4. Exposure Section
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(t!("develop_exposure"));
+                                            ui.label(
+                                                RichText::new(t!("develop_exposure"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -2796,52 +3216,59 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         // Exposure EV slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_ev_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self.edit_stack.exposure.ev,
-                                                    -5.00..=5.00,
-                                                )
-                                                .step_by(0.05)
-                                                .custom_formatter(|v, _| format!("{:+.2} EV", v)),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_exposure",
-                                                    "val" => format!("{:+0.2}", self.edit_stack.exposure.ev)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_exposure"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.exposure.ev = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_exposure")
-                                                ));
-                                            }
-                                        });
+                                        let tip_exp_reset = t!("develop_reset_exposure");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_ev_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.exposure.ev,
+                                                -5.00..=5.00,
+                                            )
+                                            .step_by(0.05)
+                                            .custom_formatter(|v, _| format!("{:+.2} EV", v)),
+                                            tip_exp_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_exposure",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.2}",
+                                                        self.edit_stack.exposure.ev
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.exposure.ev = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_exposure")
+                                            ));
+                                        }
                                     });
 
                                     ui.add_space(6.0);
 
-                                    // 4. Highlights & Shadows Section
-                                    ui.group(|ui| {
+                                    // 5. Highlights & Shadows Section
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(format!(
-                                                "{} & {}",
-                                                t!("develop_highlights"),
-                                                t!("develop_shadows")
-                                            ));
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} & {}",
+                                                    t!("develop_highlights"),
+                                                    t!("develop_shadows")
+                                                ))
+                                                .strong()
+                                                .size(13.0)
+                                                .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -2857,11 +3284,13 @@ impl eframe::App for BeamApp {
                                                         immediate_action = true;
                                                         action_label = Some(t!(
                                                             "history_reset_section",
-                                                            "section" => format!(
-                                                                "{} & {}",
-                                                                t!("develop_highlights"),
-                                                                t!("develop_shadows")
-                                                            )
+                                                            "section" => {
+                                                                format!(
+                                                                    "{} & {}",
+                                                                    t!("develop_highlights"),
+                                                                    t!("develop_shadows")
+                                                                )
+                                                            }
                                                         ));
                                                     }
                                                     if ui
@@ -2878,93 +3307,106 @@ impl eframe::App for BeamApp {
                                                         immediate_action = true;
                                                         action_label = Some(t!(
                                                             "history_toggle_section",
-                                                            "section" => format!(
-                                                                "{} & {}",
-                                                                t!("develop_highlights"),
-                                                                t!("develop_shadows")
-                                                            )
+                                                            "section" => {
+                                                                format!(
+                                                                    "{} & {}",
+                                                                    t!("develop_highlights"),
+                                                                    t!("develop_shadows")
+                                                                )
+                                                            }
                                                         ));
                                                     }
                                                 },
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         // Highlights slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_highlights_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self
-                                                        .edit_stack
-                                                        .highlights_shadows
-                                                        .highlights,
-                                                    -100.0..=100.0,
-                                                )
-                                                .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_highlights",
-                                                    "val" => format!("{:+0.0}", self.edit_stack.highlights_shadows.highlights)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_highlights"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.highlights_shadows.highlights = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_highlights")
-                                                ));
-                                            }
-                                        });
+                                        let tip_hl_reset = t!("develop_reset_highlights");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_highlights_slider"),
+                                            Slider::new(
+                                                &mut self
+                                                    .edit_stack
+                                                    .highlights_shadows
+                                                    .highlights,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_hl_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_highlights",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack
+                                                            .highlights_shadows
+                                                            .highlights
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.highlights_shadows.highlights = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_highlights")
+                                            ));
+                                        }
 
                                         // Shadows slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_shadows_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self.edit_stack.highlights_shadows.shadows,
-                                                    -100.0..=100.0,
-                                                )
-                                                .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_shadows",
-                                                    "val" => format!("{:+0.0}", self.edit_stack.highlights_shadows.shadows)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_shadows"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.highlights_shadows.shadows = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_shadows")
-                                                ));
-                                            }
-                                        });
+                                        let tip_sh_reset = t!("develop_reset_shadows");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_shadows_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.highlights_shadows.shadows,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_sh_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_shadows",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.highlights_shadows.shadows
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.highlights_shadows.shadows = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_shadows")
+                                            ));
+                                        }
                                     });
 
                                     ui.add_space(6.0);
 
-                                    // 5. Contrast Section
-                                    ui.group(|ui| {
+                                    // 6. Contrast Section
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(t!("develop_contrast"));
+                                            ui.label(
+                                                RichText::new(t!("develop_contrast"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -2999,47 +3441,54 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         // Contrast factor slider
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_contrast_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(
-                                                    &mut self.edit_stack.contrast.contrast,
-                                                    -100.0..=100.0,
-                                                )
-                                                .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_contrast",
-                                                    "val" => format!("{:+0.0}", self.edit_stack.contrast.contrast)
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_contrast_val"))
-                                                .clicked()
-                                            {
-                                                self.edit_stack.contrast.contrast = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => t!("develop_contrast")
-                                                ));
-                                            }
-                                        });
+                                        let tip_contrast_reset = t!("develop_reset_contrast_val");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_contrast_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.contrast.contrast,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_contrast_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_contrast",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.contrast.contrast
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.contrast.contrast = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_contrast")
+                                            ));
+                                        }
                                     });
 
                                     ui.add_space(6.0);
 
-                                    // 6. Tone Curve Section
-                                    ui.group(|ui| {
+                                    // 7. Tone Curve Section
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(t!("develop_tone_curve"));
+                                            ui.label(
+                                                RichText::new(t!("develop_tone_curve"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -3074,7 +3523,7 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         if show_tone_curve(
                                             ui,
@@ -3084,7 +3533,7 @@ impl eframe::App for BeamApp {
                                             action_label = Some(t!("history_tone_curve"));
                                         }
 
-                                        ui.add_space(2.0);
+                                        ui.add_space(4.0);
                                         ui.label(
                                             RichText::new(t!("develop_curve_instruction"))
                                                 .weak()
@@ -3094,10 +3543,15 @@ impl eframe::App for BeamApp {
 
                                     ui.add_space(6.0);
 
-                                    // 7. HSL / Color Section (8 Color Bands)
-                                    ui.group(|ui| {
+                                    // 8. HSL / Color Section (8 Color Bands)
+                                    card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.strong(t!("develop_hsl"));
+                                            ui.label(
+                                                RichText::new(t!("develop_hsl"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
@@ -3132,7 +3586,7 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         const BAND_KEYS: [&str; 8] = [
                                             "develop_hsl_red",
@@ -3155,22 +3609,47 @@ impl eframe::App for BeamApp {
                                             Color32::from_rgb(230, 80, 180),
                                         ];
 
-                                        // 8 Color Band selector
+                                        // 8 Color Band selector with refined rounded chips
                                         ui.horizontal_wrapped(|ui| {
                                             for (i, (&key, &col)) in
                                                 BAND_KEYS.iter().zip(BAND_COLORS.iter()).enumerate()
                                             {
                                                 let is_selected = self.hsl_selected_band == i;
                                                 let text = RichText::new(format!("● {}", t!(key)))
-                                                    .color(col);
-                                                if ui.selectable_label(is_selected, text).clicked()
+                                                    .color(col)
+                                                    .size(11.0);
+                                                let (bg, stroke) = if is_selected {
+                                                    (
+                                                        Color32::from_rgb(46, 56, 78),
+                                                        Stroke::new(
+                                                            1.0,
+                                                            Color32::from_rgb(70, 92, 138),
+                                                        ),
+                                                    )
+                                                } else {
+                                                    (
+                                                        Color32::from_rgb(22, 23, 28),
+                                                        Stroke::new(
+                                                            1.0,
+                                                            Color32::from_rgb(36, 39, 48),
+                                                        ),
+                                                    )
+                                                };
+                                                if ui
+                                                    .add(
+                                                        egui::Button::new(text)
+                                                            .fill(bg)
+                                                            .stroke(stroke)
+                                                            .corner_radius(10.0),
+                                                    )
+                                                    .clicked()
                                                 {
                                                     self.hsl_selected_band = i;
                                                 }
                                             }
                                         });
 
-                                        ui.add_space(4.0);
+                                        ui.add_space(6.0);
 
                                         let sel = self.hsl_selected_band;
                                         let localized_band_name = t!(BAND_KEYS[sel]);
@@ -3209,105 +3688,100 @@ impl eframe::App for BeamApp {
                                         });
 
                                         // Hue
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_hue_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(&mut band.hue, -100.0..=100.0)
-                                                    .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_hsl_band",
-                                                    "band" => &localized_band_name
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_hue"))
-                                                .clicked()
-                                            {
-                                                band.hue = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_hue"))
-                                                ));
-                                            }
-                                        });
+                                        let tip_hue_reset = t!("develop_reset_hue");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_hue_slider"),
+                                            Slider::new(&mut band.hue, -100.0..=100.0)
+                                                .show_value(true),
+                                            tip_hue_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_hsl_band",
+                                                "band" => &localized_band_name
+                                            ));
+                                        }
+                                        if reset {
+                                            band.hue = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_hue"))
+                                            ));
+                                        }
 
                                         // Saturation
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_sat_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(&mut band.saturation, -100.0..=100.0)
-                                                    .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_hsl_band",
-                                                    "band" => &localized_band_name
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_sat"))
-                                                .clicked()
-                                            {
-                                                band.saturation = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_saturation"))
-                                                ));
-                                            }
-                                        });
+                                        let tip_sat_reset = t!("develop_reset_sat");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_sat_slider"),
+                                            Slider::new(&mut band.saturation, -100.0..=100.0)
+                                                .show_value(true),
+                                            tip_sat_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_hsl_band",
+                                                "band" => &localized_band_name
+                                            ));
+                                        }
+                                        if reset {
+                                            band.saturation = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_saturation"))
+                                            ));
+                                        }
 
                                         // Luminance
-                                        ui.horizontal(|ui| {
-                                            ui.label(t!("develop_lum_slider"));
-                                            let resp = ui.add(
-                                                Slider::new(&mut band.luminance, -100.0..=100.0)
-                                                    .show_value(true),
-                                            );
-                                            if resp.changed() {
-                                                edits_changed = true;
-                                                action_label = Some(t!(
-                                                    "history_hsl_band",
-                                                    "band" => &localized_band_name
-                                                ));
-                                            }
-                                            if ui
-                                                .button("↺")
-                                                .on_hover_text(t!("develop_reset_lum"))
-                                                .clicked()
-                                            {
-                                                band.luminance = 0.0;
-                                                edits_changed = true;
-                                                immediate_action = true;
-                                                action_label = Some(t!(
-                                                    "history_reset_section",
-                                                    "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_luminance"))
-                                                ));
-                                            }
-                                        });
+                                        let tip_lum_reset = t!("develop_reset_lum");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_lum_slider"),
+                                            Slider::new(&mut band.luminance, -100.0..=100.0)
+                                                .show_value(true),
+                                            tip_lum_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_hsl_band",
+                                                "band" => &localized_band_name
+                                            ));
+                                        }
+                                        if reset {
+                                            band.luminance = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => format!("{}: {}", &localized_band_name, t!("develop_hsl_luminance"))
+                                            ));
+                                        }
                                     });
 
-                                    ui.add_space(16.0);
+                                    ui.add_space(14.0);
 
                                     // 8. Action Buttons
                                     ui.horizontal(|ui| {
+                                        let reset_btn = egui::Button::new(
+                                            RichText::new(format!("↺ {}", t!("develop_reset_all")))
+                                                .size(11.5)
+                                                .color(Color32::from_rgb(235, 115, 125)),
+                                        )
+                                        .fill(Color32::from_rgb(32, 24, 26))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(64, 38, 42)))
+                                        .corner_radius(6.0)
+                                        .min_size(egui::vec2(0.0, 26.0));
+
                                         if ui
-                                            .button(
-                                                RichText::new(format!(
-                                                    "↺ {}",
-                                                    t!("develop_reset_all")
-                                                ))
-                                                .color(Color32::LIGHT_RED),
-                                            )
+                                            .add(reset_btn)
                                             .on_hover_text(t!("develop_reset_all_tooltip"))
                                             .clicked()
                                         {
@@ -3317,16 +3791,32 @@ impl eframe::App for BeamApp {
                                             action_label = Some(t!("history_reset_all"));
                                         }
 
-                                        if ui.button(t!("develop_save_sidecar")).clicked() {
+                                        let sidecar_btn = egui::Button::new(
+                                            RichText::new(t!("develop_save_sidecar"))
+                                                .size(11.5)
+                                                .color(Color32::from_rgb(210, 215, 225)),
+                                        )
+                                        .fill(Color32::from_rgb(26, 29, 36))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(44, 48, 58)))
+                                        .corner_radius(6.0)
+                                        .min_size(egui::vec2(0.0, 26.0));
+
+                                        if ui.add(sidecar_btn).clicked() {
                                             self.save_sidecar();
                                         }
 
-                                        if ui
-                                            .button(
-                                                RichText::new(t!("develop_export_btn")).strong(),
-                                            )
-                                            .clicked()
-                                        {
+                                        let export_btn = egui::Button::new(
+                                            RichText::new(t!("develop_export_btn"))
+                                                .size(12.0)
+                                                .color(Color32::from_rgb(245, 248, 255))
+                                                .strong(),
+                                        )
+                                        .fill(Color32::from_rgb(46, 92, 195))
+                                        .stroke(Stroke::new(1.0, Color32::from_rgb(70, 120, 235)))
+                                        .corner_radius(6.0)
+                                        .min_size(egui::vec2(0.0, 26.0));
+
+                                        if ui.add(export_btn).clicked() {
                                             self.open_export_dialog();
                                         }
                                     });
@@ -3417,83 +3907,163 @@ impl eframe::App for BeamApp {
                     let available_size = ui.available_size();
 
                     if let Some(texture_id) = self.egui_texture_id {
-                        // Before / After mode and Zoom toolbar
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(t!("develop_before_after")).strong());
-                            if ui
-                                .selectable_label(
-                                    self.before_after_mode == BeforeAfterMode::Normal,
-                                    t!("develop_mode_normal"),
-                                )
-                                .clicked()
-                            {
-                                self.before_after_mode = BeforeAfterMode::Normal;
-                            }
-                            if ui
-                                .selectable_label(
-                                    self.before_after_mode == BeforeAfterMode::Toggle,
-                                    t!("develop_mode_toggle"),
-                                )
-                                .on_hover_text(t!("develop_before_toggle_tooltip"))
-                                .clicked()
-                            {
-                                if self.crop_mode_active {
-                                    self.crop_mode_active = false;
-                                    self.re_render_edits(frame);
-                                }
-                                self.before_after_mode = BeforeAfterMode::Toggle;
-                            }
-                            if ui
-                                .selectable_label(
-                                    self.before_after_mode == BeforeAfterMode::SplitView,
-                                    t!("develop_mode_split"),
-                                )
-                                .on_hover_text(t!("develop_split_tooltip"))
-                                .clicked()
-                            {
-                                if self.crop_mode_active {
-                                    self.crop_mode_active = false;
-                                    self.re_render_edits(frame);
-                                }
-                                self.before_after_mode = BeforeAfterMode::SplitView;
-                            }
-                            if ui
-                                .selectable_label(
-                                    self.before_after_mode == BeforeAfterMode::SideBySide,
-                                    t!("develop_mode_side_by_side"),
-                                )
-                                .on_hover_text(t!("develop_side_by_side_tooltip"))
-                                .clicked()
-                            {
-                                if self.crop_mode_active {
-                                    self.crop_mode_active = false;
-                                    self.re_render_edits(frame);
-                                }
-                                self.before_after_mode = BeforeAfterMode::SideBySide;
-                            }
+                        // Unified Before / After and Zoom control bar
+                        egui::Frame::new()
+                            .fill(Color32::from_rgb(18, 20, 26))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(34, 38, 48)))
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::symmetric(10, 4))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
 
-                            ui.separator();
-                            let is_fit =
-                                !self.is_one_to_one && (self.zoom_level - 1.0).abs() < 0.01;
-                            if ui
-                                .selectable_label(is_fit, t!("develop_zoom_fit"))
-                                .clicked()
-                            {
-                                self.is_one_to_one = false;
-                                self.zoom_level = 1.0;
-                                self.pan_offset = Vec2::ZERO;
-                            }
-                            if ui
-                                .selectable_label(self.is_one_to_one, t!("develop_zoom_100"))
-                                .clicked()
-                            {
-                                self.is_one_to_one = true;
-                                self.ensure_full_res_rendered(frame);
-                            }
-                            let current_zoom_pct = (self.zoom_level * 100.0).round() as i32;
-                            ui.label(t!("develop_zoom_pct", "zoom" => current_zoom_pct));
-                        });
-                        ui.separator();
+                                    ui.label(
+                                        RichText::new(t!("develop_before_after"))
+                                            .strong()
+                                            .size(11.5)
+                                            .color(Color32::from_rgb(170, 175, 188)),
+                                    );
+
+                                    let tip_toggle = t!("develop_before_toggle_tooltip");
+                                    let tip_split = t!("develop_split_tooltip");
+                                    let tip_side = t!("develop_side_by_side_tooltip");
+                                    let modes = [
+                                        (BeforeAfterMode::Normal, t!("develop_mode_normal"), ""),
+                                        (
+                                            BeforeAfterMode::Toggle,
+                                            t!("develop_mode_toggle"),
+                                            tip_toggle.as_str(),
+                                        ),
+                                        (
+                                            BeforeAfterMode::SplitView,
+                                            t!("develop_mode_split"),
+                                            tip_split.as_str(),
+                                        ),
+                                        (
+                                            BeforeAfterMode::SideBySide,
+                                            t!("develop_mode_side_by_side"),
+                                            tip_side.as_str(),
+                                        ),
+                                    ];
+
+                                    for (mode, text, tip) in modes {
+                                        let is_sel = self.before_after_mode == mode;
+                                        let (bg, stroke, fg) = if is_sel {
+                                            (
+                                                Color32::from_rgb(46, 56, 78),
+                                                Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                                Color32::from_rgb(250, 252, 255),
+                                            )
+                                        } else {
+                                            (
+                                                Color32::from_rgb(24, 26, 33),
+                                                Stroke::new(1.0, Color32::from_rgb(38, 42, 52)),
+                                                Color32::from_rgb(165, 170, 182),
+                                            )
+                                        };
+                                        let btn = egui::Button::new(
+                                            RichText::new(text).size(11.0).color(fg).strong(),
+                                        )
+                                        .fill(bg)
+                                        .stroke(stroke)
+                                        .corner_radius(4.0)
+                                        .min_size(Vec2::new(0.0, 22.0));
+
+                                        let mut resp = ui.add(btn);
+                                        if !tip.is_empty() {
+                                            resp = resp.on_hover_text(tip);
+                                        }
+                                        if resp.clicked() {
+                                            if mode != BeforeAfterMode::Normal
+                                                && self.crop_mode_active
+                                            {
+                                                self.crop_mode_active = false;
+                                                self.re_render_edits(frame);
+                                            }
+                                            self.before_after_mode = mode;
+                                        }
+                                    }
+
+                                    ui.add_space(2.0);
+                                    ui.separator();
+                                    ui.add_space(2.0);
+
+                                    // Zoom controls
+                                    let is_fit =
+                                        !self.is_one_to_one && (self.zoom_level - 1.0).abs() < 0.01;
+                                    let (fit_bg, fit_stroke, fit_fg) = if is_fit {
+                                        (
+                                            Color32::from_rgb(46, 56, 78),
+                                            Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                            Color32::from_rgb(250, 252, 255),
+                                        )
+                                    } else {
+                                        (
+                                            Color32::from_rgb(24, 26, 33),
+                                            Stroke::new(1.0, Color32::from_rgb(38, 42, 52)),
+                                            Color32::from_rgb(165, 170, 182),
+                                        )
+                                    };
+                                    let fit_btn = egui::Button::new(
+                                        RichText::new(t!("develop_zoom_fit"))
+                                            .size(11.0)
+                                            .color(fit_fg)
+                                            .strong(),
+                                    )
+                                    .fill(fit_bg)
+                                    .stroke(fit_stroke)
+                                    .corner_radius(4.0)
+                                    .min_size(Vec2::new(0.0, 22.0));
+
+                                    if ui.add(fit_btn).clicked() {
+                                        self.is_one_to_one = false;
+                                        self.zoom_level = 1.0;
+                                        self.pan_offset = Vec2::ZERO;
+                                    }
+
+                                    let (one_bg, one_stroke, one_fg) = if self.is_one_to_one {
+                                        (
+                                            Color32::from_rgb(46, 56, 78),
+                                            Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                            Color32::from_rgb(250, 252, 255),
+                                        )
+                                    } else {
+                                        (
+                                            Color32::from_rgb(24, 26, 33),
+                                            Stroke::new(1.0, Color32::from_rgb(38, 42, 52)),
+                                            Color32::from_rgb(165, 170, 182),
+                                        )
+                                    };
+                                    let one_btn = egui::Button::new(
+                                        RichText::new(t!("develop_zoom_100"))
+                                            .size(11.0)
+                                            .color(one_fg)
+                                            .strong(),
+                                    )
+                                    .fill(one_bg)
+                                    .stroke(one_stroke)
+                                    .corner_radius(4.0)
+                                    .min_size(Vec2::new(0.0, 22.0));
+
+                                    if ui.add(one_btn).clicked() {
+                                        self.is_one_to_one = true;
+                                        self.ensure_full_res_rendered(frame);
+                                    }
+
+                                    let current_zoom_pct = (self.zoom_level * 100.0).round() as i32;
+                                    let zoom_badge = egui::Button::new(
+                                        RichText::new(format!("{current_zoom_pct}%"))
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(150, 155, 168)),
+                                    )
+                                    .fill(Color32::from_rgb(22, 24, 30))
+                                    .stroke(Stroke::new(1.0, Color32::from_rgb(34, 38, 48)))
+                                    .corner_radius(4.0)
+                                    .min_size(Vec2::new(42.0, 22.0));
+                                    ui.add_enabled(false, zoom_badge);
+                                });
+                            });
+                        ui.add_space(6.0);
 
                         let before_id = self.egui_before_texture_id.unwrap_or(texture_id);
 

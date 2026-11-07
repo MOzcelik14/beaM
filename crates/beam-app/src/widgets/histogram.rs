@@ -115,13 +115,35 @@ pub fn show_histogram_with_clipping(
         // Channel selector and clipping toggles
         ui.horizontal(|ui| {
             // Shadow clipping toggle on left
-            let shadow_color = if *show_shadow_clipping {
-                Color32::from_rgb(50, 150, 255)
+            let is_shadow = *show_shadow_clipping;
+            let shadow_btn = egui::Button::new(
+                RichText::new("◺")
+                    .color(if is_shadow {
+                        Color32::from_rgb(80, 165, 255)
+                    } else {
+                        Color32::from_rgb(120, 125, 140)
+                    })
+                    .size(11.0)
+                    .strong(),
+            )
+            .fill(if is_shadow {
+                Color32::from_rgb(25, 45, 75)
             } else {
-                Color32::from_gray(120)
-            };
+                Color32::from_rgb(20, 22, 28)
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if is_shadow {
+                    Color32::from_rgb(50, 100, 180)
+                } else {
+                    Color32::from_rgb(36, 40, 50)
+                },
+            ))
+            .corner_radius(4.0)
+            .min_size(Vec2::new(18.0, 18.0));
+
             if ui
-                .button(RichText::new("◺").color(shadow_color).strong())
+                .add(shadow_btn)
                 .on_hover_text(t!("histogram_shadow_clipping"))
                 .clicked()
             {
@@ -129,20 +151,77 @@ pub fn show_histogram_with_clipping(
                 changed = true;
             }
 
-            ui.selectable_value(mode, HistogramMode::Rgb, "RGB");
-            ui.selectable_value(mode, HistogramMode::Luminance, "Lum");
-            ui.selectable_value(mode, HistogramMode::Red, "R");
-            ui.selectable_value(mode, HistogramMode::Green, "G");
-            ui.selectable_value(mode, HistogramMode::Blue, "B");
+            ui.add_space(2.0);
+
+            let channels = [
+                (HistogramMode::Rgb, "RGB"),
+                (HistogramMode::Luminance, "Lum"),
+                (HistogramMode::Red, "R"),
+                (HistogramMode::Green, "G"),
+                (HistogramMode::Blue, "B"),
+            ];
+
+            for (m, lbl) in channels {
+                let is_sel = *mode == m;
+                let (bg, stroke, fg) = if is_sel {
+                    (
+                        Color32::from_rgb(46, 56, 78),
+                        Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                        Color32::from_rgb(240, 245, 255),
+                    )
+                } else {
+                    (
+                        Color32::from_rgb(20, 22, 28),
+                        Stroke::new(1.0, Color32::from_rgb(34, 38, 48)),
+                        Color32::from_rgb(150, 155, 168),
+                    )
+                };
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(lbl).size(10.5).color(fg))
+                            .fill(bg)
+                            .stroke(stroke)
+                            .corner_radius(8.0)
+                            .min_size(Vec2::new(0.0, 18.0)),
+                    )
+                    .clicked()
+                {
+                    *mode = m;
+                }
+            }
+
+            ui.add_space(2.0);
 
             // Highlight clipping toggle on right
-            let highlight_color = if *show_highlight_clipping {
-                Color32::from_rgb(255, 70, 70)
+            let is_hl = *show_highlight_clipping;
+            let hl_btn = egui::Button::new(
+                RichText::new("◸")
+                    .color(if is_hl {
+                        Color32::from_rgb(255, 80, 80)
+                    } else {
+                        Color32::from_rgb(120, 125, 140)
+                    })
+                    .size(11.0)
+                    .strong(),
+            )
+            .fill(if is_hl {
+                Color32::from_rgb(60, 25, 28)
             } else {
-                Color32::from_gray(120)
-            };
+                Color32::from_rgb(20, 22, 28)
+            })
+            .stroke(Stroke::new(
+                1.0,
+                if is_hl {
+                    Color32::from_rgb(140, 45, 52)
+                } else {
+                    Color32::from_rgb(36, 40, 50)
+                },
+            ))
+            .corner_radius(4.0)
+            .min_size(Vec2::new(18.0, 18.0));
+
             if ui
-                .button(RichText::new("◸").color(highlight_color).strong())
+                .add(hl_btn)
                 .on_hover_text(t!("histogram_highlight_clipping"))
                 .clicked()
             {
@@ -151,7 +230,7 @@ pub fn show_histogram_with_clipping(
             }
         });
 
-        ui.add_space(2.0);
+        ui.add_space(3.0);
 
         let width = ui.available_width().max(100.0);
         let height = 90.0f32;
@@ -159,16 +238,16 @@ pub fn show_histogram_with_clipping(
         let rect = response.rect;
 
         // Background box
-        painter.rect_filled(rect, 4.0, Color32::from_rgb(22, 22, 25));
+        painter.rect_filled(rect, 6.0, Color32::from_rgb(14, 15, 19));
         painter.rect_stroke(
             rect,
-            4.0,
-            Stroke::new(1.0, Color32::from_rgb(45, 45, 50)),
+            6.0,
+            Stroke::new(1.0, Color32::from_rgb(34, 38, 48)),
             egui::StrokeKind::Inside,
         );
 
         // Grid lines (vertical at 25%, 50%, 75%)
-        let grid_stroke = Stroke::new(1.0, Color32::from_rgb(35, 35, 40));
+        let grid_stroke = Stroke::new(1.0, Color32::from_rgb(26, 28, 36));
         for i in 1..4 {
             let x = rect.left() + (rect.width() * i as f32 / 4.0);
             painter.line_segment(
