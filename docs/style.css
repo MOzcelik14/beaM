@@ -272,8 +272,15 @@ a:hover {
   color: var(--accent-bright);
 }
 
+.hero-content > .content-en,
+.hero-content > .content-tr {
+  width: 100%;
+}
+
 .hero-title {
   max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
   font-size: clamp(2.35rem, 5.2vw, 4.1rem);
   font-weight: 800;
   line-height: 1.08;
@@ -294,6 +301,8 @@ a:hover {
 
 .hero-subtitle {
   max-width: 650px;
+  margin-left: auto;
+  margin-right: auto;
   font-size: clamp(1.02rem, 1.8vw, 1.18rem);
   color: var(--text-secondary);
   line-height: 1.65;
