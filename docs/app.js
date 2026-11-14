@@ -48,4 +48,52 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     setLanguage('en');
   }
+
+  async function syncLatestRelease() {
+    const cacheKey = 'beam_latest_release_v1';
+    const applyRelease = (tagName, htmlUrl) => {
+      if (!tagName) return;
+      const cleanVer = tagName.replace(/^v/i, '');
+      const vTag = `v${cleanVer}`;
+      document.querySelectorAll('[data-beam-version]').forEach(el => {
+        el.textContent = vTag;
+      });
+      document.querySelectorAll('[data-beam-version-plain]').forEach(el => {
+        el.textContent = cleanVer;
+      });
+      if (htmlUrl) {
+        document.querySelectorAll('[data-beam-release-url]').forEach(el => {
+          el.setAttribute('href', htmlUrl);
+        });
+      }
+    };
+
+    try {
+      const cachedRaw = sessionStorage.getItem(cacheKey);
+      if (cachedRaw) {
+        const cached = JSON.parse(cachedRaw);
+        if (cached && Date.now() - cached.ts < 600000) {
+          applyRelease(cached.tag, cached.url);
+          return;
+        }
+      }
+      const res = await fetch('https://api.github.com/repos/MOzcelik14/beaM/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github+json' }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.tag_name) {
+        applyRelease(data.tag_name, data.html_url);
+        sessionStorage.setItem(cacheKey, JSON.stringify({
+          tag: data.tag_name,
+          url: data.html_url,
+          ts: Date.now()
+        }));
+      }
+    } catch (_) {
+      // Offline or rate-limited: keep static fallback version
+    }
+  }
+
+  syncLatestRelease();
 });

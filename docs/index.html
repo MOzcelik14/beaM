@@ -62,7 +62,7 @@
     <section class="hero">
       <div class="container hero-content">
         <div class="hero-meta">
-          <span class="meta-item">v1.0.0</span>
+          <span class="meta-item" data-beam-version>v1.0.0</span>
           <span>&bull;</span>
           <span class="meta-item">Linux &amp; Windows</span>
           <span>&bull;</span>
@@ -96,13 +96,61 @@
 
         <div class="hero-buttons">
           <div class="content-en">
-            <a href="https://github.com/MOzcelik14/beaM/releases" class="btn btn-primary" target="_blank" rel="noopener noreferrer">Download Release</a>
+            <a href="https://github.com/MOzcelik14/beaM/releases/latest" class="btn btn-primary" data-beam-release-url target="_blank" rel="noopener noreferrer">Download Release</a>
             <a href="#installation" class="btn btn-secondary">Build from Source</a>
           </div>
           <div class="content-tr" style="display:none;">
-            <a href="https://github.com/MOzcelik14/beaM/releases" class="btn btn-primary" target="_blank" rel="noopener noreferrer">Sürümü İndir</a>
+            <a href="https://github.com/MOzcelik14/beaM/releases/latest" class="btn btn-primary" data-beam-release-url target="_blank" rel="noopener noreferrer">Sürümü İndir</a>
             <a href="#installation" class="btn btn-secondary">Kaynaktan Derle</a>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Showcase Section -->
+    <section id="showcase" class="section">
+      <div class="container">
+        <div class="section-header">
+          <div class="content-en">
+            <div class="section-label">Interface Preview</div>
+            <h2 class="section-title">Studio Darkroom &amp; Library Workflow</h2>
+            <p class="section-desc">Representative interface views of the Develop workspace and Library browser in beaM.</p>
+          </div>
+          <div class="content-tr" style="display:none;">
+            <div class="section-label">Arayüz Önizlemesi</div>
+            <h2 class="section-title">Karanlık Oda ve Kütüphane İş Akışı</h2>
+            <p class="section-desc">beaM. içindeki Geliştir çalışma alanı ve Kütüphane tarayıcısından örnek arayüz görünümleri.</p>
+          </div>
+        </div>
+
+        <div class="showcase-grid">
+          <figure class="showcase-card">
+            <img src="assets/showcase_develop.jpg" alt="beaM. Develop Workspace" loading="lazy">
+            <figcaption class="showcase-caption">
+              <div class="content-en">
+                <strong>Develop Workspace</strong>
+                <p>Precision GPU-accelerated color grading, RGB/Luma histogram, and aligned tone controls in Linear Rec.2020.</p>
+              </div>
+              <div class="content-tr" style="display:none;">
+                <strong>Geliştir Çalışma Alanı</strong>
+                <p>Linear Rec.2020 uzayında GPU hızlandırmalı renk düzenleme, RGB/Luma histogramı ve hizalı ton kontrolleri.</p>
+              </div>
+            </figcaption>
+          </figure>
+
+          <figure class="showcase-card">
+            <img src="assets/showcase_library.jpg" alt="beaM. Library Browser" loading="lazy">
+            <figcaption class="showcase-caption">
+              <div class="content-en">
+                <strong>Library Browser</strong>
+                <p>Fast RAW catalog indexing, rating and color label filtering, and non-destructive sidecar inspection.</p>
+              </div>
+              <div class="content-tr" style="display:none;">
+                <strong>Kütüphane Tarayıcısı</strong>
+                <p>Hızlı RAW katalog indeksleme, puan ve renk etiketi filtreleme ile tahribatsız sidecar denetimi.</p>
+              </div>
+            </figcaption>
+          </figure>
         </div>
       </div>
     </section>
@@ -806,7 +854,7 @@
 
       <div class="footer-bottom">
         <span>&copy; beaM. Project &bull; Distributed under the GNU General Public License v3.0 (GPL-3.0-only).</span>
-        <span>Version 1.0.0 &bull; 100% Pure Rust</span>
+        <span>Version <span data-beam-version-plain>1.0.0</span> &bull; 100% Pure Rust</span>
       </div>
     </div>
   </footer>

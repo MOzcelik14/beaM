@@ -611,4 +611,51 @@ tr:hover td {
   .nav-links {
     display: none;
   }
+
+  .showcase-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Showcase Gallery */
+.showcase-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.showcase-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.showcase-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+.showcase-card img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.showcase-caption {
+  padding: 1rem 1.25rem;
+}
+
+.showcase-caption h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.35rem;
+}
+
+.showcase-caption p {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
 }
