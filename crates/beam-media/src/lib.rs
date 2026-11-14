@@ -14,5 +14,5 @@ pub use export::{
     expand_filename_template, export_batch, export_decoded_image, export_image, extract_raw_exif,
     generate_output_path, get_icc_profile_bytes, resolve_unique_output_path,
     sanitize_exif_orientation, BatchProgress, ExportConfig, ExportFormat, OutputSharpening,
-    ResizeMode,
+    ResizeMode, WatermarkAnchor, WatermarkConfig,
 };

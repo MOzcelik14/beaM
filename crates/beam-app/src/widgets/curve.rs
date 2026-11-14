@@ -4,8 +4,18 @@ use beam_core::color::generate_tone_curve_lut;
 use beam_core::sidecar::ToneCurvePoint;
 use eframe::egui::{self, Color32, Pos2, Sense, Stroke, Vec2};
 
-/// Renders the tone curve editor. Returns `true` if any point was modified, added, or deleted.
+/// Renders the tone curve editor with a white curve line. Returns `true` if any point was modified, added, or deleted.
+#[allow(dead_code)]
 pub fn show_tone_curve(ui: &mut egui::Ui, points: &mut Vec<ToneCurvePoint>) -> bool {
+    show_tone_curve_colored(ui, points, Color32::from_rgb(220, 220, 225))
+}
+
+/// Renders the tone curve editor with a custom curve color. Returns `true` if any point was modified, added, or deleted.
+pub fn show_tone_curve_colored(
+    ui: &mut egui::Ui,
+    points: &mut Vec<ToneCurvePoint>,
+    line_color: Color32,
+) -> bool {
     let mut changed = false;
 
     // Fixed or responsive square size
@@ -79,10 +89,7 @@ pub fn show_tone_curve(ui: &mut egui::Ui, points: &mut Vec<ToneCurvePoint>) -> b
         let y_norm = y_val.clamp(0.0, 1.0);
         curve_pts.push(to_screen(Pos2::new(x_norm, y_norm)));
     }
-    painter.add(egui::Shape::line(
-        curve_pts,
-        Stroke::new(2.0, Color32::from_rgb(220, 220, 225)),
-    ));
+    painter.add(egui::Shape::line(curve_pts, Stroke::new(2.0, line_color)));
 
     // Drag tracking ID
     let drag_id = ui.scope_id().with("tone_curve_dragging_index");

@@ -84,6 +84,12 @@ pub struct HighlightsShadowsAdjustment {
     pub highlights: f32,
     /// Shadows adjustment (-100.0 to +100.0, default 0.0)
     pub shadows: f32,
+    /// Whites point adjustment (-100.0 to +100.0, default 0.0)
+    #[serde(default)]
+    pub whites: f32,
+    /// Blacks point adjustment (-100.0 to +100.0, default 0.0)
+    #[serde(default)]
+    pub blacks: f32,
 }
 
 impl Default for HighlightsShadowsAdjustment {
@@ -92,6 +98,55 @@ impl Default for HighlightsShadowsAdjustment {
             enabled: true,
             highlights: 0.0,
             shadows: 0.0,
+            whites: 0.0,
+            blacks: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VibranceSaturationAdjustment {
+    pub enabled: bool,
+    /// Selective vibrance adjustment (-100.0 to +100.0, default 0.0)
+    pub vibrance: f32,
+    /// Global saturation adjustment (-100.0 to +100.0, default 0.0)
+    pub saturation: f32,
+}
+
+impl Default for VibranceSaturationAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            vibrance: 0.0,
+            saturation: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VignetteGrainAdjustment {
+    pub enabled: bool,
+    /// Vignette strength (-100.0 to +100.0, default 0.0)
+    pub vignette_amount: f32,
+    /// Vignette midpoint (0.0 to 100.0, default 50.0)
+    pub vignette_midpoint: f32,
+    /// Vignette feathering (0.0 to 100.0, default 50.0)
+    pub vignette_feather: f32,
+    /// Film grain intensity (0.0 to 100.0, default 0.0)
+    pub grain_amount: f32,
+    /// Film grain particle size (1.0 to 5.0, default 1.5)
+    pub grain_size: f32,
+}
+
+impl Default for VignetteGrainAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            vignette_amount: 0.0,
+            vignette_midpoint: 50.0,
+            vignette_feather: 50.0,
+            grain_amount: 0.0,
+            grain_size: 1.5,
         }
     }
 }
@@ -102,23 +157,118 @@ pub struct ToneCurvePoint {
     pub y: f32,
 }
 
+pub fn default_identity_curve_points() -> Vec<ToneCurvePoint> {
+    vec![
+        ToneCurvePoint { x: 0.0, y: 0.0 },
+        ToneCurvePoint { x: 0.25, y: 0.25 },
+        ToneCurvePoint { x: 0.5, y: 0.5 },
+        ToneCurvePoint { x: 0.75, y: 0.75 },
+        ToneCurvePoint { x: 1.0, y: 1.0 },
+    ]
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToneCurveAdjustment {
     pub enabled: bool,
     pub points: Vec<ToneCurvePoint>,
+    #[serde(default = "default_identity_curve_points")]
+    pub red_points: Vec<ToneCurvePoint>,
+    #[serde(default = "default_identity_curve_points")]
+    pub green_points: Vec<ToneCurvePoint>,
+    #[serde(default = "default_identity_curve_points")]
+    pub blue_points: Vec<ToneCurvePoint>,
 }
 
 impl Default for ToneCurveAdjustment {
     fn default() -> Self {
         Self {
             enabled: true,
-            points: vec![
-                ToneCurvePoint { x: 0.0, y: 0.0 },
-                ToneCurvePoint { x: 0.25, y: 0.25 },
-                ToneCurvePoint { x: 0.5, y: 0.5 },
-                ToneCurvePoint { x: 0.75, y: 0.75 },
-                ToneCurvePoint { x: 1.0, y: 1.0 },
-            ],
+            points: default_identity_curve_points(),
+            red_points: default_identity_curve_points(),
+            green_points: default_identity_curve_points(),
+            blue_points: default_identity_curve_points(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct ColorWheelGrade {
+    /// Hue in degrees (0.0 to 360.0)
+    pub hue: f32,
+    /// Saturation strength (0.0 to 100.0)
+    pub saturation: f32,
+    /// Luminance offset (-100.0 to +100.0)
+    pub luminance: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColorGradingAdjustment {
+    pub enabled: bool,
+    pub shadows: ColorWheelGrade,
+    pub midtones: ColorWheelGrade,
+    pub highlights: ColorWheelGrade,
+    /// Balance shift between shadows and highlights (-100.0 to +100.0, default 0.0)
+    pub balance: f32,
+    /// Tonal transition blending (0.0 to 100.0, default 50.0)
+    pub blending: f32,
+}
+
+impl Default for ColorGradingAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            shadows: ColorWheelGrade::default(),
+            midtones: ColorWheelGrade::default(),
+            highlights: ColorWheelGrade::default(),
+            balance: 0.0,
+            blending: 0.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DetailAdjustment {
+    pub enabled: bool,
+    /// Local midtone contrast (-100.0 to +100.0)
+    pub clarity: f32,
+    /// Atmospheric haze removal (-100.0 to +100.0)
+    pub dehaze: f32,
+    /// Edge sharpening (0.0 to 100.0)
+    pub sharpening: f32,
+    /// Luminance noise reduction (0.0 to 100.0)
+    pub noise_reduction_luma: f32,
+    /// Chroma/color noise reduction (0.0 to 100.0)
+    pub noise_reduction_color: f32,
+}
+
+impl Default for DetailAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            clarity: 0.0,
+            dehaze: 0.0,
+            sharpening: 0.0,
+            noise_reduction_luma: 0.0,
+            noise_reduction_color: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LutAdjustment {
+    pub enabled: bool,
+    /// Path to a `.cube` 3D LUT file
+    pub path: Option<String>,
+    /// Blend intensity (0.0 to 1.0, default 1.0)
+    pub intensity: f32,
+}
+
+impl Default for LutAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+            intensity: 1.0,
         }
     }
 }
@@ -255,6 +405,84 @@ impl CropAdjustment {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MaskShape {
+    LinearGradient {
+        start: [f32; 2],
+        end: [f32; 2],
+    },
+    RadialGradient {
+        center: [f32; 2],
+        radius: [f32; 2],
+        feather: f32,
+        invert: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MaskLayer {
+    pub id: u64,
+    pub name: String,
+    pub enabled: bool,
+    pub shape: MaskShape,
+    #[serde(default)]
+    pub exposure: f32,
+    #[serde(default)]
+    pub contrast: f32,
+    #[serde(default)]
+    pub highlights: f32,
+    #[serde(default)]
+    pub shadows: f32,
+    #[serde(default)]
+    pub temperature: f32,
+    #[serde(default)]
+    pub tint: f32,
+    #[serde(default)]
+    pub saturation: f32,
+}
+
+impl MaskLayer {
+    pub fn new_linear(id: u64, name: String) -> Self {
+        Self {
+            id,
+            name,
+            enabled: true,
+            shape: MaskShape::LinearGradient {
+                start: [0.5, 0.15],
+                end: [0.5, 0.75],
+            },
+            exposure: 0.0,
+            contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            saturation: 0.0,
+        }
+    }
+
+    pub fn new_radial(id: u64, name: String) -> Self {
+        Self {
+            id,
+            name,
+            enabled: true,
+            shape: MaskShape::RadialGradient {
+                center: [0.5, 0.5],
+                radius: [0.3, 0.3],
+                feather: 0.5,
+                invert: false,
+            },
+            exposure: 0.0,
+            contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            saturation: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditStack {
     pub white_balance: WhiteBalanceAdjustment,
@@ -263,6 +491,18 @@ pub struct EditStack {
     pub contrast: ContrastAdjustment,
     pub tone_curve: ToneCurveAdjustment,
     pub hsl: HslAdjustment,
+    #[serde(default)]
+    pub vibrance_saturation: VibranceSaturationAdjustment,
+    #[serde(default)]
+    pub vignette_grain: VignetteGrainAdjustment,
+    #[serde(default)]
+    pub color_grading: ColorGradingAdjustment,
+    #[serde(default)]
+    pub detail: DetailAdjustment,
+    #[serde(default)]
+    pub lut: LutAdjustment,
+    #[serde(default)]
+    pub masks: Vec<MaskLayer>,
     #[serde(default)]
     pub crop: CropAdjustment,
 }
@@ -296,6 +536,30 @@ impl EditStack {
         self.hsl = HslAdjustment::default();
     }
 
+    pub fn reset_vibrance_saturation(&mut self) {
+        self.vibrance_saturation = VibranceSaturationAdjustment::default();
+    }
+
+    pub fn reset_vignette_grain(&mut self) {
+        self.vignette_grain = VignetteGrainAdjustment::default();
+    }
+
+    pub fn reset_color_grading(&mut self) {
+        self.color_grading = ColorGradingAdjustment::default();
+    }
+
+    pub fn reset_detail(&mut self) {
+        self.detail = DetailAdjustment::default();
+    }
+
+    pub fn reset_lut(&mut self) {
+        self.lut = LutAdjustment::default();
+    }
+
+    pub fn reset_masks(&mut self) {
+        self.masks.clear();
+    }
+
     pub fn reset_crop(&mut self) {
         self.crop = CropAdjustment::default();
     }
@@ -314,26 +578,31 @@ impl EditStack {
         // 2. Exposure
         sanitize_float(&mut self.exposure.ev, -5.0, 5.0, 0.0);
 
-        // 3. Highlights & Shadows
+        // 3. Highlights, Shadows, Whites & Blacks
         sanitize_float(&mut self.highlights_shadows.highlights, -100.0, 100.0, 0.0);
         sanitize_float(&mut self.highlights_shadows.shadows, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.highlights_shadows.whites, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.highlights_shadows.blacks, -100.0, 100.0, 0.0);
 
         // 4. Contrast
         sanitize_float(&mut self.contrast.contrast, -100.0, 100.0, 0.0);
 
-        // 5. Tone curve
-        self.tone_curve
-            .points
-            .retain(|p| p.x.is_finite() && p.y.is_finite());
-        for p in &mut self.tone_curve.points {
-            p.x = p.x.clamp(0.0, 1.0);
-            p.y = p.y.clamp(0.0, 1.0);
-        }
-        self.tone_curve
-            .points
-            .sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-        if self.tone_curve.points.len() < 2 {
-            self.tone_curve.points = ToneCurveAdjustment::default().points;
+        // 5. Tone curves (Master + R, G, B)
+        for pts in [
+            &mut self.tone_curve.points,
+            &mut self.tone_curve.red_points,
+            &mut self.tone_curve.green_points,
+            &mut self.tone_curve.blue_points,
+        ] {
+            pts.retain(|p| p.x.is_finite() && p.y.is_finite());
+            for p in pts.iter_mut() {
+                p.x = p.x.clamp(0.0, 1.0);
+                p.y = p.y.clamp(0.0, 1.0);
+            }
+            pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            if pts.len() < 2 {
+                *pts = default_identity_curve_points();
+            }
         }
 
         // 6. HSL bands
@@ -343,7 +612,73 @@ impl EditStack {
             sanitize_float(&mut band.luminance, -100.0, 100.0, 0.0);
         }
 
-        // 7. Crop & Geometry
+        // 7. Vibrance & Saturation
+        sanitize_float(&mut self.vibrance_saturation.vibrance, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.vibrance_saturation.saturation, -100.0, 100.0, 0.0);
+
+        // 8. Vignette & Grain
+        sanitize_float(&mut self.vignette_grain.vignette_amount, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.vignette_grain.vignette_midpoint, 0.0, 100.0, 50.0);
+        sanitize_float(&mut self.vignette_grain.vignette_feather, 0.0, 100.0, 50.0);
+        sanitize_float(&mut self.vignette_grain.grain_amount, 0.0, 100.0, 0.0);
+        sanitize_float(&mut self.vignette_grain.grain_size, 1.0, 5.0, 1.5);
+
+        // 9. Color Grading
+        for wheel in [
+            &mut self.color_grading.shadows,
+            &mut self.color_grading.midtones,
+            &mut self.color_grading.highlights,
+        ] {
+            sanitize_float(&mut wheel.hue, 0.0, 360.0, 0.0);
+            sanitize_float(&mut wheel.saturation, 0.0, 100.0, 0.0);
+            sanitize_float(&mut wheel.luminance, -100.0, 100.0, 0.0);
+        }
+        sanitize_float(&mut self.color_grading.balance, -1.0, 1.0, 0.0);
+        sanitize_float(&mut self.color_grading.blending, 0.0, 1.0, 0.5);
+
+        // 10. Detail
+        sanitize_float(&mut self.detail.clarity, -1.0, 1.0, 0.0);
+        sanitize_float(&mut self.detail.dehaze, -1.0, 1.0, 0.0);
+        sanitize_float(&mut self.detail.sharpening, 0.0, 1.0, 0.0);
+        sanitize_float(&mut self.detail.noise_reduction_luma, 0.0, 1.0, 0.0);
+        sanitize_float(&mut self.detail.noise_reduction_color, 0.0, 1.0, 0.0);
+
+        // 11. 3D LUT
+        sanitize_float(&mut self.lut.intensity, 0.0, 1.0, 1.0);
+
+        // 12. Parametric Masks (cap at 8 layers)
+        self.masks.truncate(8);
+        for mask in &mut self.masks {
+            match &mut mask.shape {
+                MaskShape::LinearGradient { start, end } => {
+                    sanitize_float(&mut start[0], -1.0, 2.0, 0.5);
+                    sanitize_float(&mut start[1], -1.0, 2.0, 0.15);
+                    sanitize_float(&mut end[0], -1.0, 2.0, 0.5);
+                    sanitize_float(&mut end[1], -1.0, 2.0, 0.75);
+                }
+                MaskShape::RadialGradient {
+                    center,
+                    radius,
+                    feather,
+                    ..
+                } => {
+                    sanitize_float(&mut center[0], -1.0, 2.0, 0.5);
+                    sanitize_float(&mut center[1], -1.0, 2.0, 0.5);
+                    sanitize_float(&mut radius[0], 0.02, 2.0, 0.3);
+                    sanitize_float(&mut radius[1], 0.02, 2.0, 0.3);
+                    sanitize_float(feather, 0.0, 1.0, 0.5);
+                }
+            }
+            sanitize_float(&mut mask.exposure, -5.0, 5.0, 0.0);
+            sanitize_float(&mut mask.contrast, -100.0, 100.0, 0.0);
+            sanitize_float(&mut mask.highlights, -100.0, 100.0, 0.0);
+            sanitize_float(&mut mask.shadows, -100.0, 100.0, 0.0);
+            sanitize_float(&mut mask.temperature, -100.0, 100.0, 0.0);
+            sanitize_float(&mut mask.tint, -100.0, 100.0, 0.0);
+            sanitize_float(&mut mask.saturation, -100.0, 100.0, 0.0);
+        }
+
+        // 13. Crop & Geometry
         sanitize_float(&mut self.crop.width, 0.001, 1.0, 1.0);
         sanitize_float(&mut self.crop.height, 0.001, 1.0, 1.0);
         sanitize_float(&mut self.crop.x, 0.0, 1.0 - self.crop.width, 0.0);

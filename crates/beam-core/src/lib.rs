@@ -9,6 +9,7 @@ pub mod error;
 pub mod fs_util;
 pub mod geometry;
 pub mod i18n;
+pub mod lut;
 pub mod preset;
 pub mod sidecar;
 

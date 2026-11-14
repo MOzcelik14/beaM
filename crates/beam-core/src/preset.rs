@@ -5,7 +5,8 @@
 
 use crate::sidecar::{
     ContrastAdjustment, CropAdjustment, EditStack, ExposureAdjustment, HighlightsShadowsAdjustment,
-    HslAdjustment, ToneCurveAdjustment, ToneCurvePoint, WhiteBalanceAdjustment,
+    HslAdjustment, ToneCurveAdjustment, ToneCurvePoint, VibranceSaturationAdjustment,
+    VignetteGrainAdjustment, WhiteBalanceAdjustment,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -22,7 +23,15 @@ pub struct PresetGroupMask {
     pub contrast: bool,
     pub tone_curve: bool,
     pub hsl: bool,
+    #[serde(default = "default_true")]
+    pub vibrance_saturation: bool,
+    #[serde(default = "default_true")]
+    pub vignette_grain: bool,
     pub crop: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for PresetGroupMask {
@@ -34,6 +43,8 @@ impl Default for PresetGroupMask {
             contrast: true,
             tone_curve: true,
             hsl: true,
+            vibrance_saturation: true,
+            vignette_grain: true,
             crop: false, // Crop excluded by default when applying presets
         }
     }
@@ -48,6 +59,8 @@ impl PresetGroupMask {
             contrast: true,
             tone_curve: true,
             hsl: true,
+            vibrance_saturation: true,
+            vignette_grain: true,
             crop: true,
         }
     }
@@ -60,6 +73,8 @@ impl PresetGroupMask {
             contrast: false,
             tone_curve: false,
             hsl: false,
+            vibrance_saturation: false,
+            vignette_grain: false,
             crop: false,
         }
     }
@@ -71,6 +86,8 @@ impl PresetGroupMask {
             || self.contrast
             || self.tone_curve
             || self.hsl
+            || self.vibrance_saturation
+            || self.vignette_grain
             || self.crop
     }
 }
@@ -99,6 +116,10 @@ pub struct Preset {
     #[serde(default)]
     pub hsl: Option<HslAdjustment>,
     #[serde(default)]
+    pub vibrance_saturation: Option<VibranceSaturationAdjustment>,
+    #[serde(default)]
+    pub vignette_grain: Option<VignetteGrainAdjustment>,
+    #[serde(default)]
     pub crop: Option<CropAdjustment>,
 }
 
@@ -120,6 +141,8 @@ impl Preset {
             contrast: None,
             tone_curve: None,
             hsl: None,
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         }
     }
@@ -167,6 +190,16 @@ impl Preset {
             } else {
                 None
             },
+            vibrance_saturation: if mask.vibrance_saturation {
+                Some(stack.vibrance_saturation.clone())
+            } else {
+                None
+            },
+            vignette_grain: if mask.vignette_grain {
+                Some(stack.vignette_grain.clone())
+            } else {
+                None
+            },
             crop: if mask.crop {
                 Some(stack.crop.clone())
             } else {
@@ -194,6 +227,12 @@ impl Preset {
         }
         if let Some(hsl) = &self.hsl {
             stack.hsl = hsl.clone();
+        }
+        if let Some(vs) = &self.vibrance_saturation {
+            stack.vibrance_saturation = vs.clone();
+        }
+        if let Some(vg) = &self.vignette_grain {
+            stack.vignette_grain = vg.clone();
         }
         if let Some(crop) = &self.crop {
             stack.crop = crop.clone();
@@ -257,6 +296,22 @@ impl Preset {
             stack.validate_and_sanitize();
             *hsl = stack.hsl;
         }
+        if let Some(vs) = &mut self.vibrance_saturation {
+            let mut stack = EditStack {
+                vibrance_saturation: vs.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *vs = stack.vibrance_saturation;
+        }
+        if let Some(vg) = &mut self.vignette_grain {
+            let mut stack = EditStack {
+                vignette_grain: vg.clone(),
+                ..Default::default()
+            };
+            stack.validate_and_sanitize();
+            *vg = stack.vignette_grain;
+        }
         if let Some(crop) = &mut self.crop {
             let mut stack = EditStack {
                 crop: crop.clone(),
@@ -290,6 +345,8 @@ pub fn built_in_presets() -> Vec<Preset> {
             contrast: Some(ContrastAdjustment::default()),
             tone_curve: Some(ToneCurveAdjustment::default()),
             hsl: Some(HslAdjustment::default()),
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 2. Vivid (Punchy colors, elevated contrast)
@@ -321,6 +378,8 @@ pub fn built_in_presets() -> Vec<Preset> {
                 }
                 Some(hsl)
             },
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 3. Matte (Lifted blacks, soft highlight rolloff)
@@ -350,8 +409,11 @@ pub fn built_in_presets() -> Vec<Preset> {
                     ToneCurvePoint { x: 0.75, y: 0.74 },
                     ToneCurvePoint { x: 1.0, y: 0.90 },
                 ],
+                ..Default::default()
             }),
             hsl: None,
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 4. Black & White (Desaturated with punchy tonal contrast)
@@ -384,6 +446,7 @@ pub fn built_in_presets() -> Vec<Preset> {
                     ToneCurvePoint { x: 0.75, y: 0.80 },
                     ToneCurvePoint { x: 1.0, y: 1.0 },
                 ],
+                ..Default::default()
             }),
             hsl: {
                 let mut hsl = HslAdjustment::default();
@@ -392,6 +455,8 @@ pub fn built_in_presets() -> Vec<Preset> {
                 }
                 Some(hsl)
             },
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 5. Warm Film (Golden warmth, lifted shadows)
@@ -425,6 +490,7 @@ pub fn built_in_presets() -> Vec<Preset> {
                     ToneCurvePoint { x: 0.75, y: 0.76 },
                     ToneCurvePoint { x: 1.0, y: 0.95 },
                 ],
+                ..Default::default()
             }),
             hsl: {
                 let mut hsl = HslAdjustment::default();
@@ -433,6 +499,8 @@ pub fn built_in_presets() -> Vec<Preset> {
                 hsl.bands[5].luminance = -10.0; // Blue
                 Some(hsl)
             },
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 6. Cool Cinematic (Teal shadows, cool mood)
@@ -466,6 +534,7 @@ pub fn built_in_presets() -> Vec<Preset> {
                     ToneCurvePoint { x: 0.75, y: 0.78 },
                     ToneCurvePoint { x: 1.0, y: 1.0 },
                 ],
+                ..Default::default()
             }),
             hsl: {
                 let mut hsl = HslAdjustment::default();
@@ -474,6 +543,8 @@ pub fn built_in_presets() -> Vec<Preset> {
                 hsl.bands[1].luminance = 10.0; // Orange skin tones
                 Some(hsl)
             },
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 7. Punchy Contrast (High clarity and dynamic range)
@@ -503,8 +574,11 @@ pub fn built_in_presets() -> Vec<Preset> {
                     ToneCurvePoint { x: 0.75, y: 0.82 },
                     ToneCurvePoint { x: 1.0, y: 1.0 },
                 ],
+                ..Default::default()
             }),
             hsl: None,
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
         // 8. Moody Landscape (Deep foliage and sky)
@@ -538,6 +612,8 @@ pub fn built_in_presets() -> Vec<Preset> {
                 hsl.bands[1].saturation = 20.0; // Orange
                 Some(hsl)
             },
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         },
     ]
@@ -671,6 +747,8 @@ mod tests {
             }),
             tone_curve: None,
             hsl: None,
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         };
 
@@ -698,6 +776,8 @@ mod tests {
             contrast: true,
             tone_curve: false,
             hsl: false,
+            vibrance_saturation: false,
+            vignette_grain: false,
             crop: false,
         };
 
@@ -729,6 +809,8 @@ mod tests {
             contrast: None,
             tone_curve: None,
             hsl: None,
+            vibrance_saturation: None,
+            vignette_grain: None,
             crop: None,
         };
 

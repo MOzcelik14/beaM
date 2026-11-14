@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub enum ExportFormat {
     Jpeg { quality: u8 },
     Png,
+    Tiff16,
+    WebP,
 }
 
 impl Default for ExportFormat {
@@ -28,6 +30,8 @@ impl ExportFormat {
         match self {
             Self::Jpeg { .. } => "jpg",
             Self::Png => "png",
+            Self::Tiff16 => "tif",
+            Self::WebP => "webp",
         }
     }
 }
@@ -504,6 +508,316 @@ pub fn resolve_unique_output_path(
     }
 }
 
+/// 9-grid watermark anchor position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum WatermarkAnchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    Center,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    #[default]
+    BottomRight,
+}
+
+/// Text or PNG logo watermark configuration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WatermarkConfig {
+    pub enabled: bool,
+    pub text: String,
+    pub image_path: Option<PathBuf>,
+    pub anchor: WatermarkAnchor,
+    pub opacity: f32,
+    pub scale: f32,
+    pub margin: f32,
+}
+
+impl Default for WatermarkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            text: String::new(),
+            image_path: None,
+            anchor: WatermarkAnchor::BottomRight,
+            opacity: 0.7,
+            scale: 0.15,
+            margin: 0.03,
+        }
+    }
+}
+
+fn glyph_5x7(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ],
+        'D' => [
+            0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        'J' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
+        ],
+        'X' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
+        ],
+        '_' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111,
+        ],
+        ':' => [
+            0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000,
+        ],
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+        '@' => [
+            0b01110, 0b10001, 0b10111, 0b10101, 0b10110, 0b10000, 0b01110,
+        ],
+        '©' => [
+            0b01110, 0b10001, 0b10111, 0b10100, 0b10111, 0b10001, 0b01110,
+        ],
+        _ => [0b00000; 7],
+    }
+}
+
+fn anchor_origin(
+    img_w: u32,
+    img_h: u32,
+    wm_w: u32,
+    wm_h: u32,
+    anchor: WatermarkAnchor,
+    margin_frac: f32,
+) -> (i32, i32) {
+    let margin = ((img_w.min(img_h) as f32) * margin_frac.clamp(0.0, 0.25)).round() as i32;
+    let x = match anchor {
+        WatermarkAnchor::TopLeft | WatermarkAnchor::MiddleLeft | WatermarkAnchor::BottomLeft => {
+            margin
+        }
+        WatermarkAnchor::TopCenter | WatermarkAnchor::Center | WatermarkAnchor::BottomCenter => {
+            ((img_w as i32) - (wm_w as i32)) / 2
+        }
+        WatermarkAnchor::TopRight | WatermarkAnchor::MiddleRight | WatermarkAnchor::BottomRight => {
+            (img_w as i32) - (wm_w as i32) - margin
+        }
+    };
+    let y = match anchor {
+        WatermarkAnchor::TopLeft | WatermarkAnchor::TopCenter | WatermarkAnchor::TopRight => margin,
+        WatermarkAnchor::MiddleLeft | WatermarkAnchor::Center | WatermarkAnchor::MiddleRight => {
+            ((img_h as i32) - (wm_h as i32)) / 2
+        }
+        WatermarkAnchor::BottomLeft
+        | WatermarkAnchor::BottomCenter
+        | WatermarkAnchor::BottomRight => (img_h as i32) - (wm_h as i32) - margin,
+    };
+    (x, y)
+}
+
+/// Composite a PNG logo or bitmap text watermark onto `img` in-place.
+pub fn apply_watermark(img: &mut image::RgbaImage, wm: &WatermarkConfig) {
+    if !wm.enabled || wm.opacity <= 0.001 {
+        return;
+    }
+    let (img_w, img_h) = img.dimensions();
+    if img_w < 16 || img_h < 16 {
+        return;
+    }
+    let opacity = wm.opacity.clamp(0.0, 1.0);
+
+    let overlay: Option<image::RgbaImage> = if let Some(ref logo_path) = wm.image_path {
+        if let Ok(dyn_img) = image::open(logo_path) {
+            let rgba = dyn_img.to_rgba8();
+            let target_w = ((img_w as f32) * wm.scale.clamp(0.03, 0.8))
+                .round()
+                .max(8.0) as u32;
+            let aspect = (rgba.height() as f32) / (rgba.width().max(1) as f32);
+            let target_h = ((target_w as f32) * aspect).round().max(8.0) as u32;
+            Some(image::imageops::resize(
+                &rgba,
+                target_w,
+                target_h,
+                image::imageops::FilterType::Lanczos3,
+            ))
+        } else {
+            None
+        }
+    } else if !wm.text.trim().is_empty() {
+        let chars: Vec<char> = wm.text.chars().take(64).collect();
+        let raw_w = (chars.len() as u32) * 6;
+        let target_w = ((img_w as f32) * wm.scale.clamp(0.05, 0.8))
+            .round()
+            .max(16.0);
+        let pixel_scale = (target_w / (raw_w.max(1) as f32)).max(1.0).round() as u32;
+        let ov_w = raw_w * pixel_scale + pixel_scale;
+        let ov_h = 7 * pixel_scale + pixel_scale;
+        let mut ov = image::RgbaImage::new(ov_w, ov_h);
+        for (ci, &ch) in chars.iter().enumerate() {
+            let rows = glyph_5x7(ch);
+            for (ry, &row_bits) in rows.iter().enumerate() {
+                for rx in 0..5u32 {
+                    if (row_bits >> (4 - rx)) & 1 == 1 {
+                        let bx = (ci as u32 * 6 + rx) * pixel_scale;
+                        let by = (ry as u32) * pixel_scale;
+                        for sy in 0..pixel_scale {
+                            for sx in 0..pixel_scale {
+                                let sx_pos = bx + sx + pixel_scale.min(2);
+                                let sy_pos = by + sy + pixel_scale.min(2);
+                                if sx_pos < ov_w && sy_pos < ov_h {
+                                    ov.put_pixel(sx_pos, sy_pos, image::Rgba([0, 0, 0, 140]));
+                                }
+                            }
+                        }
+                        for sy in 0..pixel_scale {
+                            for sx in 0..pixel_scale {
+                                if bx + sx < ov_w && by + sy < ov_h {
+                                    ov.put_pixel(
+                                        bx + sx,
+                                        by + sy,
+                                        image::Rgba([255, 255, 255, 240]),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Some(ov)
+    } else {
+        None
+    };
+
+    if let Some(ov) = overlay {
+        let (ov_w, ov_h) = ov.dimensions();
+        let (ox, oy) = anchor_origin(img_w, img_h, ov_w, ov_h, wm.anchor, wm.margin);
+        for y in 0..ov_h {
+            let dst_y = oy + y as i32;
+            if dst_y < 0 || dst_y >= img_h as i32 {
+                continue;
+            }
+            for x in 0..ov_w {
+                let dst_x = ox + x as i32;
+                if dst_x < 0 || dst_x >= img_w as i32 {
+                    continue;
+                }
+                let src_px = ov.get_pixel(x, y);
+                let a = (src_px[3] as f32 / 255.0) * opacity;
+                if a <= 0.001 {
+                    continue;
+                }
+                let dst_px = img.get_pixel_mut(dst_x as u32, dst_y as u32);
+                for c in 0..3 {
+                    let blended = (src_px[c] as f32) * a + (dst_px[c] as f32) * (1.0 - a);
+                    dst_px[c] = blended.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+}
+
 /// Comprehensive export configuration.
 #[derive(Clone, Debug)]
 pub struct ExportConfig {
@@ -515,6 +829,7 @@ pub struct ExportConfig {
     pub export_exif: bool,
     pub filename_template: String,
     pub custom_suffix: Option<String>,
+    pub watermark: WatermarkConfig,
 }
 
 impl Default for ExportConfig {
@@ -528,6 +843,7 @@ impl Default for ExportConfig {
             export_exif: true,
             filename_template: "{name}".to_string(),
             custom_suffix: None,
+            watermark: WatermarkConfig::default(),
         }
     }
 }
@@ -593,6 +909,11 @@ pub fn export_decoded_image(
     // 3. Output sharpening
     if config.sharpening != OutputSharpening::None {
         rgba_image = apply_unsharp_mask(&rgba_image, config.sharpening);
+    }
+
+    // 3b. Watermark compositing
+    if config.watermark.enabled {
+        apply_watermark(&mut rgba_image, &config.watermark);
     }
 
     let final_w = rgba_image.width();
@@ -668,6 +989,47 @@ pub fn export_decoded_image(
                     image::ExtendedColorType::Rgba8,
                 )
                 .map_err(|e| BeamError::ImageProcessing(format!("PNG encode error: {e}")))?;
+            Ok(())
+        })(),
+        ExportFormat::Tiff16 => (|| -> Result<()> {
+            let file = std::fs::File::create(&tmp_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            let encoder = image::codecs::tiff::TiffEncoder::new(&mut writer);
+            let mut rgb16_bytes = Vec::with_capacity((final_w as usize) * (final_h as usize) * 6);
+            for p in rgba_image.pixels() {
+                for c in 0..3 {
+                    let v16 = (p[c] as u16) * 257;
+                    rgb16_bytes.extend_from_slice(&v16.to_ne_bytes());
+                }
+            }
+            encoder
+                .write_image(
+                    &rgb16_bytes,
+                    final_w,
+                    final_h,
+                    image::ExtendedColorType::Rgb16,
+                )
+                .map_err(|e| BeamError::ImageProcessing(format!("TIFF16 encode error: {e}")))?;
+            Ok(())
+        })(),
+        ExportFormat::WebP => (|| -> Result<()> {
+            let file = std::fs::File::create(&tmp_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut writer);
+            if let Some(icc) = icc_bytes {
+                let _ = encoder.set_icc_profile(icc);
+            }
+            if let Some(exif) = prepared_exif.take() {
+                let _ = encoder.set_exif_metadata(exif);
+            }
+            encoder
+                .write_image(
+                    rgba_image.as_raw(),
+                    final_w,
+                    final_h,
+                    image::ExtendedColorType::Rgba8,
+                )
+                .map_err(|e| BeamError::ImageProcessing(format!("WebP encode error: {e}")))?;
             Ok(())
         })(),
     };
@@ -1055,6 +1417,7 @@ mod tests {
             export_exif: true,
             filename_template: "{name}".to_string(),
             custom_suffix: None,
+            ..Default::default()
         };
         let res_jpeg = export_decoded_image(
             &gpu,
@@ -1084,6 +1447,7 @@ mod tests {
             export_exif: false,
             filename_template: "{name}".to_string(),
             custom_suffix: None,
+            ..Default::default()
         };
         let res_png = export_decoded_image(
             &gpu,

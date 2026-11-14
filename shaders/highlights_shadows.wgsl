@@ -19,8 +19,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 struct HighlightsShadowsUniforms {
     highlights: f32, // -100.0 to +100.0
     shadows: f32,    // -100.0 to +100.0
+    whites: f32,     // -100.0 to +100.0
+    blacks: f32,     // -100.0 to +100.0
     enabled: u32,
     _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var t_input: texture_2d<f32>;
@@ -34,14 +38,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_coords = vec2<i32>(clamp(in.uv * dims, vec2<f32>(0.0), dims - vec2<f32>(1.0)));
     let color = textureLoad(t_input, tex_coords, 0);
 
-    if (u_params.enabled == 0u || (abs(u_params.highlights) < 1e-4 && abs(u_params.shadows) < 1e-4)) {
+    if (u_params.enabled == 0u
+        || (abs(u_params.highlights) < 1e-4
+            && abs(u_params.shadows) < 1e-4
+            && abs(u_params.whites) < 1e-4
+            && abs(u_params.blacks) < 1e-4)) {
         return color;
     }
 
     let luma = dot(color.rgb, REC2020_LUMA);
-    if (luma <= 1e-5) {
-        return color;
-    }
 
     // Mid-gray pivot = 0.18 in linear light
     let mid = 0.18;
@@ -54,9 +59,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let s_weight = pow(clamp((mid - luma) / mid, 0.0, 1.0), 1.5);
     let s_factor = 1.0 + (u_params.shadows / 100.0) * 0.8 * s_weight;
 
-    let target_luma = max(luma * h_factor * s_factor, 0.0);
-    let ratio = target_luma / luma;
-    let adjusted_rgb = max(color.rgb * ratio, vec3<f32>(0.0));
+    // Whites weight: focused on top end (0.45 -> 1.0+)
+    let w_weight = pow(clamp((luma - 0.45) / 0.55, 0.0, 1.0), 1.8);
+    let w_factor = 1.0 + (u_params.whites / 100.0) * 0.65 * w_weight;
+
+    // Blacks adjustment: focused on toe (0.0 -> 0.12)
+    let b_weight = pow(clamp(1.0 - luma / 0.12, 0.0, 1.0), 2.0);
+    let b_norm = u_params.blacks / 100.0;
+
+    var adjusted_rgb = color.rgb;
+    if (luma > 1e-5) {
+        let target_luma = max(luma * h_factor * s_factor * w_factor, 0.0);
+        let ratio = target_luma / luma;
+        adjusted_rgb = max(adjusted_rgb * ratio, vec3<f32>(0.0));
+    }
+
+    if (b_norm >= 0.0) {
+        // Lift black point smoothly
+        adjusted_rgb = adjusted_rgb + vec3<f32>(b_norm * 0.035 * b_weight);
+    } else {
+        // Crush blacks smoothly toward zero
+        let crush = 1.0 + b_norm * 0.85 * b_weight;
+        adjusted_rgb = max(adjusted_rgb * crush, vec3<f32>(0.0));
+    }
 
     return vec4<f32>(adjusted_rgb, color.a);
 }

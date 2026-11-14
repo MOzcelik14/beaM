@@ -178,6 +178,18 @@ pub fn white_balance_gains(temp_offset: f32, tint_offset: f32) -> [f32; 3] {
     [r_gain, g_gain, b_gain]
 }
 
+/// Computes (temperature, tint) slider offsets [-100.0, +100.0] that neutralize a sampled linear RGB pixel.
+pub fn compute_wb_from_neutral_rgb(rgb: [f32; 3]) -> (f32, f32) {
+    let r = rgb[0].max(1e-5);
+    let g = rgb[1].max(1e-5);
+    let b = rgb[2].max(1e-5);
+
+    let temp = (100.0 * (b / r).log2()).clamp(-100.0, 100.0);
+    let target_g = (r * b).sqrt();
+    let tint = (200.0 * (target_g / g).log2()).clamp(-100.0, 100.0);
+    (temp, tint)
+}
+
 /// Converts a contrast slider value [-100.0, +100.0] into an exponential slope factor.
 pub fn contrast_slope(contrast: f32) -> f32 {
     let c = contrast.clamp(-100.0, 100.0);

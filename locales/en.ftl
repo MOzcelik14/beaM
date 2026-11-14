@@ -119,7 +119,35 @@ develop_histogram = Histogram
 develop_white_balance = White Balance
 develop_wb_temp = Temperature
 develop_wb_tint = Tint
+develop_wb_eyedropper = Pick WB
+develop_wb_eyedropper_tooltip = Click a neutral gray area on the photo to calibrate white balance
+develop_wb_eyedropper_active = Click a neutral area...
 develop_tone = Tone
+develop_whites_slider = Whites
+develop_blacks_slider = Blacks
+develop_reset_whites = Reset Whites (0)
+develop_reset_blacks = Reset Blacks (0)
+develop_vibrance_saturation = Color & Presence
+develop_vibrance_slider = Vibrance
+develop_saturation_slider = Saturation
+develop_reset_vibrance_sat = Reset Color & Presence
+develop_reset_vibrance = Reset Vibrance (0)
+develop_reset_saturation = Reset Saturation (0)
+develop_vignette_grain = Effects (Vignette & Grain)
+develop_vignette_amount_slider = Vignette
+develop_vignette_midpoint_slider = Midpoint
+develop_vignette_feather_slider = Feather
+develop_grain_amount_slider = Grain
+develop_grain_size_slider = Size
+develop_reset_vignette_grain = Reset Effects
+history_whites = Whites: {$val}
+history_blacks = Blacks: {$val}
+history_vibrance = Vibrance: {$val}
+history_saturation = Saturation: {$val}
+history_vignette = Vignette: {$val}
+history_grain = Grain: {$val}
+preset_dialog_group_vibrance_saturation = Color & Presence
+preset_dialog_group_vignette_grain = Effects (Vignette & Grain)
 develop_exposure = Exposure
 develop_contrast = Contrast
 develop_highlights = Highlights
@@ -298,7 +326,7 @@ settings_close = Close
 # About Dialog
 about_title = About beaM.
 about_description = A modern, non-destructive RAW photo editor and library manager for Linux and Windows.
-about_version = Version 0.8.0
+about_version = Version 1.0.0
 about_license = Licensed under GNU General Public License v3.0 (GPL-3.0).
 about_license_text = License: GNU General Public License v3.0 (GPL-3.0)
 about_desc_1 = A non-destructive RAW photo editor and library manager.
@@ -451,3 +479,80 @@ browser_choose_folder = Select Folder...
 browser_open_folder = Open Folder
 browser_folder_photos_count = {$count} photos
 browser_no_subfolders = No subfolders
+
+# Step 2: RGB Curves, Color Grading, Detail, 3D LUT
+curve_channel_master = Master
+curve_channel_red = Red
+curve_channel_green = Green
+curve_channel_blue = Blue
+
+develop_color_grading = Color Grading
+grading_shadows = Shadows
+grading_midtones = Midtones
+grading_highlights = Highlights
+grading_luminance = Lum
+grading_blending = Blending
+grading_balance = Balance
+history_color_grading = Color Grading
+
+develop_detail = Detail
+detail_clarity = Clarity
+detail_dehaze = Dehaze
+detail_sharpening = Sharpening
+detail_nr_luma = Luma NR
+detail_nr_color = Color NR
+history_detail = Detail
+
+develop_lut = 3D LUT
+lut_load_cube = Load .cube LUT...
+lut_clear = Clear
+lut_none = No LUT loaded
+lut_intensity = Intensity
+history_lut = 3D LUT
+
+# Step 3: Parametric Masking
+develop_masks = Masks
+masks_add_linear = + Linear Gradient
+masks_add_radial = + Radial Gradient
+masks_none = No masks added yet
+masks_show_overlay = Show Overlay
+masks_linear_name = Linear {$num}
+masks_radial_name = Radial {$num}
+masks_invert = Invert Mask
+masks_feather = Feather
+masks_delete = Delete
+history_masks = Mask Adjustment
+
+# Step 4: Auto Tone & Virtual Copies
+develop_auto_tone = Auto Tone
+develop_auto_tone_tooltip = Automatically balance exposure, contrast, highlights, shadows, and whites from the histogram
+history_auto_tone = Auto Tone
+library_create_virtual_copy = Create Virtual Copy
+library_virtual_copies = Virtual Copies
+library_open_virtual_copy = Open
+library_delete_virtual_copy = Delete
+
+# Step 5: Extended Export & Watermarks
+export_format_tiff16 = TIFF (16-bit)
+export_format_webp = WebP
+export_watermark = Watermark
+export_watermark_enable = Enable Watermark
+export_watermark_text = Text
+export_watermark_logo = PNG Logo
+export_watermark_pick_logo = Choose PNG...
+export_watermark_clear_logo = Clear
+export_watermark_opacity = Opacity
+export_watermark_scale = Scale
+export_watermark_position = Position
+
+menu_file_open = Open Photo...
+menu_file_import = Import Folder...
+history_crop_reset = Reset Crop
+history_crop_aspect = Crop Aspect Ratio
+history_crop_rotate = Rotate 90 deg
+history_crop_flip_h = Flip Horizontal
+history_crop_flip_v = Flip Vertical
+history_crop_straighten = Straighten
+
+
+

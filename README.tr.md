@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MOzcelik14/beaM/releases"><img src="https://img.shields.io/badge/Sürüm-v0.8.0-0969da.svg" alt="Sürüm v0.8.0" /></a>
+  <a href="https://github.com/MOzcelik14/beaM/releases"><img src="https://img.shields.io/badge/Sürüm-v1.0.0-0969da.svg" alt="Sürüm v1.0.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/Lisans-GPL--3.0-2da44e.svg" alt="Lisans: GPL-3.0" /></a>
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-6e7681.svg" alt="Platform: Linux | Windows" />
 </p>
@@ -92,21 +92,21 @@ beaM., popüler dijital kameraların RAW formatlarını ve standart görüntü d
 
 - **Debian / Ubuntu / Pop!_OS (`.deb`)**:
   ```bash
-  sudo dpkg -i beam_0.8.0_amd64.deb
+  sudo dpkg -i beam_1.0.0_amd64.deb
   sudo apt-get install -f
   ```
 - **Fedora / RHEL / CentOS (`.rpm`)**:
   ```bash
-  sudo rpm -i beam-0.8.0-1.x86_64.rpm
+  sudo rpm -i beam-1.0.0-1.x86_64.rpm
   ```
 - **Evrensel Taşınabilir Linux (`.AppImage`)**:
   ```bash
-  chmod +x beaM-0.8.0-x86_64.AppImage
-  ./beaM-0.8.0-x86_64.AppImage
+  chmod +x beaM-1.0.0-x86_64.AppImage
+  ./beaM-1.0.0-x86_64.AppImage
   ```
 - **Windows 10 / 11 (64-bit)**:
-  - **Kurulum**: Başlat menüsü ve dosya ilişkilendirmeleriyle kurulum için `beaM-v0.8.0-windows-x86_64-setup.exe` dosyasını çalıştırın.
-  - **Taşınabilir**: `beaM-v0.8.0-windows-x86_64.zip` arşivini açıp doğrudan `beam.exe` dosyasını çalıştırın.
+  - **Kurulum**: Başlat menüsü ve dosya ilişkilendirmeleriyle kurulum için `beaM-v1.0.0-windows-x86_64-setup.exe` dosyasını çalıştırın.
+  - **Taşınabilir**: `beaM-v1.0.0-windows-x86_64.zip` arşivini açıp doğrudan `beam.exe` dosyasını çalıştırın.
 
 ### prisM. Suite Entegrasyonu
 Eğer [prisM. Suite](https://github.com/MOzcelik14/prism-suite) kullanıyorsanız, **beaM.** uygulamasını tek merkezden kolayca kurabilir, başlatabilir ve güncelleyebilirsiniz.

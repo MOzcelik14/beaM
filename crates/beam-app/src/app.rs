@@ -1,9 +1,11 @@
 use crate::views::library::{
     show_library_view, LibraryAction, LibraryViewState, ThumbnailRequest, ThumbnailStatus,
 };
+use crate::widgets::color_wheel::show_color_wheel;
 use crate::widgets::crop::show_crop_overlay;
-use crate::widgets::curve::show_tone_curve;
+use crate::widgets::curve::show_tone_curve_colored;
 use crate::widgets::histogram::{show_histogram_with_clipping, HistogramData, HistogramMode};
+use crate::widgets::mask_overlay::show_mask_overlay;
 use beam_core::geometry::{calculate_effective_aspect_ratio, create_centered_crop_rect};
 use beam_core::sidecar::{
     ColorLabel, CropAspectPreset, EditStack, HistoryStep, Sidecar, MAX_HISTORY_STEPS,
@@ -109,6 +111,11 @@ pub struct BeamApp {
     before_after_mode: BeforeAfterMode,
     split_view_divider: f32,
     pub crop_mode_active: bool,
+    pub wb_eyedropper_active: bool,
+    pub active_curve_channel: usize,
+    pub selected_mask_id: Option<u64>,
+    pub show_mask_overlay: bool,
+    pub next_mask_id: u64,
 
     // Background decoding
     tx: Sender<BackgroundMsg>,
@@ -171,7 +178,7 @@ pub struct BeamApp {
     show_export_dialog: bool,
     show_export_progress: bool,
     export_output_dir: PathBuf,
-    export_format_is_png: bool,
+    export_format_index: usize,
     export_jpeg_quality: u8,
     export_color_space: beam_core::ExportColorSpace,
     export_resize_mode_index: usize,
@@ -184,6 +191,12 @@ pub struct BeamApp {
     export_include_exif: bool,
     export_template: String,
     export_suffix: String,
+    export_watermark_enabled: bool,
+    export_watermark_text: String,
+    export_watermark_logo_path: Option<PathBuf>,
+    export_watermark_anchor: beam_media::WatermarkAnchor,
+    export_watermark_opacity: f32,
+    export_watermark_scale: f32,
     export_targets: Vec<(PathBuf, EditStack)>,
     export_cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     export_progress_data: Option<beam_media::BatchProgress>,
@@ -463,6 +476,11 @@ impl BeamApp {
             before_after_mode: BeforeAfterMode::Normal,
             split_view_divider: 0.5,
             crop_mode_active: false,
+            wb_eyedropper_active: false,
+            active_curve_channel: 0,
+            selected_mask_id: None,
+            show_mask_overlay: true,
+            next_mask_id: 1,
             tx,
             rx,
             is_loading: false,
@@ -509,7 +527,7 @@ impl BeamApp {
             show_export_dialog: false,
             show_export_progress: false,
             export_output_dir,
-            export_format_is_png: false,
+            export_format_index: 0,
             export_jpeg_quality: 90,
             export_color_space: beam_core::ExportColorSpace::Srgb,
             export_resize_mode_index: 0,
@@ -522,6 +540,12 @@ impl BeamApp {
             export_include_exif: true,
             export_template: "{name}".to_string(),
             export_suffix: "_beam".to_string(),
+            export_watermark_enabled: false,
+            export_watermark_text: String::new(),
+            export_watermark_logo_path: None,
+            export_watermark_anchor: beam_media::WatermarkAnchor::BottomRight,
+            export_watermark_opacity: 0.65,
+            export_watermark_scale: 0.12,
             export_targets: Vec::new(),
             export_cancel_flag: None,
             export_progress_data: None,
@@ -2209,6 +2233,23 @@ impl eframe::App for BeamApp {
                         let _ = self.library_db.delete_photo(photo_id);
                         self.library_state.needs_refresh = true;
                     }
+                    LibraryAction::CreateVirtualCopy(photo_id) => {
+                        if let Err(e) = self.library_db.create_virtual_copy(photo_id) {
+                            log::error!("Failed to create virtual copy: {e}");
+                        } else {
+                            self.library_state.needs_refresh = true;
+                        }
+                    }
+                    LibraryAction::OpenVirtualCopy(photo_path, vc_sidecar_path) => {
+                        if let Ok(sc) = Sidecar::load_from_file(&vc_sidecar_path) {
+                            self.pending_project_sidecar = Some((vc_sidecar_path, sc));
+                        }
+                        self.request_load_file_path(photo_path);
+                    }
+                    LibraryAction::DeleteVirtualCopy(copy_id) => {
+                        let _ = self.library_db.delete_virtual_copy(copy_id);
+                        self.library_state.needs_refresh = true;
+                    }
                     LibraryAction::None => {}
                 }
             }
@@ -2672,14 +2713,15 @@ impl eframe::App for BeamApp {
                 let mut immediate_action = false;
 
                 if self.show_develop_panel && self.current_image.is_some() {
-                    Panel::right("develop_panel")
+                    Panel::right("develop_panel_v7")
                         .resizable(true)
-                        .default_size(320.0)
-                        .min_size(280.0)
+                        .default_size(285.0)
+                        .min_size(260.0)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false; 2])
                                 .show(ui, |ui| {
+                                    ui.spacing_mut().slider_width = 100.0;
                                     ui.heading(
                                         RichText::new(t!("view_develop"))
                                             .strong()
@@ -2706,37 +2748,56 @@ impl eframe::App for BeamApp {
                                             let mut reset_clicked = false;
                                             ui.horizontal(|ui| {
                                                 ui.allocate_ui_with_layout(
-                                                    Vec2::new(76.0, ui.spacing().interact_size.y),
+                                                    Vec2::new(74.0, ui.spacing().interact_size.y),
                                                     egui::Layout::left_to_right(
                                                         egui::Align::Center,
                                                     ),
                                                     |ui| {
                                                         ui.label(
                                                             RichText::new(label)
-                                                                .size(12.0)
+                                                                .size(11.5)
                                                                 .color(Color32::from_rgb(
                                                                     185, 190, 202,
                                                                 )),
                                                         );
                                                     },
                                                 );
-                                                let slider_w =
-                                                    (ui.available_width() - 30.0).max(60.0);
-                                                let resp = ui.add_sized(
-                                                    [slider_w, ui.spacing().interact_size.y],
-                                                    slider,
-                                                );
+                                                let prev_interact = ui.spacing().interact_size.x;
+                                                let prev_slider_w = ui.spacing().slider_width;
+                                                let val_w = 46.0;
+                                                let reset_w = 24.0;
+                                                let slider_w = (ui.available_width()
+                                                    - val_w
+                                                    - reset_w
+                                                    - 24.0)
+                                                    .max(40.0);
+                                                ui.spacing_mut().interact_size.x = val_w;
+                                                ui.spacing_mut().slider_width = slider_w;
+                                                let resp = ui.add(slider);
+                                                ui.spacing_mut().interact_size.x = prev_interact;
+                                                ui.spacing_mut().slider_width = prev_slider_w;
                                                 changed_resp = Some(resp);
-                                                if ui.button("↺").on_hover_text(reset_tip).clicked()
-                                                {
-                                                    reset_clicked = true;
-                                                }
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        if ui
+                                                            .button("↺")
+                                                            .on_hover_text(reset_tip)
+                                                            .clicked()
+                                                        {
+                                                            reset_clicked = true;
+                                                        }
+                                                    },
+                                                );
                                             });
                                             (changed_resp.unwrap(), reset_clicked)
                                         };
 
                                     // 1. Histogram Widget
                                     let mut clipping_changed = false;
+                                    let mut auto_tone_vals: Option<(f32, f32, f32, f32, f32)> = None;
                                     if let Some(hist_data) = &self.histogram_data {
                                         card_frame.show(ui, |ui| {
                                             if show_histogram_with_clipping(
@@ -2748,8 +2809,41 @@ impl eframe::App for BeamApp {
                                             ) {
                                                 clipping_changed = true;
                                             }
+                                            ui.add_space(4.0);
+                                            ui.horizontal(|ui| {
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(egui::Align::Center),
+                                                    |ui| {
+                                                        if ui
+                                                            .button(t!("develop_auto_tone"))
+                                                            .on_hover_text(t!(
+                                                                "develop_auto_tone_tooltip"
+                                                            ))
+                                                            .clicked()
+                                                        {
+                                                            auto_tone_vals =
+                                                                Some(hist_data.compute_auto_tone());
+                                                        }
+                                                    },
+                                                );
+                                            });
                                         });
                                         ui.add_space(6.0);
+                                    }
+                                    if let Some((ev, contrast, highlights, shadows, whites)) =
+                                        auto_tone_vals
+                                    {
+                                        self.edit_stack.exposure.enabled = true;
+                                        self.edit_stack.exposure.ev = ev;
+                                        self.edit_stack.contrast.enabled = true;
+                                        self.edit_stack.contrast.contrast = contrast;
+                                        self.edit_stack.highlights_shadows.enabled = true;
+                                        self.edit_stack.highlights_shadows.highlights = highlights;
+                                        self.edit_stack.highlights_shadows.shadows = shadows;
+                                        self.edit_stack.highlights_shadows.whites = whites;
+                                        self.re_render_edits(frame);
+                                        self.push_history_step(t!("history_auto_tone"));
+                                        ctx.request_repaint();
                                     }
                                     if clipping_changed {
                                         self.re_render_edits(frame);
@@ -2947,7 +3041,7 @@ impl eframe::App for BeamApp {
                                         ui.add_space(4.0);
 
                                         // Rotate and Flip Buttons
-                                        ui.horizontal(|ui| {
+                                        ui.horizontal_wrapped(|ui| {
                                             if ui
                                                 .button("↶ 90°")
                                                 .on_hover_text(t!("develop_crop_rotate_ccw"))
@@ -3072,6 +3166,7 @@ impl eframe::App for BeamApp {
                                                         .clicked()
                                                     {
                                                         self.edit_stack.reset_white_balance();
+                                                        self.wb_eyedropper_active = false;
                                                         edits_changed = true;
                                                         immediate_action = true;
                                                         action_label = Some(t!(
@@ -3095,6 +3190,40 @@ impl eframe::App for BeamApp {
                                                             "history_toggle_section",
                                                             "section" => t!("develop_white_balance")
                                                         ));
+                                                    }
+                                                    let picker_btn = egui::Button::new(
+                                                        RichText::new(t!("develop_wb_eyedropper"))
+                                                            .size(10.5)
+                                                            .color(if self.wb_eyedropper_active {
+                                                                Color32::from_rgb(130, 195, 255)
+                                                            } else {
+                                                                Color32::from_rgb(195, 200, 212)
+                                                            }),
+                                                    )
+                                                    .fill(if self.wb_eyedropper_active {
+                                                        Color32::from_rgb(38, 62, 96)
+                                                    } else {
+                                                        Color32::from_rgb(26, 28, 35)
+                                                    })
+                                                    .stroke(Stroke::new(
+                                                        1.0,
+                                                        if self.wb_eyedropper_active {
+                                                            Color32::from_rgb(80, 145, 230)
+                                                        } else {
+                                                            Color32::from_rgb(46, 50, 60)
+                                                        },
+                                                    ))
+                                                    .corner_radius(5.0);
+                                                    if ui
+                                                        .add(picker_btn)
+                                                        .on_hover_text(t!("develop_wb_eyedropper_tooltip"))
+                                                        .clicked()
+                                                    {
+                                                        self.wb_eyedropper_active =
+                                                            !self.wb_eyedropper_active;
+                                                        if self.wb_eyedropper_active {
+                                                            self.crop_mode_active = false;
+                                                        }
                                                     }
                                                 },
                                             );
@@ -3228,7 +3357,7 @@ impl eframe::App for BeamApp {
                                                 -5.00..=5.00,
                                             )
                                             .step_by(0.05)
-                                            .custom_formatter(|v, _| format!("{:+.2} EV", v)),
+                                            .custom_formatter(|v, _| format!("{:+.2}", v)),
                                             tip_exp_reset.as_str(),
                                         );
                                         if resp.changed() {
@@ -3394,6 +3523,74 @@ impl eframe::App for BeamApp {
                                                 "section" => t!("develop_shadows")
                                             ));
                                         }
+
+                                        // Whites slider
+                                        let tip_wh_reset = t!("develop_reset_whites");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_whites_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.highlights_shadows.whites,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_wh_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_whites",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.highlights_shadows.whites
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.highlights_shadows.whites = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_whites_slider")
+                                            ));
+                                        }
+
+                                        // Blacks slider
+                                        let tip_bl_reset = t!("develop_reset_blacks");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_blacks_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.highlights_shadows.blacks,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_bl_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_blacks",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.highlights_shadows.blacks
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.highlights_shadows.blacks = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_blacks_slider")
+                                            ));
+                                        }
                                     });
 
                                     ui.add_space(6.0);
@@ -3523,12 +3720,56 @@ impl eframe::App for BeamApp {
                                             );
                                         });
 
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            let channels = [
+                                                (0usize, t!("curve_channel_master"), Color32::from_rgb(220, 220, 225)),
+                                                (1usize, t!("curve_channel_red"), Color32::from_rgb(235, 95, 95)),
+                                                (2usize, t!("curve_channel_green"), Color32::from_rgb(95, 215, 120)),
+                                                (3usize, t!("curve_channel_blue"), Color32::from_rgb(95, 160, 240)),
+                                            ];
+                                            for (idx, label, col) in channels {
+                                                let active = self.active_curve_channel == idx;
+                                                let btn = egui::Button::new(
+                                                    RichText::new(label).size(11.0).color(if active {
+                                                        col
+                                                    } else {
+                                                        Color32::from_rgb(135, 142, 158)
+                                                    }),
+                                                )
+                                                .fill(if active {
+                                                    Color32::from_rgb(38, 42, 54)
+                                                } else {
+                                                    Color32::from_rgb(22, 24, 30)
+                                                })
+                                                .corner_radius(4.0);
+                                                if ui.add(btn).clicked() {
+                                                    self.active_curve_channel = idx;
+                                                }
+                                            }
+                                        });
                                         ui.add_space(6.0);
 
-                                        if show_tone_curve(
-                                            ui,
-                                            &mut self.edit_stack.tone_curve.points,
-                                        ) {
+                                        let (active_points, curve_color) = match self.active_curve_channel {
+                                            1 => (
+                                                &mut self.edit_stack.tone_curve.red_points,
+                                                Color32::from_rgb(235, 95, 95),
+                                            ),
+                                            2 => (
+                                                &mut self.edit_stack.tone_curve.green_points,
+                                                Color32::from_rgb(95, 215, 120),
+                                            ),
+                                            3 => (
+                                                &mut self.edit_stack.tone_curve.blue_points,
+                                                Color32::from_rgb(95, 160, 240),
+                                            ),
+                                            _ => (
+                                                &mut self.edit_stack.tone_curve.points,
+                                                Color32::from_rgb(220, 220, 225),
+                                            ),
+                                        };
+
+                                        if show_tone_curve_colored(ui, active_points, curve_color) {
                                             edits_changed = true;
                                             action_label = Some(t!("history_tone_curve"));
                                         }
@@ -3766,10 +4007,884 @@ impl eframe::App for BeamApp {
                                         }
                                     });
 
+                                    ui.add_space(6.0);
+
+                                    // 7b. Color & Presence (Vibrance & Saturation)
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_vibrance_saturation"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text(t!("develop_reset_vibrance_sat"))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_vibrance_saturation();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_vibrance_saturation")
+                                                        ));
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self
+                                                                .edit_stack
+                                                                .vibrance_saturation
+                                                                .enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_vibrance_saturation")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(6.0);
+
+                                        let tip_vib_reset = t!("develop_reset_vibrance");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_vibrance_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.vibrance_saturation.vibrance,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_vib_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_vibrance",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.vibrance_saturation.vibrance
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.vibrance_saturation.vibrance = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_vibrance_slider")
+                                            ));
+                                        }
+
+                                        let tip_sat_reset = t!("develop_reset_saturation");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_saturation_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.vibrance_saturation.saturation,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_sat_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_saturation",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.vibrance_saturation.saturation
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.vibrance_saturation.saturation = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_saturation_slider")
+                                            ));
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 7c. Effects (Vignette & Grain)
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_vignette_grain"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button("↺")
+                                                        .on_hover_text(t!("develop_reset_vignette_grain"))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_vignette_grain();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_vignette_grain")
+                                                        ));
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self
+                                                                .edit_stack
+                                                                .vignette_grain
+                                                                .enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_vignette_grain")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+
+                                        ui.add_space(6.0);
+
+                                        let tip_vg_reset = t!("develop_reset_vignette_grain");
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_vignette_amount_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.vignette_grain.vignette_amount,
+                                                -100.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_vg_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_vignette",
+                                                "val" => {
+                                                    format!(
+                                                        "{:+0.0}",
+                                                        self.edit_stack.vignette_grain.vignette_amount
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.vignette_grain.vignette_amount = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_vignette_amount_slider")
+                                            ));
+                                        }
+
+                                        if self.edit_stack.vignette_grain.vignette_amount.abs() > 0.1 {
+                                            let (resp, reset) = draw_slider_row(
+                                                ui,
+                                                &t!("develop_vignette_midpoint_slider"),
+                                                Slider::new(
+                                                    &mut self.edit_stack.vignette_grain.vignette_midpoint,
+                                                    0.0..=100.0,
+                                                )
+                                                .show_value(true),
+                                                tip_vg_reset.as_str(),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_vignette",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.vignette_grain.vignette_amount)
+                                                ));
+                                            }
+                                            if reset {
+                                                self.edit_stack.vignette_grain.vignette_midpoint = 50.0;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                            }
+
+                                            let (resp, reset) = draw_slider_row(
+                                                ui,
+                                                &t!("develop_vignette_feather_slider"),
+                                                Slider::new(
+                                                    &mut self.edit_stack.vignette_grain.vignette_feather,
+                                                    0.0..=100.0,
+                                                )
+                                                .show_value(true),
+                                                tip_vg_reset.as_str(),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_vignette",
+                                                    "val" => format!("{:+0.0}", self.edit_stack.vignette_grain.vignette_amount)
+                                                ));
+                                            }
+                                            if reset {
+                                                self.edit_stack.vignette_grain.vignette_feather = 50.0;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                            }
+                                        }
+
+                                        let (resp, reset) = draw_slider_row(
+                                            ui,
+                                            &t!("develop_grain_amount_slider"),
+                                            Slider::new(
+                                                &mut self.edit_stack.vignette_grain.grain_amount,
+                                                0.0..=100.0,
+                                            )
+                                            .show_value(true),
+                                            tip_vg_reset.as_str(),
+                                        );
+                                        if resp.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!(
+                                                "history_grain",
+                                                "val" => {
+                                                    format!(
+                                                        "{:.0}",
+                                                        self.edit_stack.vignette_grain.grain_amount
+                                                    )
+                                                }
+                                            ));
+                                        }
+                                        if reset {
+                                            self.edit_stack.vignette_grain.grain_amount = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!(
+                                                "history_reset_section",
+                                                "section" => t!("develop_grain_amount_slider")
+                                            ));
+                                        }
+
+                                        if self.edit_stack.vignette_grain.grain_amount > 0.1 {
+                                            let (resp, reset) = draw_slider_row(
+                                                ui,
+                                                &t!("develop_grain_size_slider"),
+                                                Slider::new(
+                                                    &mut self.edit_stack.vignette_grain.grain_size,
+                                                    1.0..=5.0,
+                                                )
+                                                .show_value(true),
+                                                tip_vg_reset.as_str(),
+                                            );
+                                            if resp.changed() {
+                                                edits_changed = true;
+                                                action_label = Some(t!(
+                                                    "history_grain",
+                                                    "val" => format!("{:.0}", self.edit_stack.vignette_grain.grain_amount)
+                                                ));
+                                            }
+                                            if reset {
+                                                self.edit_stack.vignette_grain.grain_size = 1.5;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 10. Color Grading Section (3-Way Wheels)
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_color_grading"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .small_button("↺")
+                                                        .on_hover_text(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_color_grading")
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_color_grading();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_color_grading")
+                                                        ));
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.color_grading.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_color_grading")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(6.0);
+
+                                        let lum_lbl = t!("grading_luminance");
+                                        ui.columns(3, |cols| {
+                                            let (c, s) = show_color_wheel(
+                                                &mut cols[0],
+                                                &t!("grading_shadows"),
+                                                &mut self.edit_stack.color_grading.shadows,
+                                                &lum_lbl,
+                                            );
+                                            if c {
+                                                edits_changed = true;
+                                                action_label = Some(t!("history_color_grading"));
+                                            }
+                                            if s {
+                                                immediate_action = true;
+                                            }
+
+                                            let (c, s) = show_color_wheel(
+                                                &mut cols[1],
+                                                &t!("grading_midtones"),
+                                                &mut self.edit_stack.color_grading.midtones,
+                                                &lum_lbl,
+                                            );
+                                            if c {
+                                                edits_changed = true;
+                                                action_label = Some(t!("history_color_grading"));
+                                            }
+                                            if s {
+                                                immediate_action = true;
+                                            }
+
+                                            let (c, s) = show_color_wheel(
+                                                &mut cols[2],
+                                                &t!("grading_highlights"),
+                                                &mut self.edit_stack.color_grading.highlights,
+                                                &lum_lbl,
+                                            );
+                                            if c {
+                                                edits_changed = true;
+                                                action_label = Some(t!("history_color_grading"));
+                                            }
+                                            if s {
+                                                immediate_action = true;
+                                            }
+                                        });
+
+                                        ui.add_space(4.0);
+                                        let (blend_res, blend_reset) = draw_slider_row(
+                                            ui,
+                                            &t!("grading_blending"),
+                                            Slider::new(
+                                                &mut self.edit_stack.color_grading.blending,
+                                                0.0..=1.0,
+                                            )
+                                            .fixed_decimals(2),
+                                            &t!("grading_blending"),
+                                        );
+                                        if blend_reset {
+                                            self.edit_stack.color_grading.blending = 0.5;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!("history_color_grading"));
+                                        }
+                                        if blend_res.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!("history_color_grading"));
+                                        }
+                                        if blend_res.drag_stopped() {
+                                            immediate_action = true;
+                                        }
+
+                                        let (bal_res, bal_reset) = draw_slider_row(
+                                            ui,
+                                            &t!("grading_balance"),
+                                            Slider::new(
+                                                &mut self.edit_stack.color_grading.balance,
+                                                -1.0..=1.0,
+                                            )
+                                            .fixed_decimals(2),
+                                            &t!("grading_balance"),
+                                        );
+                                        if bal_reset {
+                                            self.edit_stack.color_grading.balance = 0.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!("history_color_grading"));
+                                        }
+                                        if bal_res.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!("history_color_grading"));
+                                        }
+                                        if bal_res.drag_stopped() {
+                                            immediate_action = true;
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 11. Detail Section (Clarity, Dehaze, Sharpening, NR)
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_detail"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .small_button("↺")
+                                                        .on_hover_text(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_detail")
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_detail();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_detail")
+                                                        ));
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.detail.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_detail")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(6.0);
+
+                                        let detail_sliders: [(&str, &mut f32, std::ops::RangeInclusive<f32>); 5] = [
+                                            ("detail_clarity", &mut self.edit_stack.detail.clarity, -1.0..=1.0),
+                                            ("detail_dehaze", &mut self.edit_stack.detail.dehaze, -1.0..=1.0),
+                                            ("detail_sharpening", &mut self.edit_stack.detail.sharpening, 0.0..=1.0),
+                                            ("detail_nr_luma", &mut self.edit_stack.detail.noise_reduction_luma, 0.0..=1.0),
+                                            ("detail_nr_color", &mut self.edit_stack.detail.noise_reduction_color, 0.0..=1.0),
+                                        ];
+                                        for (key, val, range) in detail_sliders {
+                                            let lbl = t!(key);
+                                            let (res, reset) = draw_slider_row(
+                                                ui,
+                                                &lbl,
+                                                Slider::new(val, range).fixed_decimals(2),
+                                                &lbl,
+                                            );
+                                            if reset {
+                                                *val = 0.0;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_detail"));
+                                            }
+                                            if res.changed() {
+                                                edits_changed = true;
+                                                action_label = Some(t!("history_detail"));
+                                            }
+                                            if res.drag_stopped() {
+                                                immediate_action = true;
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 12. 3D LUT Section (.cube)
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_lut"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .small_button("↺")
+                                                        .on_hover_text(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_lut")
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_lut();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_lut")
+                                                        ));
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.lut.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_lut")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(6.0);
+
+                                        ui.horizontal(|ui| {
+                                            if ui.button(t!("lut_load_cube")).clicked() {
+                                                if let Some(path) = rfd::FileDialog::new()
+                                                    .add_filter("3D LUT", &["cube", "CUBE"])
+                                                    .pick_file()
+                                                {
+                                                    self.edit_stack.lut.path =
+                                                        Some(path.to_string_lossy().to_string());
+                                                    self.edit_stack.lut.enabled = true;
+                                                    edits_changed = true;
+                                                    immediate_action = true;
+                                                    action_label = Some(t!("history_lut"));
+                                                }
+                                            }
+                                            if self.edit_stack.lut.path.is_some()
+                                                && ui.button(t!("lut_clear")).clicked()
+                                            {
+                                                self.edit_stack.lut.path = None;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_lut"));
+                                            }
+                                        });
+
+                                        let lut_name = self
+                                            .edit_stack
+                                            .lut
+                                            .path
+                                            .as_deref()
+                                            .and_then(|p| std::path::Path::new(p).file_name())
+                                            .and_then(|n| n.to_str())
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| t!("lut_none"));
+                                        ui.label(
+                                            RichText::new(lut_name).weak().size(11.0),
+                                        );
+
+                                        let int_lbl = t!("lut_intensity");
+                                        let (int_res, int_reset) = draw_slider_row(
+                                            ui,
+                                            &int_lbl,
+                                            Slider::new(
+                                                &mut self.edit_stack.lut.intensity,
+                                                0.0..=1.0,
+                                            )
+                                            .fixed_decimals(2),
+                                            &int_lbl,
+                                        );
+                                        if int_reset {
+                                            self.edit_stack.lut.intensity = 1.0;
+                                            edits_changed = true;
+                                            immediate_action = true;
+                                            action_label = Some(t!("history_lut"));
+                                        }
+                                        if int_res.changed() {
+                                            edits_changed = true;
+                                            action_label = Some(t!("history_lut"));
+                                        }
+                                        if int_res.drag_stopped() {
+                                            immediate_action = true;
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
+                                    // 13. Parametric Masks Section (Linear & Radial Gradients)
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_masks"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .small_button("↺")
+                                                        .on_hover_text(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_masks")
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.reset_masks();
+                                                        self.selected_mask_id = None;
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_masks")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(6.0);
+
+                                        ui.horizontal_wrapped(|ui| {
+                                            let can_add = self.edit_stack.masks.len() < 8;
+                                            if ui
+                                                .add_enabled(
+                                                    can_add,
+                                                    egui::Button::new(t!("masks_add_linear")),
+                                                )
+                                                .clicked()
+                                            {
+                                                let id = self.next_mask_id;
+                                                self.next_mask_id += 1;
+                                                let name = t!(
+                                                    "masks_linear_name",
+                                                    "num" => (self.edit_stack.masks.len() + 1).to_string()
+                                                );
+                                                self.edit_stack.masks.push(
+                                                    beam_core::sidecar::MaskLayer::new_linear(
+                                                        id, name,
+                                                    ),
+                                                );
+                                                self.selected_mask_id = Some(id);
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_masks"));
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    can_add,
+                                                    egui::Button::new(t!("masks_add_radial")),
+                                                )
+                                                .clicked()
+                                            {
+                                                let id = self.next_mask_id;
+                                                self.next_mask_id += 1;
+                                                let name = t!(
+                                                    "masks_radial_name",
+                                                    "num" => (self.edit_stack.masks.len() + 1).to_string()
+                                                );
+                                                self.edit_stack.masks.push(
+                                                    beam_core::sidecar::MaskLayer::new_radial(
+                                                        id, name,
+                                                    ),
+                                                );
+                                                self.selected_mask_id = Some(id);
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_masks"));
+                                            }
+                                        });
+
+                                        if self.edit_stack.masks.is_empty() {
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                RichText::new(t!("masks_none"))
+                                                    .weak()
+                                                    .size(11.0),
+                                            );
+                                        } else {
+                                            ui.checkbox(
+                                                &mut self.show_mask_overlay,
+                                                t!("masks_show_overlay"),
+                                            );
+                                            ui.add_space(4.0);
+
+                                            let mut delete_idx = None;
+                                            for (idx, mask) in
+                                                self.edit_stack.masks.iter_mut().enumerate()
+                                            {
+                                                let is_sel = self.selected_mask_id == Some(mask.id);
+                                                ui.horizontal(|ui| {
+                                                    if ui.checkbox(&mut mask.enabled, "").changed() {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!("history_masks"));
+                                                    }
+                                                    let resp = ui.selectable_label(is_sel, &mask.name);
+                                                    if resp.clicked() {
+                                                        self.selected_mask_id = Some(mask.id);
+                                                    }
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            if ui
+                                                                .small_button("X")
+                                                                .on_hover_text(t!("masks_delete"))
+                                                                .clicked()
+                                                            {
+                                                                delete_idx = Some(idx);
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            }
+                                            if let Some(idx) = delete_idx {
+                                                let removed = self.edit_stack.masks.remove(idx);
+                                                if self.selected_mask_id == Some(removed.id) {
+                                                    self.selected_mask_id = self
+                                                        .edit_stack
+                                                        .masks
+                                                        .first()
+                                                        .map(|m| m.id);
+                                                }
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_masks"));
+                                            }
+
+                                            if let Some(sel_id) = self.selected_mask_id {
+                                                if let Some(mask) = self
+                                                    .edit_stack
+                                                    .masks
+                                                    .iter_mut()
+                                                    .find(|m| m.id == sel_id)
+                                                {
+                                                    ui.separator();
+                                                    if let beam_core::sidecar::MaskShape::RadialGradient {
+                                                        feather,
+                                                        invert,
+                                                        ..
+                                                    } = &mut mask.shape
+                                                    {
+                                                        if ui
+                                                            .checkbox(invert, t!("masks_invert"))
+                                                            .changed()
+                                                        {
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        let f_lbl = t!("masks_feather");
+                                                        let (f_res, f_reset) = draw_slider_row(
+                                                            ui,
+                                                            &f_lbl,
+                                                            Slider::new(feather, 0.0..=1.0)
+                                                                .fixed_decimals(2),
+                                                            &f_lbl,
+                                                        );
+                                                        if f_reset {
+                                                            *feather = 0.5;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if f_res.changed() {
+                                                            edits_changed = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if f_res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+                                                    }
+
+                                                    let mask_sliders: [(&str, &mut f32, std::ops::RangeInclusive<f32>, usize); 7] = [
+                                                        ("develop_exposure", &mut mask.exposure, -5.0..=5.0, 2),
+                                                        ("develop_contrast", &mut mask.contrast, -100.0..=100.0, 0),
+                                                        ("develop_highlights", &mut mask.highlights, -100.0..=100.0, 0),
+                                                        ("develop_shadows", &mut mask.shadows, -100.0..=100.0, 0),
+                                                        ("develop_wb_temp", &mut mask.temperature, -100.0..=100.0, 0),
+                                                        ("develop_wb_tint", &mut mask.tint, -100.0..=100.0, 0),
+                                                        ("develop_saturation_slider", &mut mask.saturation, -100.0..=100.0, 0),
+                                                    ];
+                                                    for (key, val, range, dec) in mask_sliders {
+                                                        let lbl = t!(key);
+                                                        let (res, reset) = draw_slider_row(
+                                                            ui,
+                                                            &lbl,
+                                                            Slider::new(val, range)
+                                                                .fixed_decimals(dec),
+                                                            &lbl,
+                                                        );
+                                                        if reset {
+                                                            *val = 0.0;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if res.changed() {
+                                                            edits_changed = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+
                                     ui.add_space(14.0);
 
                                     // 8. Action Buttons
-                                    ui.horizontal(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
                                         let reset_btn = egui::Button::new(
                                             RichText::new(format!("↺ {}", t!("develop_reset_all")))
                                                 .size(11.5)
@@ -4149,6 +5264,71 @@ impl eframe::App for BeamApp {
                                     Color32::WHITE,
                                 );
 
+                                // White balance eyedropper interaction
+                                if self.wb_eyedropper_active {
+                                    if viewport_resp.hovered() {
+                                        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                                    }
+                                    if viewport_resp.clicked() {
+                                        if let Some(click_pos) = viewport_resp.interact_pointer_pos() {
+                                            if image_rect.contains(click_pos) {
+                                                if let Some(img) = &self.current_image {
+                                                    let u = ((click_pos.x - image_rect.min.x)
+                                                        / image_rect.width().max(1.0))
+                                                    .clamp(0.0, 1.0);
+                                                    let v = ((click_pos.y - image_rect.min.y)
+                                                        / image_rect.height().max(1.0))
+                                                    .clamp(0.0, 1.0);
+
+                                                    // Sample 3x3 neighborhood in source image
+                                                    let cx = ((u * img.width as f32) as i32)
+                                                        .clamp(0, img.width as i32 - 1);
+                                                    let cy = ((v * img.height as f32) as i32)
+                                                        .clamp(0, img.height as i32 - 1);
+                                                    let mut sum = [0.0f32; 3];
+                                                    let mut count = 0.0f32;
+                                                    for dy in -1..=1 {
+                                                        for dx in -1..=1 {
+                                                            let sx = (cx + dx)
+                                                                .clamp(0, img.width as i32 - 1)
+                                                                as usize;
+                                                            let sy = (cy + dy)
+                                                                .clamp(0, img.height as i32 - 1)
+                                                                as usize;
+                                                            let idx = (sy * img.width as usize + sx) * 4;
+                                                            if idx + 2 < img.data.len() {
+                                                                sum[0] += img.data[idx];
+                                                                sum[1] += img.data[idx + 1];
+                                                                sum[2] += img.data[idx + 2];
+                                                                count += 1.0;
+                                                            }
+                                                        }
+                                                    }
+                                                    if count > 0.0 {
+                                                        let avg = [
+                                                            sum[0] / count,
+                                                            sum[1] / count,
+                                                            sum[2] / count,
+                                                        ];
+                                                        let (temp, tint) = beam_core::color::compute_wb_from_neutral_rgb(avg);
+                                                        self.edit_stack.white_balance.enabled = true;
+                                                        self.edit_stack.white_balance.temperature = temp;
+                                                        self.edit_stack.white_balance.tint = tint;
+                                                        let label = t!(
+                                                            "history_temperature",
+                                                            "val" => format!("{:+0.0}", temp)
+                                                        );
+                                                        self.push_history_step(label);
+                                                        self.re_render_edits(frame);
+                                                        self.save_sidecar();
+                                                    }
+                                                }
+                                                self.wb_eyedropper_active = false;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 if self.crop_mode_active {
                                     if let Some(img) = &self.current_image {
                                         let orig_aspect = if self.edit_stack.crop.rotation == 90
@@ -4183,6 +5363,25 @@ impl eframe::App for BeamApp {
                                             ));
                                             self.re_render_edits(frame);
                                             ctx.request_repaint();
+                                        }
+                                    }
+                                } else if self.show_mask_overlay {
+                                    if let Some(sel_id) = self.selected_mask_id {
+                                        if let Some(mask) = self
+                                            .edit_stack
+                                            .masks
+                                            .iter_mut()
+                                            .find(|m| m.id == sel_id)
+                                        {
+                                            let (m_changed, m_stopped) =
+                                                show_mask_overlay(ui, image_rect, mask);
+                                            if m_changed {
+                                                self.re_render_edits(frame);
+                                                ctx.request_repaint();
+                                            }
+                                            if m_stopped {
+                                                self.push_history_step(t!("history_masks"));
+                                            }
                                         }
                                     }
                                 }
@@ -4609,12 +5808,13 @@ impl BeamApp {
 
         let config = beam_media::ExportConfig {
             output_dir: self.export_output_dir.clone(),
-            format: if self.export_format_is_png {
-                beam_media::ExportFormat::Png
-            } else {
-                beam_media::ExportFormat::Jpeg {
+            format: match self.export_format_index {
+                1 => beam_media::ExportFormat::Png,
+                2 => beam_media::ExportFormat::Tiff16,
+                3 => beam_media::ExportFormat::WebP,
+                _ => beam_media::ExportFormat::Jpeg {
                     quality: self.export_jpeg_quality,
-                }
+                },
             },
             color_space: self.export_color_space,
             resize,
@@ -4629,6 +5829,15 @@ impl BeamApp {
                 None
             } else {
                 Some(self.export_suffix.clone())
+            },
+            watermark: beam_media::WatermarkConfig {
+                enabled: self.export_watermark_enabled,
+                text: self.export_watermark_text.clone(),
+                image_path: self.export_watermark_logo_path.clone(),
+                anchor: self.export_watermark_anchor,
+                opacity: self.export_watermark_opacity,
+                scale: self.export_watermark_scale,
+                margin: 0.03,
             },
         };
         let targets = self.export_targets.clone();
@@ -4716,11 +5925,21 @@ impl BeamApp {
                             // Format & Quality
                             ui.label(t!("export_format"));
                             ui.horizontal(|ui| {
-                                ui.radio_value(&mut self.export_format_is_png, false, "JPEG");
-                                ui.radio_value(&mut self.export_format_is_png, true, "PNG");
+                                ui.radio_value(&mut self.export_format_index, 0, "JPEG");
+                                ui.radio_value(&mut self.export_format_index, 1, "PNG");
+                                ui.radio_value(
+                                    &mut self.export_format_index,
+                                    2,
+                                    t!("export_format_tiff16"),
+                                );
+                                ui.radio_value(
+                                    &mut self.export_format_index,
+                                    3,
+                                    t!("export_format_webp"),
+                                );
                             });
 
-                            if !self.export_format_is_png {
+                            if self.export_format_index == 0 {
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
                                     ui.label(t!("export_jpeg_quality"));
@@ -4730,6 +5949,93 @@ impl BeamApp {
                                     );
                                 });
                             }
+                            ui.add_space(8.0);
+
+                            // Watermark
+                            ui.collapsing(t!("export_watermark"), |ui| {
+                                ui.checkbox(
+                                    &mut self.export_watermark_enabled,
+                                    t!("export_watermark_enable"),
+                                );
+                                if self.export_watermark_enabled {
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_watermark_text"));
+                                        ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.export_watermark_text,
+                                            )
+                                            .desired_width(180.0),
+                                        );
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_watermark_logo"));
+                                        if ui.button(t!("export_watermark_pick_logo")).clicked() {
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .add_filter("PNG", &["png"])
+                                                .pick_file()
+                                            {
+                                                self.export_watermark_logo_path = Some(path);
+                                            }
+                                        }
+                                        if let Some(ref p) = self.export_watermark_logo_path {
+                                            let fname = p
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("logo.png");
+                                            ui.label(fname);
+                                            if ui
+                                                .button(t!("export_watermark_clear_logo"))
+                                                .clicked()
+                                            {
+                                                self.export_watermark_logo_path = None;
+                                            }
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_watermark_opacity"));
+                                        ui.add(Slider::new(
+                                            &mut self.export_watermark_opacity,
+                                            0.05..=1.0,
+                                        ));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label(t!("export_watermark_scale"));
+                                        ui.add(Slider::new(
+                                            &mut self.export_watermark_scale,
+                                            0.03..=0.5,
+                                        ));
+                                    });
+                                    ui.label(t!("export_watermark_position"));
+                                    let rows = [
+                                        [
+                                            (beam_media::WatermarkAnchor::TopLeft, "TL"),
+                                            (beam_media::WatermarkAnchor::TopCenter, "TC"),
+                                            (beam_media::WatermarkAnchor::TopRight, "TR"),
+                                        ],
+                                        [
+                                            (beam_media::WatermarkAnchor::MiddleLeft, "ML"),
+                                            (beam_media::WatermarkAnchor::Center, "C"),
+                                            (beam_media::WatermarkAnchor::MiddleRight, "MR"),
+                                        ],
+                                        [
+                                            (beam_media::WatermarkAnchor::BottomLeft, "BL"),
+                                            (beam_media::WatermarkAnchor::BottomCenter, "BC"),
+                                            (beam_media::WatermarkAnchor::BottomRight, "BR"),
+                                        ],
+                                    ];
+                                    for row in rows {
+                                        ui.horizontal(|ui| {
+                                            for (anchor, label) in row {
+                                                ui.selectable_value(
+                                                    &mut self.export_watermark_anchor,
+                                                    anchor,
+                                                    label,
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
+                            });
                             ui.add_space(8.0);
 
                             // Color Space
@@ -4891,10 +6197,11 @@ impl BeamApp {
                             if !self.export_suffix.trim().is_empty() {
                                 preview.push_str(&self.export_suffix);
                             }
-                            let ext = if self.export_format_is_png {
-                                "png"
-                            } else {
-                                "jpg"
+                            let ext = match self.export_format_index {
+                                1 => "png",
+                                2 => "tiff",
+                                3 => "webp",
+                                _ => "jpg",
                             };
                             preview = format!("{preview}.{ext}");
                             ui.label(
@@ -5861,6 +7168,11 @@ mod tests {
             before_after_mode: BeforeAfterMode::Normal,
             split_view_divider: 0.5,
             crop_mode_active: false,
+            wb_eyedropper_active: false,
+            active_curve_channel: 0,
+            selected_mask_id: None,
+            show_mask_overlay: true,
+            next_mask_id: 1,
             tx,
             rx,
             is_loading: false,
@@ -5907,7 +7219,7 @@ mod tests {
             show_export_dialog: false,
             show_export_progress: false,
             export_output_dir: std::env::temp_dir(),
-            export_format_is_png: false,
+            export_format_index: 0,
             export_jpeg_quality: 90,
             export_color_space: beam_core::ExportColorSpace::Srgb,
             export_resize_mode_index: 0,
@@ -5920,6 +7232,12 @@ mod tests {
             export_include_exif: true,
             export_template: "{name}".to_string(),
             export_suffix: "_beam".to_string(),
+            export_watermark_enabled: false,
+            export_watermark_text: String::new(),
+            export_watermark_logo_path: None,
+            export_watermark_anchor: beam_media::WatermarkAnchor::BottomRight,
+            export_watermark_opacity: 0.65,
+            export_watermark_scale: 0.12,
             export_targets: Vec::new(),
             export_cancel_flag: None,
             export_progress_data: None,

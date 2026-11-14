@@ -12,6 +12,13 @@ pub const HIGHLIGHTS_SHADOWS_SHADER_SRC: &str =
     include_str!("../../../shaders/highlights_shadows.wgsl");
 pub const TONE_CURVE_SHADER_SRC: &str = include_str!("../../../shaders/tone_curve.wgsl");
 pub const HSL_SHADER_SRC: &str = include_str!("../../../shaders/hsl.wgsl");
+pub const VIBRANCE_SATURATION_SHADER_SRC: &str =
+    include_str!("../../../shaders/vibrance_saturation.wgsl");
+pub const VIGNETTE_GRAIN_SHADER_SRC: &str = include_str!("../../../shaders/vignette_grain.wgsl");
+pub const COLOR_GRADING_SHADER_SRC: &str = include_str!("../../../shaders/color_grading.wgsl");
+pub const DETAIL_SHADER_SRC: &str = include_str!("../../../shaders/detail.wgsl");
+pub const LUT3D_SHADER_SRC: &str = include_str!("../../../shaders/lut3d.wgsl");
+pub const MASK_ADJUST_SHADER_SRC: &str = include_str!("../../../shaders/mask_adjust.wgsl");
 pub const EXPORT_TRANSFORM_SHADER_SRC: &str =
     include_str!("../../../shaders/export_transform.wgsl");
 
@@ -138,15 +145,93 @@ pub struct ContrastUniforms {
 pub struct HighlightsShadowsUniforms {
     pub highlights: f32,
     pub shadows: f32,
+    pub whites: f32,
+    pub blacks: f32,
+    pub enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VibranceSaturationUniforms {
+    pub vibrance: f32,
+    pub saturation: f32,
     pub enabled: u32,
     pub _pad0: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ToneCurveUniforms {
-    pub lut: [[f32; 4]; 64],
+pub struct VignetteGrainUniforms {
+    pub vignette_amount: f32,
+    pub vignette_midpoint: f32,
+    pub vignette_feather: f32,
+    pub grain_amount: f32,
+    pub grain_size: f32,
     pub enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ToneCurveUniforms {
+    pub master_lut: [[f32; 4]; 64],
+    pub red_lut: [[f32; 4]; 64],
+    pub green_lut: [[f32; 4]; 64],
+    pub blue_lut: [[f32; 4]; 64],
+    pub enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ColorGradingUniforms {
+    pub shadows: [f32; 4],
+    pub midtones: [f32; 4],
+    pub highlights: [f32; 4],
+    pub params: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DetailUniforms {
+    pub clarity: f32,
+    pub dehaze: f32,
+    pub sharpening: f32,
+    pub noise_reduction_luma: f32,
+    pub noise_reduction_color: f32,
+    pub enabled: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Lut3DUniforms {
+    pub domain_min: [f32; 4],
+    pub domain_max: [f32; 4],
+    pub params: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct MaskGpuEntry {
+    pub geom0: [f32; 4],
+    pub geom1: [f32; 4],
+    pub adj0: [f32; 4],
+    pub adj1: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct MaskUniforms {
+    pub masks: [MaskGpuEntry; 8],
+    pub count: u32,
     pub _pad0: u32,
     pub _pad1: u32,
     pub _pad2: u32,
@@ -688,6 +773,332 @@ impl ExportDisplayPipeline {
 }
 
 // ----------------------------------------------------------------------------
+// 3D LUT Pass (texture_2d + uniform + texture_3d + sampler)
+// ----------------------------------------------------------------------------
+
+pub struct Lut3DPass {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    uniform_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    lut_texture: Option<wgpu::Texture>,
+    lut_view: Option<wgpu::TextureView>,
+    cached_path: Option<String>,
+    cached_size: u32,
+    cached_domain_min: [f32; 3],
+    cached_domain_max: [f32; 3],
+    cached_valid: bool,
+}
+
+impl Lut3DPass {
+    fn create_3d_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: u32,
+        rgba8: &[u8],
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lut3d_texture"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: size,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba8,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * size),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: size,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D3),
+            ..Default::default()
+        });
+        (texture, view)
+    }
+
+    pub fn new(device: &wgpu::Device, output_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("lut3d_shader"),
+            source: wgpu::ShaderSource::Wgsl(LUT3D_SHADER_SRC.into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("lut3d_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lut3d_pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("lut3d_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: output_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        use wgpu::util::DeviceExt;
+        let initial_uniforms = Lut3DUniforms {
+            domain_min: [0.0, 0.0, 0.0, 0.0],
+            domain_max: [1.0, 1.0, 1.0, 0.0],
+            params: [1.0, 0.0, 2.0, 0.0],
+        };
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("lut3d_uniform_buffer"),
+            contents: bytemuck::bytes_of(&initial_uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("lut3d_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+            uniform_buffer,
+            sampler,
+            lut_texture: None,
+            lut_view: None,
+            cached_path: None,
+            cached_size: 2,
+            cached_domain_min: [0.0, 0.0, 0.0],
+            cached_domain_max: [1.0, 1.0, 1.0],
+            cached_valid: false,
+        }
+    }
+
+    pub fn update_from_stack(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lut_adj: &beam_core::sidecar::LutAdjustment,
+    ) {
+        if self.lut_view.is_none() {
+            let identity_data: Vec<u8> = [
+                [0u8, 0, 0, 255],
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+                [255, 255, 0, 255],
+                [0, 0, 255, 255],
+                [255, 0, 255, 255],
+                [0, 255, 255, 255],
+                [255, 255, 255, 255],
+            ]
+            .concat();
+            let (tex, view) = Self::create_3d_texture(device, queue, 2, &identity_data);
+            self.lut_texture = Some(tex);
+            self.lut_view = Some(view);
+        }
+
+        if lut_adj.enabled {
+            if let Some(ref path_str) = lut_adj.path {
+                if self.cached_path.as_deref() != Some(path_str.as_str()) {
+                    self.cached_path = Some(path_str.clone());
+                    match beam_core::lut::parse_cube_file(std::path::Path::new(path_str)) {
+                        Ok(cube) => {
+                            let rgba8: Vec<u8> = cube
+                                .data
+                                .as_chunks::<3>()
+                                .0
+                                .iter()
+                                .flat_map(|rgb| {
+                                    [
+                                        (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+                                        (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+                                        (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+                                        255u8,
+                                    ]
+                                })
+                                .collect();
+                            let (tex, view) =
+                                Self::create_3d_texture(device, queue, cube.size as u32, &rgba8);
+                            self.lut_texture = Some(tex);
+                            self.lut_view = Some(view);
+                            self.cached_size = cube.size as u32;
+                            self.cached_domain_min = cube.domain_min;
+                            self.cached_domain_max = cube.domain_max;
+                            self.cached_valid = true;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load 3D LUT '{}': {}", path_str, e);
+                            self.cached_valid = false;
+                        }
+                    }
+                }
+            } else {
+                self.cached_path = None;
+                self.cached_valid = false;
+            }
+        }
+
+        let enabled_f = if lut_adj.enabled && self.cached_valid && lut_adj.path.is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        let uniforms = Lut3DUniforms {
+            domain_min: [
+                self.cached_domain_min[0],
+                self.cached_domain_min[1],
+                self.cached_domain_min[2],
+                0.0,
+            ],
+            domain_max: [
+                self.cached_domain_max[0],
+                self.cached_domain_max[1],
+                self.cached_domain_max[2],
+                0.0,
+            ],
+            params: [lut_adj.intensity, enabled_f, self.cached_size as f32, 0.0],
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    pub fn render(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        input_view: &wgpu::TextureView,
+        output_view: &wgpu::TextureView,
+    ) {
+        let Some(lut_view) = self.lut_view.as_ref() else {
+            return;
+        };
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lut3d_bind_group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(lut_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("lut3d_render_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        rpass.set_pipeline(&self.pipeline);
+        rpass.set_bind_group(0, &bind_group, &[]);
+        rpass.draw(0..3, 0..1);
+    }
+}
+
+// ----------------------------------------------------------------------------
 // Full Edit Pipeline (Ping-Pong Intermediate Passes)
 // ----------------------------------------------------------------------------
 
@@ -698,6 +1109,12 @@ pub struct EditPipeline {
     contrast_stage: StagePass<ContrastUniforms>,
     tone_curve_stage: StagePass<ToneCurveUniforms>,
     hsl_stage: StagePass<HslUniforms>,
+    vibrance_saturation_stage: StagePass<VibranceSaturationUniforms>,
+    color_grading_stage: StagePass<ColorGradingUniforms>,
+    detail_stage: StagePass<DetailUniforms>,
+    lut3d_stage: Lut3DPass,
+    vignette_grain_stage: StagePass<VignetteGrainUniforms>,
+    mask_stage: StagePass<MaskUniforms>,
     display_pipeline: DisplayPipeline,
     export_display_pipeline: Option<ExportDisplayPipeline>,
 
@@ -747,8 +1164,12 @@ impl EditPipeline {
             HighlightsShadowsUniforms {
                 highlights: 0.0,
                 shadows: 0.0,
+                whites: 0.0,
+                blacks: 0.0,
                 enabled: 1,
                 _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
             },
             working_format,
         );
@@ -785,7 +1206,10 @@ impl EditPipeline {
             "tc_stage",
             TONE_CURVE_SHADER_SRC,
             ToneCurveUniforms {
-                lut: initial_lut,
+                master_lut: initial_lut,
+                red_lut: initial_lut,
+                green_lut: initial_lut,
+                blue_lut: initial_lut,
                 enabled: 1,
                 _pad0: 0,
                 _pad1: 0,
@@ -808,6 +1232,87 @@ impl EditPipeline {
             working_format,
         );
 
+        let vibrance_saturation_stage = StagePass::new(
+            device,
+            "vibrance_saturation_stage",
+            VIBRANCE_SATURATION_SHADER_SRC,
+            VibranceSaturationUniforms {
+                vibrance: 0.0,
+                saturation: 0.0,
+                enabled: 1,
+                _pad0: 0,
+            },
+            working_format,
+        );
+
+        let color_grading_stage = StagePass::new(
+            device,
+            "color_grading_stage",
+            COLOR_GRADING_SHADER_SRC,
+            ColorGradingUniforms {
+                shadows: [0.0; 4],
+                midtones: [0.0; 4],
+                highlights: [0.0; 4],
+                params: [0.5, 0.0, 0.0, 0.0],
+            },
+            working_format,
+        );
+
+        let detail_stage = StagePass::new(
+            device,
+            "detail_stage",
+            DETAIL_SHADER_SRC,
+            DetailUniforms {
+                clarity: 0.0,
+                dehaze: 0.0,
+                sharpening: 0.0,
+                noise_reduction_luma: 0.0,
+                noise_reduction_color: 0.0,
+                enabled: 0,
+                _pad0: 0,
+                _pad1: 0,
+            },
+            working_format,
+        );
+
+        let lut3d_stage = Lut3DPass::new(device, working_format);
+
+        let vignette_grain_stage = StagePass::new(
+            device,
+            "vignette_grain_stage",
+            VIGNETTE_GRAIN_SHADER_SRC,
+            VignetteGrainUniforms {
+                vignette_amount: 0.0,
+                vignette_midpoint: 50.0,
+                vignette_feather: 50.0,
+                grain_amount: 0.0,
+                grain_size: 1.5,
+                enabled: 1,
+                _pad0: 0,
+                _pad1: 0,
+            },
+            working_format,
+        );
+
+        let mask_stage = StagePass::new(
+            device,
+            "mask_stage",
+            MASK_ADJUST_SHADER_SRC,
+            MaskUniforms {
+                masks: [MaskGpuEntry {
+                    geom0: [0.0; 4],
+                    geom1: [0.0; 4],
+                    adj0: [1.0, 1.0, 0.0, 0.0],
+                    adj1: [1.0, 1.0, 1.0, 0.0],
+                }; 8],
+                count: 0,
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
+            },
+            working_format,
+        );
+
         let display_pipeline = DisplayPipeline::new(device, display_format);
 
         Self {
@@ -817,6 +1322,12 @@ impl EditPipeline {
             contrast_stage,
             tone_curve_stage,
             hsl_stage,
+            vibrance_saturation_stage,
+            color_grading_stage,
+            detail_stage,
+            lut3d_stage,
+            vignette_grain_stage,
+            mask_stage,
             display_pipeline,
             export_display_pipeline: None,
             ping_texture: None,
@@ -862,7 +1373,12 @@ impl EditPipeline {
     }
 
     /// Update uniforms for all stages from the edit stack.
-    fn update_uniforms(&mut self, queue: &wgpu::Queue, edit_stack: &EditStack) {
+    fn update_uniforms(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        edit_stack: &EditStack,
+    ) {
         let wb_gains = beam_core::color::white_balance_gains(
             edit_stack.white_balance.temperature,
             edit_stack.white_balance.tint,
@@ -898,12 +1414,16 @@ impl EditPipeline {
             &HighlightsShadowsUniforms {
                 highlights: edit_stack.highlights_shadows.highlights,
                 shadows: edit_stack.highlights_shadows.shadows,
+                whites: edit_stack.highlights_shadows.whites,
+                blacks: edit_stack.highlights_shadows.blacks,
                 enabled: if edit_stack.highlights_shadows.enabled {
                     1
                 } else {
                     0
                 },
                 _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
             },
         );
 
@@ -918,20 +1438,26 @@ impl EditPipeline {
             },
         );
 
-        let curve_lut = beam_core::color::generate_tone_curve_lut(&edit_stack.tone_curve.points);
-        let mut packed_lut = [[0.0f32; 4]; 64];
-        for i in 0..64 {
-            packed_lut[i] = [
-                curve_lut[i * 4],
-                curve_lut[i * 4 + 1],
-                curve_lut[i * 4 + 2],
-                curve_lut[i * 4 + 3],
-            ];
-        }
+        let pack_curve_lut = |points: &[beam_core::sidecar::ToneCurvePoint]| -> [[f32; 4]; 64] {
+            let curve_lut = beam_core::color::generate_tone_curve_lut(points);
+            let mut packed = [[0.0f32; 4]; 64];
+            for i in 0..64 {
+                packed[i] = [
+                    curve_lut[i * 4],
+                    curve_lut[i * 4 + 1],
+                    curve_lut[i * 4 + 2],
+                    curve_lut[i * 4 + 3],
+                ];
+            }
+            packed
+        };
         self.tone_curve_stage.update_uniform(
             queue,
             &ToneCurveUniforms {
-                lut: packed_lut,
+                master_lut: pack_curve_lut(&edit_stack.tone_curve.points),
+                red_lut: pack_curve_lut(&edit_stack.tone_curve.red_points),
+                green_lut: pack_curve_lut(&edit_stack.tone_curve.green_points),
+                blue_lut: pack_curve_lut(&edit_stack.tone_curve.blue_points),
                 enabled: if edit_stack.tone_curve.enabled { 1 } else { 0 },
                 _pad0: 0,
                 _pad1: 0,
@@ -953,15 +1479,155 @@ impl EditPipeline {
                 _pad2: 0,
             },
         );
+
+        self.vibrance_saturation_stage.update_uniform(
+            queue,
+            &VibranceSaturationUniforms {
+                vibrance: edit_stack.vibrance_saturation.vibrance,
+                saturation: edit_stack.vibrance_saturation.saturation,
+                enabled: if edit_stack.vibrance_saturation.enabled {
+                    1
+                } else {
+                    0
+                },
+                _pad0: 0,
+            },
+        );
+
+        let wheel_to_vec4 = |w: &beam_core::sidecar::ColorWheelGrade| -> [f32; 4] {
+            let h = (w.hue.rem_euclid(360.0)) / 60.0;
+            let sector = h.floor() as i32;
+            let f = h - sector as f32;
+            let (r, g, b) = match sector {
+                0 => (1.0, f, 0.0),
+                1 => (1.0 - f, 1.0, 0.0),
+                2 => (0.0, 1.0, f),
+                3 => (0.0, 1.0 - f, 1.0),
+                4 => (f, 0.0, 1.0),
+                _ => (1.0, 0.0, 1.0 - f),
+            };
+            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let sat = w.saturation.clamp(0.0, 1.0);
+            [
+                (r - lum) * sat,
+                (g - lum) * sat,
+                (b - lum) * sat,
+                w.luminance,
+            ]
+        };
+        let cg = &edit_stack.color_grading;
+        self.color_grading_stage.update_uniform(
+            queue,
+            &ColorGradingUniforms {
+                shadows: wheel_to_vec4(&cg.shadows),
+                midtones: wheel_to_vec4(&cg.midtones),
+                highlights: wheel_to_vec4(&cg.highlights),
+                params: [
+                    cg.blending,
+                    cg.balance,
+                    if cg.enabled { 1.0 } else { 0.0 },
+                    0.0,
+                ],
+            },
+        );
+
+        let det = &edit_stack.detail;
+        self.detail_stage.update_uniform(
+            queue,
+            &DetailUniforms {
+                clarity: det.clarity,
+                dehaze: det.dehaze,
+                sharpening: det.sharpening,
+                noise_reduction_luma: det.noise_reduction_luma,
+                noise_reduction_color: det.noise_reduction_color,
+                enabled: if det.enabled { 1 } else { 0 },
+                _pad0: 0,
+                _pad1: 0,
+            },
+        );
+
+        self.lut3d_stage
+            .update_from_stack(device, queue, &edit_stack.lut);
+
+        self.vignette_grain_stage.update_uniform(
+            queue,
+            &VignetteGrainUniforms {
+                vignette_amount: edit_stack.vignette_grain.vignette_amount,
+                vignette_midpoint: edit_stack.vignette_grain.vignette_midpoint,
+                vignette_feather: edit_stack.vignette_grain.vignette_feather,
+                grain_amount: edit_stack.vignette_grain.grain_amount,
+                grain_size: edit_stack.vignette_grain.grain_size,
+                enabled: if edit_stack.vignette_grain.enabled {
+                    1
+                } else {
+                    0
+                },
+                _pad0: 0,
+                _pad1: 0,
+            },
+        );
+        let mut gpu_masks = [MaskGpuEntry {
+            geom0: [0.0; 4],
+            geom1: [0.0; 4],
+            adj0: [1.0, 1.0, 0.0, 0.0],
+            adj1: [1.0, 1.0, 1.0, 0.0],
+        }; 8];
+        let mask_count = edit_stack.masks.len().min(8);
+        for (i, m) in edit_stack.masks.iter().take(8).enumerate() {
+            let (geom0, geom1) = match m.shape {
+                beam_core::sidecar::MaskShape::LinearGradient { start, end } => (
+                    [0.0, 0.0, 0.0, if m.enabled { 1.0 } else { 0.0 }],
+                    [start[0], start[1], end[0], end[1]],
+                ),
+                beam_core::sidecar::MaskShape::RadialGradient {
+                    center,
+                    radius,
+                    feather,
+                    invert,
+                } => (
+                    [
+                        1.0,
+                        if invert { 1.0 } else { 0.0 },
+                        feather,
+                        if m.enabled { 1.0 } else { 0.0 },
+                    ],
+                    [center[0], center[1], radius[0], radius[1]],
+                ),
+            };
+            let wb_gains = beam_core::color::white_balance_gains(m.temperature, m.tint);
+            let exp_mult = 2.0f32.powf(m.exposure);
+            let contrast_slope = beam_core::color::contrast_slope(m.contrast);
+            gpu_masks[i] = MaskGpuEntry {
+                geom0,
+                geom1,
+                adj0: [
+                    exp_mult,
+                    contrast_slope,
+                    m.highlights / 100.0,
+                    m.shadows / 100.0,
+                ],
+                adj1: [wb_gains[0], wb_gains[1], wb_gains[2], m.saturation / 100.0],
+            };
+        }
+        self.mask_stage.update_uniform(
+            queue,
+            &MaskUniforms {
+                masks: gpu_masks,
+                count: mask_count as u32,
+                _pad0: 0,
+                _pad1: 0,
+                _pad2: 0,
+            },
+        );
     }
 
-    /// Execute intermediate shader stages (input -> pong).
+    /// Execute intermediate shader stages. Returns `true` if final output is in `pong`, `false` if in `ping`.
     fn render_intermediate_stages(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input: &GpuImage,
-    ) {
+    ) -> bool {
         let ping = self.ping_view.as_ref().unwrap();
         let pong = self.pong_view.as_ref().unwrap();
 
@@ -976,7 +1642,7 @@ impl EditPipeline {
         // Stage 2: Exposure (ping -> pong)
         self.exposure_stage.render(device, &mut encoder, ping, pong);
 
-        // Stage 3: Highlights & Shadows (pong -> ping)
+        // Stage 3: Highlights, Shadows, Whites & Blacks (pong -> ping)
         self.highlights_shadows_stage
             .render(device, &mut encoder, pong, ping);
 
@@ -990,7 +1656,29 @@ impl EditPipeline {
         // Stage 6: HSL (ping -> pong)
         self.hsl_stage.render(device, &mut encoder, ping, pong);
 
+        // Stage 7: Vibrance & Saturation (pong -> ping)
+        self.vibrance_saturation_stage
+            .render(device, &mut encoder, pong, ping);
+
+        // Stage 8: Color Grading (ping -> pong)
+        self.color_grading_stage
+            .render(device, &mut encoder, ping, pong);
+
+        // Stage 9: Detail (pong -> ping)
+        self.detail_stage.render(device, &mut encoder, pong, ping);
+
+        // Stage 10: 3D LUT (ping -> pong)
+        self.lut3d_stage.render(device, &mut encoder, ping, pong);
+
+        // Stage 11: Vignette & Grain (pong -> ping)
+        self.vignette_grain_stage
+            .render(device, &mut encoder, pong, ping);
+
+        // Stage 12: Parametric Masks (ping -> pong)
+        self.mask_stage.render(device, &mut encoder, ping, pong);
+
         queue.submit(std::iter::once(encoder.finish()));
+        true
     }
 
     /// Execute the full edit stack from input texture to output display target.
@@ -1042,10 +1730,14 @@ impl EditPipeline {
         show_highlight_clipping: bool,
     ) {
         self.ensure_intermediate_textures(device, input.width, input.height);
-        self.update_uniforms(queue, edit_stack);
-        self.render_intermediate_stages(device, queue, input);
+        self.update_uniforms(device, queue, edit_stack);
+        let in_pong = self.render_intermediate_stages(device, queue, input);
 
-        let pong = self.pong_view.as_ref().unwrap();
+        let intermediate_view = if in_pong {
+            self.pong_view.as_ref().unwrap()
+        } else {
+            self.ping_view.as_ref().unwrap()
+        };
 
         let crop = &edit_stack.crop;
         let uniforms = DisplayGeometryUniforms {
@@ -1067,9 +1759,14 @@ impl EditPipeline {
             _pad2: 0,
         };
 
-        // Final Stage: Display Transform (pong -> target_view)
-        self.display_pipeline
-            .render_to_target(device, queue, pong, target_view, &uniforms);
+        // Final Stage: Display Transform (intermediate -> target_view)
+        self.display_pipeline.render_to_target(
+            device,
+            queue,
+            intermediate_view,
+            target_view,
+            &uniforms,
+        );
     }
 
     /// Execute the complete edit stack onto an image and read back 8-bit RGBA pixels in requested color space.
@@ -1123,10 +1820,14 @@ impl EditPipeline {
         }
 
         self.ensure_intermediate_textures(device, width, height);
-        self.update_uniforms(queue, edit_stack);
-        self.render_intermediate_stages(device, queue, input);
+        self.update_uniforms(device, queue, edit_stack);
+        let in_pong = self.render_intermediate_stages(device, queue, input);
 
-        let pong = self.pong_view.as_ref().unwrap();
+        let intermediate_view = if in_pong {
+            self.pong_view.as_ref().unwrap()
+        } else {
+            self.ping_view.as_ref().unwrap()
+        };
         let cs_val = match color_space {
             beam_core::ExportColorSpace::Srgb => 0u32,
             beam_core::ExportColorSpace::DisplayP3 => 1u32,
@@ -1135,7 +1836,7 @@ impl EditPipeline {
         self.export_display_pipeline
             .as_ref()
             .unwrap()
-            .render_to_target(device, queue, pong, &target_view, cs_val);
+            .render_to_target(device, queue, intermediate_view, &target_view, cs_val);
 
         // 3. Staging buffer with 256-byte row alignment
         let bytes_per_pixel = 4u32;

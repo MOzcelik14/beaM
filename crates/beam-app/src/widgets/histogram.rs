@@ -90,6 +90,71 @@ impl HistogramData {
             max_count,
         }
     }
+
+    /// Analyze luminance percentiles and return balanced Auto Tone parameters:
+    /// `(exposure_ev, contrast, highlights, shadows, whites)`.
+    pub fn compute_auto_tone(&self) -> (f32, f32, f32, f32, f32) {
+        let total: u64 = self.lum.iter().map(|&c| c as u64).sum();
+        if total == 0 {
+            return (0.0, 0.0, 0.0, 0.0, 0.0);
+        }
+
+        let percentile_bin = |frac: f64| -> usize {
+            let target = ((total as f64) * frac).round() as u64;
+            let mut acc = 0u64;
+            for (i, &c) in self.lum.iter().enumerate() {
+                acc += c as u64;
+                if acc >= target {
+                    return i;
+                }
+            }
+            255
+        };
+
+        let p01 = percentile_bin(0.01);
+        let p50 = percentile_bin(0.50);
+        let p99 = percentile_bin(0.99);
+
+        // Nudge median towards perceptual mid-grey (~0.42)
+        let med_norm = (p50.max(4) as f32) / 255.0;
+        let ev = ((0.42f32.log2() - med_norm.log2()) * 0.55).clamp(-2.5, 2.5);
+
+        // Recover clipped highlights or lift flat whites
+        let highlights = if p99 >= 248 {
+            -35.0
+        } else if p99 >= 235 {
+            -15.0
+        } else {
+            0.0
+        };
+
+        let whites = if p99 < 200 {
+            ((220.0 - p99 as f32) * 0.45).clamp(10.0, 45.0)
+        } else {
+            0.0
+        };
+
+        // Lift crushed shadows
+        let shadows = if p01 <= 6 {
+            32.0
+        } else if p01 <= 16 {
+            16.0
+        } else {
+            0.0
+        };
+
+        // Contrast boost for narrow dynamic range
+        let spread = p99.saturating_sub(p01);
+        let contrast = if spread < 130 {
+            20.0
+        } else if spread < 180 {
+            10.0
+        } else {
+            5.0
+        };
+
+        (ev, contrast, highlights, shadows, whites)
+    }
 }
 
 /// Renders the histogram into the given egui UI.

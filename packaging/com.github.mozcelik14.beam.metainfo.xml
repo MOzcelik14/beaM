@@ -50,6 +50,11 @@
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
   <releases>
+    <release version="1.0.0" date="2026-11-14">
+      <description>
+        <p>beaM. 1.0.0: Whites/Blacks, Vibrance/Saturation, Vignette/Grain, WB Eyedropper, RGB Tone Curves, 3-Way Color Grading Wheels, Detail (Clarity/Dehaze/Sharpening/NR), 3D .cube LUTs, Parametric GPU Masking, Histogram Auto Tone, Virtual Copies, 16-bit TIFF &amp; WebP Export, and Watermarking.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-11-07">
       <description>
         <p>beaM. 0.8.0: Studio UI modernization, strict layout alignment, CPU and memory footprint optimizations, instant folder scan, and 8-bit fast-path thumbnailing.</p>

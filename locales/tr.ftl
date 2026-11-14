@@ -119,7 +119,35 @@ develop_histogram = Histogram
 develop_white_balance = Beyaz Dengesi
 develop_wb_temp = Sıcaklık
 develop_wb_tint = Renk Tonu
+develop_wb_eyedropper = Renk Seç
+develop_wb_eyedropper_tooltip = Beyaz dengesini ayarlamak için fotoğrafta nötr gri bir noktaya tıklayın
+develop_wb_eyedropper_active = Nötr bir alana tıklayın...
 develop_tone = Ton
+develop_whites_slider = Beyazlar
+develop_blacks_slider = Siyahlar
+develop_reset_whites = Beyazları Sıfırla (0)
+develop_reset_blacks = Siyahları Sıfırla (0)
+develop_vibrance_saturation = Renk ve Canlılık
+develop_vibrance_slider = Canlılık
+develop_saturation_slider = Doygunluk
+develop_reset_vibrance_sat = Renk ve Canlılığı Sıfırla
+develop_reset_vibrance = Canlılığı Sıfırla (0)
+develop_reset_saturation = Doygunluğu Sıfırla (0)
+develop_vignette_grain = Efektler (Vinyet ve Gren)
+develop_vignette_amount_slider = Vinyet
+develop_vignette_midpoint_slider = Orta Nokta
+develop_vignette_feather_slider = Yumuşatma
+develop_grain_amount_slider = Gren
+develop_grain_size_slider = Boyut
+develop_reset_vignette_grain = Efektleri Sıfırla
+history_whites = Beyazlar: {$val}
+history_blacks = Siyahlar: {$val}
+history_vibrance = Canlılık: {$val}
+history_saturation = Doygunluk: {$val}
+history_vignette = Vinyet: {$val}
+history_grain = Gren: {$val}
+preset_dialog_group_vibrance_saturation = Renk ve Canlılık
+preset_dialog_group_vignette_grain = Efektler (Vinyet ve Gren)
 develop_exposure = Pozlama
 develop_contrast = Kontrast
 develop_highlights = Işıklar
@@ -298,7 +326,7 @@ settings_close = Kapat
 # About Dialog
 about_title = beaM. Hakkında
 about_description = Linux ve Windows için modern, tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi.
-about_version = Sürüm 0.8.0
+about_version = Sürüm 1.0.0
 about_license = GNU Genel Kamu Lisansı v3.0 (GPL-3.0) kapsamında lisanslanmıştır.
 about_license_text = Lisans: GNU Genel Kamu Lisansı v3.0 (GPL-3.0)
 about_desc_1 = Tahribatsız RAW fotoğraf düzenleyici ve kütüphane yöneticisi.
@@ -451,3 +479,80 @@ browser_choose_folder = Klasör Seç...
 browser_open_folder = Klasör Aç
 browser_folder_photos_count = {$count} fotoğraf
 browser_no_subfolders = Alt klasör yok
+
+# Adim 2: RGB Egrileri, Renk Derecelendirme, Detay, 3D LUT
+curve_channel_master = Ana
+curve_channel_red = Kırmızı
+curve_channel_green = Yeşil
+curve_channel_blue = Mavi
+
+develop_color_grading = Renk Derecelendirme
+grading_shadows = Gölgeler
+grading_midtones = Orta Tonlar
+grading_highlights = Parlak Alanlar
+grading_luminance = Par
+grading_blending = Harmanlama
+grading_balance = Denge
+history_color_grading = Renk Derecelendirme
+
+develop_detail = Detay
+detail_clarity = Netlik
+detail_dehaze = Sis Giderme
+detail_sharpening = Keskinleştirme
+detail_nr_luma = Işık Gürültüsü
+detail_nr_color = Renk Gürültüsü
+history_detail = Detay
+
+develop_lut = 3D LUT
+lut_load_cube = .cube LUT Yükle...
+lut_clear = Temizle
+lut_none = LUT yüklenmedi
+lut_intensity = Yoğunluk
+history_lut = 3D LUT
+
+# Adim 3: Parametrik Maskeleme
+develop_masks = Maskeler
+masks_add_linear = + Doğrusal Degrade
+masks_add_radial = + Radyal Degrade
+masks_none = Henüz maske eklenmedi
+masks_show_overlay = Kılavuzu Göster
+masks_linear_name = Doğrusal {$num}
+masks_radial_name = Radyal {$num}
+masks_invert = Maskeyi Ters Çevir
+masks_feather = Yumuşatma
+masks_delete = Sil
+history_masks = Maske Ayarı
+
+# Adim 4: Otomatik Ton ve Sanal Kopyalar
+develop_auto_tone = Otomatik Ton
+develop_auto_tone_tooltip = Pozlama, kontrast, ışıklar, gölgeler ve beyazları histograma göre otomatik dengele
+history_auto_tone = Otomatik Ton
+library_create_virtual_copy = Sanal Kopya Oluştur
+library_virtual_copies = Sanal Kopyalar
+library_open_virtual_copy = Aç
+library_delete_virtual_copy = Sil
+
+# Adim 5: Genisletilmis Disa Aktarim ve Filigran
+export_format_tiff16 = TIFF (16-bit)
+export_format_webp = WebP
+export_watermark = Filigran
+export_watermark_enable = Filigran Ekle
+export_watermark_text = Metin
+export_watermark_logo = PNG Logo
+export_watermark_pick_logo = PNG Seç...
+export_watermark_clear_logo = Temizle
+export_watermark_opacity = Opaklık
+export_watermark_scale = Ölçek
+export_watermark_position = Konum
+
+menu_file_open = Fotoğraf Aç...
+menu_file_import = Klasör İçe Aktar...
+history_crop_reset = Kırpmayı Sıfırla
+history_crop_aspect = En-Boy Oranı
+history_crop_rotate = 90 Derece Döndür
+history_crop_flip_h = Yatay Çevir
+history_crop_flip_v = Dikey Çevir
+history_crop_straighten = Hizala
+
+
+

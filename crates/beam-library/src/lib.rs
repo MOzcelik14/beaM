@@ -68,6 +68,15 @@ pub struct PhotoRecord {
     pub sidecar_path: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualCopyRecord {
+    pub id: i64,
+    pub photo_id: i64,
+    pub copy_name: String,
+    pub sidecar_path: String,
+    pub created_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortOrder {
     #[default]
@@ -202,6 +211,16 @@ impl LibraryDb {
             CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(file_path);
             CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating);
             CREATE INDEX IF NOT EXISTS idx_photos_color ON photos(color_label);
+
+            CREATE TABLE IF NOT EXISTS virtual_copies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                copy_name TEXT NOT NULL,
+                sidecar_path TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_virtual_copies_photo ON virtual_copies(photo_id);
             "#,
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
@@ -773,6 +792,120 @@ impl LibraryDb {
         }
 
         Ok(remapped)
+    }
+
+    /// Create a new non-destructive virtual copy for an existing photo, cloning its current sidecar edits.
+    pub fn create_virtual_copy(&self, photo_id: i64) -> Result<VirtualCopyRecord> {
+        let photo = self
+            .get_photo(photo_id)?
+            .ok_or_else(|| BeamError::Database(format!("Photo id {photo_id} not found")))?;
+
+        let existing_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM virtual_copies WHERE photo_id = ?1",
+                params![photo_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        let copy_num = existing_count + 1;
+        let copy_name = format!("Copy {copy_num}");
+        let src_path = PathBuf::from(&photo.file_path);
+        let file_name = src_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("photo")
+            .to_string();
+
+        // Generate unique sidecar path: <photo>.v<n>.beam
+        let mut idx = copy_num;
+        let vc_sidecar_path = loop {
+            let candidate = PathBuf::from(format!("{}.v{idx}.beam", photo.file_path));
+            if !candidate.exists() {
+                break candidate;
+            }
+            idx += 1;
+        };
+
+        let master_sidecar_path = Sidecar::path_for(&src_path);
+        let sidecar = if master_sidecar_path.exists() {
+            Sidecar::load_from_file(&master_sidecar_path)
+                .unwrap_or_else(|_| Sidecar::new(file_name))
+        } else {
+            Sidecar::new(file_name)
+        };
+        sidecar.save_to_file(&vc_sidecar_path)?;
+
+        let vc_path_str = vc_sidecar_path.to_string_lossy().to_string();
+        self.conn
+            .execute(
+                "INSERT INTO virtual_copies (photo_id, copy_name, sidecar_path) VALUES (?1, ?2, ?3)",
+                params![photo_id, copy_name, vc_path_str],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        let id = self.conn.last_insert_rowid();
+        Ok(VirtualCopyRecord {
+            id,
+            photo_id,
+            copy_name,
+            sidecar_path: vc_path_str,
+            created_at: None,
+        })
+    }
+
+    /// List all virtual copies associated with a photo.
+    pub fn list_virtual_copies(&self, photo_id: i64) -> Result<Vec<VirtualCopyRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, photo_id, copy_name, sidecar_path, created_at FROM virtual_copies WHERE photo_id = ?1 ORDER BY id ASC",
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![photo_id], |row| {
+                Ok(VirtualCopyRecord {
+                    id: row.get(0)?,
+                    photo_id: row.get(1)?,
+                    copy_name: row.get(2)?,
+                    sidecar_path: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        let mut list = Vec::new();
+        for row in rows {
+            list.push(row.map_err(|e| BeamError::Database(e.to_string()))?);
+        }
+        Ok(list)
+    }
+
+    /// Delete a virtual copy and its sidecar file.
+    pub fn delete_virtual_copy(&self, copy_id: i64) -> Result<()> {
+        let sidecar_path: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT sidecar_path FROM virtual_copies WHERE id = ?1",
+                params![copy_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+
+        if let Some(p) = sidecar_path {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
+
+        self.conn
+            .execute("DELETE FROM virtual_copies WHERE id = ?1", params![copy_id])
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
     }
 }
 

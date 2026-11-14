@@ -46,6 +46,9 @@ pub enum LibraryAction {
     RelinkFolder,
     CleanMissingPhotos,
     RemovePhoto(i64),
+    CreateVirtualCopy(i64),
+    OpenVirtualCopy(PathBuf, PathBuf),
+    DeleteVirtualCopy(i64),
 }
 
 /// System places (Home, Pictures, Desktop, Downloads) for quick navigation
@@ -1178,6 +1181,48 @@ pub fn show_library_view(
                                         if ui.button(t!("library_context_open")).clicked() {
                                             photo_to_open = Some(PathBuf::from(&photo.file_path));
                                             ui.close();
+                                        }
+                                        if ui.button(t!("library_create_virtual_copy")).clicked() {
+                                            action = LibraryAction::CreateVirtualCopy(photo.id);
+                                            ui.close();
+                                        }
+                                        if let Ok(vcs) = db.list_virtual_copies(photo.id) {
+                                            if !vcs.is_empty() {
+                                                ui.menu_button(
+                                                    format!(
+                                                        "{} ({})",
+                                                        t!("library_virtual_copies"),
+                                                        vcs.len()
+                                                    ),
+                                                    |ui| {
+                                                        for vc in vcs {
+                                                            ui.horizontal(|ui| {
+                                                                if ui
+                                                                    .button(format!(
+                                                                        "{} - {}",
+                                                                        vc.copy_name,
+                                                                        t!("library_open_virtual_copy")
+                                                                    ))
+                                                                    .clicked()
+                                                                {
+                                                                    action = LibraryAction::OpenVirtualCopy(
+                                                                        PathBuf::from(&photo.file_path),
+                                                                        PathBuf::from(&vc.sidecar_path),
+                                                                    );
+                                                                    ui.close();
+                                                                }
+                                                                if ui
+                                                                    .small_button(t!("library_delete_virtual_copy"))
+                                                                    .clicked()
+                                                                {
+                                                                    action = LibraryAction::DeleteVirtualCopy(vc.id);
+                                                                    ui.close();
+                                                                }
+                                                            });
+                                                        }
+                                                    },
+                                                );
+                                            }
                                         }
                                     }
                                     if ui.button(t!("library_context_export")).clicked() {
