@@ -173,6 +173,8 @@ pub struct VignetteGrainUniforms {
     pub enabled: u32,
     pub _pad0: u32,
     pub _pad1: u32,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
 }
 
 #[repr(C)]
@@ -235,6 +237,7 @@ pub struct MaskUniforms {
     pub _pad0: u32,
     pub _pad1: u32,
     pub _pad2: u32,
+    pub uv_rect: [f32; 4],
 }
 
 #[repr(C)]
@@ -790,12 +793,35 @@ pub struct Lut3DPass {
     cached_valid: bool,
 }
 
+fn f32_to_f16_bits(val: f32) -> u16 {
+    let bits = val.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let frac = bits & 0x007f_ffff;
+
+    if exp == 255 {
+        return sign | 0x7c00 | if frac != 0 { 0x0200 } else { 0 };
+    }
+    let new_exp = exp - 127 + 15;
+    if new_exp >= 31 {
+        return sign | 0x7c00;
+    }
+    if new_exp <= 0 {
+        if new_exp < -10 {
+            return sign;
+        }
+        let m = (frac | 0x0080_0000) >> (14 - new_exp);
+        return sign | (m as u16);
+    }
+    sign | ((new_exp as u16) << 10) | ((frac >> 13) as u16)
+}
+
 impl Lut3DPass {
     fn create_3d_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         size: u32,
-        rgba8: &[u8],
+        rgba16f: &[u16],
     ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("lut3d_texture"),
@@ -807,7 +833,7 @@ impl Lut3DPass {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba16Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -818,10 +844,10 @@ impl Lut3DPass {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            rgba8,
+            bytemuck::cast_slice(rgba16f),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * size),
+                bytes_per_row: Some(8 * size),
                 rows_per_image: Some(size),
             },
             wgpu::Extent3d {
@@ -962,15 +988,16 @@ impl Lut3DPass {
         lut_adj: &beam_core::sidecar::LutAdjustment,
     ) {
         if self.lut_view.is_none() {
-            let identity_data: Vec<u8> = [
-                [0u8, 0, 0, 255],
-                [255, 0, 0, 255],
-                [0, 255, 0, 255],
-                [255, 255, 0, 255],
-                [0, 0, 255, 255],
-                [255, 0, 255, 255],
-                [0, 255, 255, 255],
-                [255, 255, 255, 255],
+            let one = f32_to_f16_bits(1.0);
+            let identity_data: Vec<u16> = [
+                [0u16, 0, 0, one],
+                [one, 0, 0, one],
+                [0, one, 0, one],
+                [one, one, 0, one],
+                [0, 0, one, one],
+                [one, 0, one, one],
+                [0, one, one, one],
+                [one, one, one, one],
             ]
             .concat();
             let (tex, view) = Self::create_3d_texture(device, queue, 2, &identity_data);
@@ -984,22 +1011,23 @@ impl Lut3DPass {
                     self.cached_path = Some(path_str.clone());
                     match beam_core::lut::parse_cube_file(std::path::Path::new(path_str)) {
                         Ok(cube) => {
-                            let rgba8: Vec<u8> = cube
+                            let one = f32_to_f16_bits(1.0);
+                            let rgba16f: Vec<u16> = cube
                                 .data
-                                .as_chunks::<3>()
+                                .as_chunks::<4>()
                                 .0
                                 .iter()
-                                .flat_map(|rgb| {
+                                .flat_map(|rgba| {
                                     [
-                                        (rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8,
-                                        (rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8,
-                                        (rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8,
-                                        255u8,
+                                        f32_to_f16_bits(rgba[0]),
+                                        f32_to_f16_bits(rgba[1]),
+                                        f32_to_f16_bits(rgba[2]),
+                                        one,
                                     ]
                                 })
                                 .collect();
                             let (tex, view) =
-                                Self::create_3d_texture(device, queue, cube.size as u32, &rgba8);
+                                Self::create_3d_texture(device, queue, cube.size as u32, &rgba16f);
                             self.lut_texture = Some(tex);
                             self.lut_view = Some(view);
                             self.cached_size = cube.size as u32;
@@ -1290,6 +1318,8 @@ impl EditPipeline {
                 enabled: 1,
                 _pad0: 0,
                 _pad1: 0,
+                uv_offset: [0.0, 0.0],
+                uv_scale: [1.0, 1.0],
             },
             working_format,
         );
@@ -1309,6 +1339,7 @@ impl EditPipeline {
                 _pad0: 0,
                 _pad1: 0,
                 _pad2: 0,
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
             },
             working_format,
         );
@@ -1378,6 +1409,16 @@ impl EditPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         edit_stack: &EditStack,
+    ) {
+        self.update_uniforms_with_uv_rect(device, queue, edit_stack, [0.0, 0.0, 1.0, 1.0]);
+    }
+
+    fn update_uniforms_with_uv_rect(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        edit_stack: &EditStack,
+        uv_rect: [f32; 4],
     ) {
         let wb_gains = beam_core::color::white_balance_gains(
             edit_stack.white_balance.temperature,
@@ -1564,6 +1605,8 @@ impl EditPipeline {
                 },
                 _pad0: 0,
                 _pad1: 0,
+                uv_offset: [uv_rect[0], uv_rect[1]],
+                uv_scale: [uv_rect[2], uv_rect[3]],
             },
         );
         let mut gpu_masks = [MaskGpuEntry {
@@ -1617,6 +1660,7 @@ impl EditPipeline {
                 _pad0: 0,
                 _pad1: 0,
                 _pad2: 0,
+                uv_rect,
             },
         );
     }
@@ -1778,6 +1822,25 @@ impl EditPipeline {
         edit_stack: &EditStack,
         color_space: beam_core::ExportColorSpace,
     ) -> Result<Vec<u8>> {
+        self.render_to_rgba8_with_colorspace_and_uv_rect(
+            device,
+            queue,
+            input,
+            edit_stack,
+            color_space,
+            [0.0, 0.0, 1.0, 1.0],
+        )
+    }
+
+    fn render_to_rgba8_with_colorspace_and_uv_rect(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        edit_stack: &EditStack,
+        color_space: beam_core::ExportColorSpace,
+        uv_rect: [f32; 4],
+    ) -> Result<Vec<u8>> {
         let width = input.width;
         let height = input.height;
 
@@ -1820,14 +1883,15 @@ impl EditPipeline {
         }
 
         self.ensure_intermediate_textures(device, width, height);
-        self.update_uniforms(device, queue, edit_stack);
+        self.update_uniforms_with_uv_rect(device, queue, edit_stack, uv_rect);
         let in_pong = self.render_intermediate_stages(device, queue, input);
 
         let intermediate_view = if in_pong {
-            self.pong_view.as_ref().unwrap()
+            self.pong_view.as_ref()
         } else {
-            self.ping_view.as_ref().unwrap()
-        };
+            self.ping_view.as_ref()
+        }
+        .ok_or_else(|| BeamError::GpuPipeline("Intermediate texture view missing".into()))?;
         let cs_val = match color_space {
             beam_core::ExportColorSpace::Srgb => 0u32,
             beam_core::ExportColorSpace::DisplayP3 => 1u32,
@@ -1835,7 +1899,7 @@ impl EditPipeline {
         };
         self.export_display_pipeline
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| BeamError::GpuPipeline("Export display pipeline missing".into()))?
             .render_to_target(device, queue, intermediate_view, &target_view, cs_val);
 
         // 3. Staging buffer with 256-byte row alignment
@@ -1951,6 +2015,7 @@ impl EditPipeline {
         color_space: beam_core::ExportColorSpace,
         max_tile_size: u32,
     ) -> Result<Vec<u8>> {
+        const TILE_HALO: u32 = 8;
         let max_tile_size = max_tile_size.max(256);
 
         // If image fits within a single tile along both axes, run standard single pass
@@ -1965,7 +2030,8 @@ impl EditPipeline {
             );
         }
 
-        // Tiled grid processing
+        // Tiled grid processing with halo overlap for spatial filters (detail/sharpening/NR)
+        // and global UV rect for vignette, grain, and local masks.
         let mut final_rgba8 = vec![0u8; (width * height * 4) as usize];
         let tiles_x = width.div_ceil(max_tile_size);
         let tiles_y = height.div_ceil(max_tile_size);
@@ -1973,37 +2039,52 @@ impl EditPipeline {
         for ty in 0..tiles_y {
             let tile_y = ty * max_tile_size;
             let tile_h = max_tile_size.min(height - tile_y);
+            let ext_y = tile_y.saturating_sub(TILE_HALO);
+            let ext_bottom = (tile_y + tile_h + TILE_HALO).min(height);
+            let ext_h = ext_bottom - ext_y;
+            let inner_y = tile_y - ext_y;
 
             for tx in 0..tiles_x {
                 let tile_x = tx * max_tile_size;
                 let tile_w = max_tile_size.min(width - tile_x);
+                let ext_x = tile_x.saturating_sub(TILE_HALO);
+                let ext_right = (tile_x + tile_w + TILE_HALO).min(width);
+                let ext_w = ext_right - ext_x;
+                let inner_x = tile_x - ext_x;
 
-                // Extract sub-rectangle of f32 pixel data for this tile
-                let mut tile_data = Vec::with_capacity((tile_w * tile_h * 4) as usize);
-                for row in 0..tile_h {
-                    let src_y = tile_y + row;
-                    let src_start = ((src_y * width + tile_x) * 4) as usize;
-                    let src_end = src_start + (tile_w * 4) as usize;
+                // Extract halo-expanded sub-rectangle of f32 pixel data
+                let mut tile_data = Vec::with_capacity((ext_w * ext_h * 4) as usize);
+                for row in 0..ext_h {
+                    let src_y = ext_y + row;
+                    let src_start = ((src_y * width + ext_x) * 4) as usize;
+                    let src_end = src_start + (ext_w * 4) as usize;
                     tile_data.extend_from_slice(&data[src_start..src_end]);
                 }
 
                 let tile_gpu_image =
-                    GpuImage::from_rgba32f(device, queue, tile_w, tile_h, &tile_data)?;
+                    GpuImage::from_rgba32f(device, queue, ext_w, ext_h, &tile_data)?;
 
-                let tile_rgba8 = self.render_to_rgba8_with_colorspace(
+                let uv_rect = [
+                    ext_x as f32 / width as f32,
+                    ext_y as f32 / height as f32,
+                    ext_w as f32 / width as f32,
+                    ext_h as f32 / height as f32,
+                ];
+                let tile_rgba8 = self.render_to_rgba8_with_colorspace_and_uv_rect(
                     device,
                     queue,
                     &tile_gpu_image,
                     edit_stack,
                     color_space,
+                    uv_rect,
                 )?;
 
-                // Copy tile bytes into final image buffer
+                // Copy only the inner (non-halo) tile bytes into final image buffer
                 for row in 0..tile_h {
                     let dst_y = tile_y + row;
                     let dst_start = ((dst_y * width + tile_x) * 4) as usize;
                     let dst_end = dst_start + (tile_w * 4) as usize;
-                    let tile_row_start = (row * tile_w * 4) as usize;
+                    let tile_row_start = (((inner_y + row) * ext_w + inner_x) * 4) as usize;
                     let tile_row_end = tile_row_start + (tile_w * 4) as usize;
 
                     final_rgba8[dst_start..dst_end]
@@ -2536,5 +2617,123 @@ mod tests {
             assert!(rendered.is_ok(), "Render must succeed");
             // `img` and `rendered` drop here at end of loop iteration, releasing GPU textures
         }
+    }
+
+    #[test]
+    fn test_lut3d_identity_cube_preserves_colors() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let tmp_dir = std::env::temp_dir().join("beam_lut3d_test");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let lut_path = tmp_dir.join("identity_2.cube");
+        std::fs::write(
+            &lut_path,
+            "LUT_3D_SIZE 2\n0.0 0.0 0.0\n1.0 0.0 0.0\n0.0 1.0 0.0\n1.0 1.0 0.0\n0.0 0.0 1.0\n1.0 0.0 1.0\n0.0 1.0 1.0\n1.0 1.0 1.0\n",
+        )
+        .unwrap();
+
+        let width = 8u32;
+        let height = 8u32;
+        let input_data: Vec<f32> = [0.25f32, 0.50, 0.15, 1.0].repeat((width * height) as usize);
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let baseline = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &EditStack::default())
+            .expect("baseline render failed");
+
+        let mut stack_with_lut = EditStack::default();
+        stack_with_lut.lut.enabled = true;
+        stack_with_lut.lut.intensity = 1.0;
+        stack_with_lut.lut.path = Some(lut_path.to_string_lossy().into_owned());
+
+        let with_lut = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack_with_lut)
+            .expect("LUT render failed");
+
+        for (a, b) in baseline.iter().zip(with_lut.iter()) {
+            assert!(
+                (*a as i32 - *b as i32).abs() <= 2,
+                "Identity 3D .cube LUT must preserve colors (baseline={a}, with_lut={b})"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_render_tiled_matches_monolithic_with_spatial_stages() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 520u32;
+        let height = 520u32;
+        let mut input_data = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                input_data.push(((x * 7 + y * 3) % 256) as f32 / 255.0 * 0.6 + 0.05);
+                input_data.push(((x * 5 + y * 11) % 256) as f32 / 255.0 * 0.6 + 0.05);
+                input_data.push(((x * 13 + y * 2) % 256) as f32 / 255.0 * 0.6 + 0.05);
+                input_data.push(1.0);
+            }
+        }
+        let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut edit_stack = EditStack::default();
+        edit_stack.detail.sharpening = 0.6;
+        edit_stack.detail.clarity = 0.4;
+        edit_stack.vignette_grain.vignette_amount = -60.0;
+        edit_stack.vignette_grain.vignette_midpoint = 50.0;
+        edit_stack.vignette_grain.vignette_feather = 50.0;
+        edit_stack.masks.push(beam_core::sidecar::MaskLayer {
+            id: 1,
+            name: "Grad".into(),
+            enabled: true,
+            shape: beam_core::sidecar::MaskShape::LinearGradient {
+                start: [0.0, 0.2],
+                end: [1.0, 0.8],
+            },
+            exposure: 0.8,
+            contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            saturation: 0.0,
+        });
+
+        let monolithic = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &input_img, &edit_stack)
+            .expect("monolithic render failed");
+
+        let tiled = pipeline
+            .render_tiled_to_rgba8(
+                &gpu.device,
+                &gpu.queue,
+                width,
+                height,
+                &input_data,
+                &edit_stack,
+                beam_core::ExportColorSpace::Srgb,
+                256,
+            )
+            .expect("tiled render failed");
+
+        assert_eq!(monolithic.len(), tiled.len());
+        let max_diff = monolithic
+            .iter()
+            .zip(tiled.iter())
+            .map(|(a, b)| (*a as i32 - *b as i32).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_diff <= 1,
+            "Tiled render with detail/vignette/masks must match monolithic render (max_diff={max_diff})"
+        );
     }
 }

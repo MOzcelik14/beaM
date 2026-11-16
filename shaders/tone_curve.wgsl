@@ -39,7 +39,10 @@ fn unpack_lut(v: vec4<f32>, comp_idx: u32) -> f32 {
 }
 
 fn evaluate_channel_curve(val: f32, channel: u32) -> f32 {
-    let clamped = clamp(val, 0.0, 1.0);
+    if (val <= 0.0) {
+        return 0.0;
+    }
+    let clamped = min(val, 1.0);
     let pos = clamped * 255.0;
     let i0 = min(u32(floor(pos)), 254u);
     let i1 = i0 + 1u;
@@ -65,7 +68,11 @@ fn evaluate_channel_curve(val: f32, channel: u32) -> f32 {
         y0 = unpack_lut(u_params.blue_lut[v0_idx], c0_idx);
         y1 = unpack_lut(u_params.blue_lut[v1_idx], c1_idx);
     }
-    return mix(y0, y1, frac);
+    let mapped = mix(y0, y1, frac);
+    if (val > 1.0) {
+        return mapped + (val - 1.0);
+    }
+    return mapped;
 }
 
 @fragment

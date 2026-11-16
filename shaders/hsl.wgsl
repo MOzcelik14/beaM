@@ -42,9 +42,9 @@ fn rgb_to_hsl(c: vec3<f32>) -> vec3<f32> {
 
     var s: f32 = 0.0;
     if (l < 0.5) {
-        s = delta / (c_max + c_min);
+        s = delta / max(c_max + c_min, 1e-5);
     } else {
-        s = delta / (2.0 - c_max - c_min);
+        s = delta / max(2.0 - c_max - c_min, 1e-5);
     }
 
     var h: f32 = 0.0;
@@ -115,7 +115,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return color;
     }
 
-    let hsl = rgb_to_hsl(color.rgb);
+    let hdr_scale = max(max(color.r, max(color.g, color.b)), 1.0);
+    let norm_rgb = max(color.rgb, vec3<f32>(0.0)) / hdr_scale;
+
+    let hsl = rgb_to_hsl(norm_rgb);
     if (hsl.y <= 1e-4) {
         return color;
     }
@@ -153,6 +156,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var new_s = clamp(hsl.y * (1.0 + d_sat), 0.0, 1.0);
     var new_l = clamp(hsl.z * (1.0 + d_lum), 0.0, 1.0);
 
-    let new_rgb = hsl_to_rgb(vec3<f32>(new_h, new_s, new_l));
+    let new_rgb = hsl_to_rgb(vec3<f32>(new_h, new_s, new_l)) * hdr_scale;
     return vec4<f32>(new_rgb, color.a);
 }

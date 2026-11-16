@@ -50,6 +50,11 @@
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
   <releases>
+    <release version="1.1.0" date="2026-11-16">
+      <description>
+        <p>beaM. 1.1.0: Rgba16Float 3D LUT accuracy fix, HDR highlight preservation in Tone Curve and HSL, halo-padded tiled export with global UV coordinates, aspect-corrected straighten geometry, race-free async image loading, sidecar-safe undo/redo and library sync, and SQLite security update.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-11-14">
       <description>
         <p>beaM. 1.0.0: Whites/Blacks, Vibrance/Saturation, Vignette/Grain, WB Eyedropper, RGB Tone Curves, 3-Way Color Grading Wheels, Detail (Clarity/Dehaze/Sharpening/NR), 3D .cube LUTs, Parametric GPU Masking, Histogram Auto Tone, Virtual Copies, 16-bit TIFF &amp; WebP Export, and Watermarking.</p>

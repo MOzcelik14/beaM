@@ -81,7 +81,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
     }
 
-    // 2. Straighten rotation around crop center
+    // 2. Straighten rotation around crop center in aspect-corrected isotropic space
     if (abs(u_geo.straighten_rad) > 0.00001) {
         var center = vec2<f32>(0.5, 0.5);
         if (u_geo.crop_enabled != 0u) {
@@ -90,13 +90,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 u_geo.crop_y + u_geo.crop_h * 0.5
             );
         }
+        let aspect = dims.x / max(dims.y, 1.0);
         let rad = -u_geo.straighten_rad;
         let cos_a = cos(rad);
         let sin_a = sin(rad);
         let d = uv - center;
+        let dx = d.x * aspect;
+        let dy = d.y;
         uv = center + vec2<f32>(
-            d.x * cos_a - d.y * sin_a,
-            d.x * sin_a + d.y * cos_a
+            (dx * cos_a - dy * sin_a) / aspect,
+            dx * sin_a + dy * cos_a
         );
     }
 

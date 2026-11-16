@@ -349,8 +349,9 @@ impl LibraryDb {
             camera_model = Some(m);
         }
 
-        self.conn
-            .execute(
+        let id = self
+            .conn
+            .query_row(
                 r#"
             INSERT INTO photos (
                 file_path, file_name, file_size, created_at, modified_at,
@@ -364,10 +365,11 @@ impl LibraryDb {
                 modified_at=excluded.modified_at,
                 width=excluded.width,
                 height=excluded.height,
-                rating=excluded.rating,
-                color_label=excluded.color_label,
+                rating=CASE WHEN excluded.sidecar_path IS NOT NULL THEN excluded.rating ELSE photos.rating END,
+                color_label=CASE WHEN excluded.sidecar_path IS NOT NULL THEN excluded.color_label ELSE photos.color_label END,
                 thumbnail_path=COALESCE(excluded.thumbnail_path, photos.thumbnail_path),
                 sidecar_path=COALESCE(excluded.sidecar_path, photos.sidecar_path)
+            RETURNING id
             "#,
                 params![
                     file_path,
@@ -384,10 +386,9 @@ impl LibraryDb {
                     thumb_path_str,
                     sidecar_path_str,
                 ],
+                |row| row.get::<_, i64>(0),
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
-
-        let id = self.conn.last_insert_rowid();
 
         Ok(PhotoRecord {
             id,
@@ -646,6 +647,26 @@ impl LibraryDb {
         }
     }
 
+    fn sync_photo_sidecar(
+        &self,
+        photo_id: i64,
+        update_fn: impl FnOnce(&mut Sidecar),
+    ) -> Result<()> {
+        if let Some(photo) = self.get_photo(photo_id)? {
+            let img_p = Path::new(&photo.file_path);
+            let sidecar_p =
+                Sidecar::find_sidecar_for(img_p).unwrap_or_else(|| Sidecar::path_for(img_p));
+            let mut sidecar = if sidecar_p.exists() {
+                Sidecar::load_from_file(&sidecar_p)?
+            } else {
+                Sidecar::new(&photo.file_name)
+            };
+            update_fn(&mut sidecar);
+            sidecar.save_to_file(&sidecar_p)?;
+        }
+        Ok(())
+    }
+
     /// Update star rating (0-5) for a photo and synchronize to its sidecar.
     pub fn update_rating(&self, photo_id: i64, rating: u8) -> Result<()> {
         let clamped = rating.min(5);
@@ -656,21 +677,7 @@ impl LibraryDb {
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
 
-        if let Ok(Some(photo)) = self.get_photo(photo_id) {
-            let img_p = Path::new(&photo.file_path);
-            let sidecar_p =
-                Sidecar::find_sidecar_for(img_p).unwrap_or_else(|| Sidecar::path_for(img_p));
-            let mut sidecar = if sidecar_p.exists() {
-                Sidecar::load_from_file(&sidecar_p)
-                    .unwrap_or_else(|_| Sidecar::new(&photo.file_name))
-            } else {
-                Sidecar::new(&photo.file_name)
-            };
-            sidecar.set_rating(clamped);
-            let _ = sidecar.save_to_file(&sidecar_p);
-        }
-
-        Ok(())
+        self.sync_photo_sidecar(photo_id, |sidecar| sidecar.set_rating(clamped))
     }
 
     /// Update color label for a photo and synchronize to its sidecar.
@@ -682,21 +689,7 @@ impl LibraryDb {
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
 
-        if let Ok(Some(photo)) = self.get_photo(photo_id) {
-            let img_p = Path::new(&photo.file_path);
-            let sidecar_p =
-                Sidecar::find_sidecar_for(img_p).unwrap_or_else(|| Sidecar::path_for(img_p));
-            let mut sidecar = if sidecar_p.exists() {
-                Sidecar::load_from_file(&sidecar_p)
-                    .unwrap_or_else(|_| Sidecar::new(&photo.file_name))
-            } else {
-                Sidecar::new(&photo.file_name)
-            };
-            sidecar.set_color_label(label);
-            let _ = sidecar.save_to_file(&sidecar_p);
-        }
-
-        Ok(())
+        self.sync_photo_sidecar(photo_id, |sidecar| sidecar.set_color_label(label))
     }
 
     /// Update the cached thumbnail path for a photo in the database.

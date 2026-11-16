@@ -39,6 +39,17 @@ pub fn calculate_effective_aspect_ratio(orig_w: u32, orig_h: u32, crop: &CropAdj
 /// Maps an output normalized UV (0..1) to source image UV (0..1)
 /// taking crop rect, straighten, flip, and 90-degree rotations into account.
 pub fn map_output_uv_to_source(u_out: f32, v_out: f32, crop: &CropAdjustment) -> (f32, f32) {
+    map_output_uv_to_source_with_aspect(u_out, v_out, 1.0, crop)
+}
+
+/// Maps an output normalized UV (0..1) to source image UV (0..1) with explicit source aspect ratio
+/// (`width / height`) so straighten rotation remains angle-accurate on non-square images.
+pub fn map_output_uv_to_source_with_aspect(
+    u_out: f32,
+    v_out: f32,
+    aspect_ratio: f32,
+    crop: &CropAdjustment,
+) -> (f32, f32) {
     // 1. Map into crop rectangle
     let (u1, v1) = if crop.enabled {
         (crop.x + u_out * crop.width, crop.y + v_out * crop.height)
@@ -46,7 +57,7 @@ pub fn map_output_uv_to_source(u_out: f32, v_out: f32, crop: &CropAdjustment) ->
         (u_out, v_out)
     };
 
-    // 2. Straighten rotation around crop center
+    // 2. Straighten rotation around crop center in aspect-corrected isotropic space
     let (u2, v2) = if crop.straighten.abs() > 0.0001 {
         let (cu, cv) = if crop.enabled {
             (crop.x + crop.width * 0.5, crop.y + crop.height * 0.5)
@@ -54,14 +65,18 @@ pub fn map_output_uv_to_source(u_out: f32, v_out: f32, crop: &CropAdjustment) ->
             (0.5, 0.5)
         };
 
+        let aspect = aspect_ratio.max(1e-4);
         let rad = (-crop.straighten).to_radians();
         let cos_a = rad.cos();
         let sin_a = rad.sin();
 
-        let du = u1 - cu;
+        let du = (u1 - cu) * aspect;
         let dv = v1 - cv;
 
-        (cu + du * cos_a - dv * sin_a, cv + du * sin_a + dv * cos_a)
+        (
+            cu + (du * cos_a - dv * sin_a) / aspect,
+            cv + du * sin_a + dv * cos_a,
+        )
     } else {
         (u1, v1)
     };

@@ -195,9 +195,9 @@ impl Default for ToneCurveAdjustment {
 pub struct ColorWheelGrade {
     /// Hue in degrees (0.0 to 360.0)
     pub hue: f32,
-    /// Saturation strength (0.0 to 100.0)
+    /// Saturation strength (0.0 to 1.0)
     pub saturation: f32,
-    /// Luminance offset (-100.0 to +100.0)
+    /// Luminance offset (-1.0 to +1.0)
     pub luminance: f32,
 }
 
@@ -207,9 +207,9 @@ pub struct ColorGradingAdjustment {
     pub shadows: ColorWheelGrade,
     pub midtones: ColorWheelGrade,
     pub highlights: ColorWheelGrade,
-    /// Balance shift between shadows and highlights (-100.0 to +100.0, default 0.0)
+    /// Balance shift between shadows and highlights (-1.0 to +1.0, default 0.0)
     pub balance: f32,
-    /// Tonal transition blending (0.0 to 100.0, default 50.0)
+    /// Tonal transition blending (0.0 to 1.0, default 0.5)
     pub blending: f32,
 }
 
@@ -229,15 +229,15 @@ impl Default for ColorGradingAdjustment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetailAdjustment {
     pub enabled: bool,
-    /// Local midtone contrast (-100.0 to +100.0)
+    /// Local midtone contrast (-1.0 to +1.0)
     pub clarity: f32,
-    /// Atmospheric haze removal (-100.0 to +100.0)
+    /// Atmospheric haze removal (-1.0 to +1.0)
     pub dehaze: f32,
-    /// Edge sharpening (0.0 to 100.0)
+    /// Edge sharpening (0.0 to 1.0)
     pub sharpening: f32,
-    /// Luminance noise reduction (0.0 to 100.0)
+    /// Luminance noise reduction (0.0 to 1.0)
     pub noise_reduction_luma: f32,
-    /// Chroma/color noise reduction (0.0 to 100.0)
+    /// Chroma/color noise reduction (0.0 to 1.0)
     pub noise_reduction_color: f32,
 }
 
@@ -630,8 +630,8 @@ impl EditStack {
             &mut self.color_grading.highlights,
         ] {
             sanitize_float(&mut wheel.hue, 0.0, 360.0, 0.0);
-            sanitize_float(&mut wheel.saturation, 0.0, 100.0, 0.0);
-            sanitize_float(&mut wheel.luminance, -100.0, 100.0, 0.0);
+            sanitize_float(&mut wheel.saturation, 0.0, 1.0, 0.0);
+            sanitize_float(&mut wheel.luminance, -1.0, 1.0, 0.0);
         }
         sanitize_float(&mut self.color_grading.balance, -1.0, 1.0, 0.0);
         sanitize_float(&mut self.color_grading.blending, 0.0, 1.0, 0.5);

@@ -25,6 +25,8 @@ struct VignetteGrainUniforms {
     enabled: u32,
     _pad0: u32,
     _pad1: u32,
+    uv_offset: vec2<f32>,
+    uv_scale: vec2<f32>,
 };
 
 @group(0) @binding(0) var t_input: texture_2d<f32>;
@@ -48,11 +50,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return color;
     }
 
+    let global_uv = u_params.uv_offset + in.uv * u_params.uv_scale;
     var rgb = color.rgb;
 
     // 1. Vignette
     if (abs(u_params.vignette_amount) >= 1e-4) {
-        let centered = (in.uv - vec2<f32>(0.5, 0.5)) * 2.0;
+        let centered = (global_uv - vec2<f32>(0.5, 0.5)) * 2.0;
         let dist = length(centered) / 1.41421356; // 0 at center, 1 at corners
         let mid = clamp(u_params.vignette_midpoint / 100.0, 0.05, 0.95);
         let feather = max(u_params.vignette_feather / 100.0, 0.05) * 0.65;
@@ -72,7 +75,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 2. Film Grain
     if (u_params.grain_amount >= 1e-4) {
-        let pixel_pos = floor((in.uv * dims) / max(u_params.grain_size, 1.0));
+        let full_dims = dims / max(u_params.uv_scale, vec2<f32>(1e-5));
+        let pixel_pos = floor((global_uv * full_dims) / max(u_params.grain_size, 1.0));
         let n1 = hash12(pixel_pos);
         let n2 = hash12(pixel_pos + vec2<f32>(17.3, 41.9));
         // Triangular distribution centered at 0

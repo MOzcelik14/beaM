@@ -56,8 +56,12 @@ pub enum SettingsTab {
 }
 
 enum BackgroundMsg {
-    Started(PathBuf),
-    Success(Box<DecodedImage>),
+    Started(u64, PathBuf),
+    Success(u64, Box<DecodedImage>),
+    DecodeError {
+        gen_id: u64,
+        msg: String,
+    },
     Error(String),
     ImportComplete {
         count: usize,
@@ -208,6 +212,8 @@ pub struct BeamApp {
     pending_action: Option<PendingAction>,
     show_unsaved_changes_dialog: bool,
     allow_close: bool,
+    decode_generation: u64,
+    active_imports: usize,
 }
 
 /// Action to be executed after unsaved changes confirmation
@@ -302,9 +308,9 @@ impl BeamApp {
             let (lock, cvar) = &*worker_queue;
             loop {
                 let req = {
-                    let mut q = lock.lock().unwrap();
+                    let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
                     while q.is_empty() {
-                        q = cvar.wait(q).unwrap();
+                        q = cvar.wait(q).unwrap_or_else(|e| e.into_inner());
                     }
                     q.pop_front()
                 };
@@ -557,6 +563,8 @@ impl BeamApp {
             pending_action: None,
             show_unsaved_changes_dialog: false,
             allow_close: false,
+            decode_generation: 0,
+            active_imports: 0,
         };
 
         if let Some(ref folder) = app.library_state.active_folder.clone() {
@@ -581,6 +589,8 @@ impl BeamApp {
 
     /// Open file dialog and spawn background thread to decode the image
     pub fn open_file_dialog(&mut self) {
+        self.decode_generation = self.decode_generation.wrapping_add(1);
+        let gen_id = self.decode_generation;
         let tx = self.tx.clone();
         let dialog_title = t!("menu_file_open");
         thread::spawn(move || {
@@ -612,20 +622,25 @@ impl BeamApp {
                 .pick_file();
 
             if let Some(path) = file {
-                let _ = tx.send(BackgroundMsg::Started(path.clone()));
+                let _ = tx.send(BackgroundMsg::Started(gen_id, path.clone()));
                 let res =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_image(&path)));
                 match res {
                     Ok(Ok(decoded)) => {
-                        let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));
+                        let _ = tx.send(BackgroundMsg::Success(gen_id, Box::new(decoded)));
                     }
                     Ok(Err(err)) => {
-                        let _ = tx.send(BackgroundMsg::Error(err.to_string()));
+                        let _ = tx.send(BackgroundMsg::DecodeError {
+                            gen_id,
+                            msg: err.to_string(),
+                        });
                     }
                     Err(panic_err) => {
                         log::error!("Image decoding worker panicked: {panic_err:?}");
-                        let _ =
-                            tx.send(BackgroundMsg::Error("Image decoding panicked".to_string()));
+                        let _ = tx.send(BackgroundMsg::DecodeError {
+                            gen_id,
+                            msg: "Image decoding panicked".to_string(),
+                        });
                     }
                 }
             }
@@ -638,6 +653,7 @@ impl BeamApp {
         let thumb_dir = self.thumbnail_cache_dir.clone();
         let catalog_path = default_catalog_path();
         let recursive = self.app_config.recursive_browse;
+        self.active_imports += 1;
         self.library_state.is_importing = true;
         self.library_state.import_status = Some(t!("library_importing"));
 
@@ -856,23 +872,31 @@ impl BeamApp {
         path: PathBuf,
         project_sidecar: Option<(PathBuf, Sidecar)>,
     ) {
+        self.decode_generation = self.decode_generation.wrapping_add(1);
+        let gen_id = self.decode_generation;
         self.pending_project_sidecar = project_sidecar;
         self.current_view = AppView::Develop;
         let tx = self.tx.clone();
-        let _ = tx.send(BackgroundMsg::Started(path.clone()));
+        let _ = tx.send(BackgroundMsg::Started(gen_id, path.clone()));
         thread::spawn(move || {
             let res =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_image(&path)));
             match res {
                 Ok(Ok(decoded)) => {
-                    let _ = tx.send(BackgroundMsg::Success(Box::new(decoded)));
+                    let _ = tx.send(BackgroundMsg::Success(gen_id, Box::new(decoded)));
                 }
                 Ok(Err(err)) => {
-                    let _ = tx.send(BackgroundMsg::Error(err.to_string()));
+                    let _ = tx.send(BackgroundMsg::DecodeError {
+                        gen_id,
+                        msg: err.to_string(),
+                    });
                 }
                 Err(panic_err) => {
                     log::error!("Image decoding worker panicked: {panic_err:?}");
-                    let _ = tx.send(BackgroundMsg::Error("Image decoding panicked".to_string()));
+                    let _ = tx.send(BackgroundMsg::DecodeError {
+                        gen_id,
+                        msg: "Image decoding panicked".to_string(),
+                    });
                 }
             }
         });
@@ -1006,7 +1030,10 @@ impl BeamApp {
     fn check_background_messages(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                BackgroundMsg::Started(path) => {
+                BackgroundMsg::Started(gen_id, path) => {
+                    if gen_id != self.decode_generation {
+                        continue;
+                    }
                     self.is_loading = true;
                     self.loading_filename = path
                         .file_name()
@@ -1046,23 +1073,40 @@ impl BeamApp {
                     self.last_saved_stack = Some(self.edit_stack.clone());
                     ctx.request_repaint();
                 }
-                BackgroundMsg::Success(decoded) => {
+                BackgroundMsg::Success(gen_id, decoded) => {
+                    if gen_id != self.decode_generation {
+                        continue;
+                    }
                     self.is_loading = false;
                     self.loading_filename = None;
                     self.current_metadata = Some(decoded.metadata.clone());
                     self.upload_proxy_and_render(frame, *decoded);
                     ctx.request_repaint();
                 }
-                BackgroundMsg::Error(err_msg) => {
+                BackgroundMsg::DecodeError { gen_id, msg } => {
+                    if gen_id != self.decode_generation {
+                        continue;
+                    }
                     self.is_loading = false;
                     self.loading_filename = None;
-                    self.library_state.is_importing = false;
+                    self.error_message = Some(msg);
+                    ctx.request_repaint();
+                }
+                BackgroundMsg::Error(err_msg) => {
+                    self.active_imports = self.active_imports.saturating_sub(1);
+                    if self.active_imports == 0 {
+                        self.library_state.is_importing = false;
+                        self.library_state.import_status = None;
+                    }
                     self.error_message = Some(err_msg);
                     ctx.request_repaint();
                 }
                 BackgroundMsg::ImportComplete { count, folder } => {
-                    self.library_state.is_importing = false;
-                    self.library_state.import_status = None;
+                    self.active_imports = self.active_imports.saturating_sub(1);
+                    if self.active_imports == 0 {
+                        self.library_state.is_importing = false;
+                        self.library_state.import_status = None;
+                    }
                     if let Some(folder) = folder {
                         if self.library_state.active_folder.as_ref() == Some(&folder) {
                             self.library_state.subdirectories =
@@ -1412,6 +1456,7 @@ impl BeamApp {
             self.history_index -= 1;
             self.edit_stack = self.history[self.history_index].stack.clone();
             self.re_render_edits(frame);
+            self.save_sidecar();
         }
     }
 
@@ -1421,6 +1466,7 @@ impl BeamApp {
             self.history_index += 1;
             self.edit_stack = self.history[self.history_index].stack.clone();
             self.re_render_edits(frame);
+            self.save_sidecar();
         }
     }
 
@@ -1430,6 +1476,7 @@ impl BeamApp {
             self.history_index = index;
             self.edit_stack = self.history[index].stack.clone();
             self.re_render_edits(frame);
+            self.save_sidecar();
         }
     }
 
@@ -1513,7 +1560,7 @@ impl BeamApp {
             return;
         }
         let (lock, cvar) = &*self.thumb_queue;
-        let mut q = lock.lock().unwrap();
+        let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
         for req in requests {
             if !q.iter().any(|r| r.photo_id == req.photo_id) {
                 if q.len() >= 500 {
@@ -1530,7 +1577,7 @@ impl BeamApp {
         // 1. Clear thumbnail worker queue
         {
             let (lock, _) = &*self.thumb_queue;
-            let mut q = lock.lock().unwrap();
+            let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
             q.clear();
         }
 
@@ -5775,7 +5822,7 @@ impl BeamApp {
 
     /// Launch background export thread
     pub fn start_export(&mut self) {
-        if self.export_targets.is_empty() {
+        if self.export_is_running || self.export_targets.is_empty() {
             return;
         }
 
@@ -7249,6 +7296,8 @@ mod tests {
             pending_action: None,
             show_unsaved_changes_dialog: false,
             allow_close: false,
+            decode_generation: 0,
+            active_imports: 0,
         }
     }
 
