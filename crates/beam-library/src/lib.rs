@@ -144,6 +144,27 @@ pub struct LibraryFilter {
     pub tag: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmartCollection {
+    pub id: i64,
+    pub name: String,
+    pub min_rating: u8,
+    pub color_label: Option<ColorLabel>,
+    pub file_type: FileTypeFilter,
+    pub search_query: Option<String>,
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PhotoMetadata {
+    pub title: String,
+    pub caption: String,
+    pub copyright: String,
+    pub creator: String,
+    pub gps_lat: Option<f64>,
+    pub gps_lon: Option<f64>,
+}
+
 pub struct LibraryDb {
     conn: Connection,
 }
@@ -238,6 +259,26 @@ impl LibraryDb {
 
             CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
             CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag_id);
+
+            CREATE TABLE IF NOT EXISTS smart_collections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                min_rating INTEGER NOT NULL DEFAULT 0,
+                color_label TEXT,
+                file_type TEXT NOT NULL DEFAULT 'All',
+                search_query TEXT,
+                tag TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS photo_metadata (
+                photo_id INTEGER PRIMARY KEY REFERENCES photos(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '',
+                caption TEXT NOT NULL DEFAULT '',
+                copyright TEXT NOT NULL DEFAULT '',
+                creator TEXT NOT NULL DEFAULT '',
+                gps_lat REAL,
+                gps_lon REAL
+            );
             "#,
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
@@ -1015,6 +1056,206 @@ impl LibraryDb {
         }
         Ok(result)
     }
+
+    /// Save or update a named Smart Collection (saved LibraryFilter).
+    pub fn save_smart_collection(&self, name: &str, filter: &LibraryFilter) -> Result<i64> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(BeamError::Database(
+                "Smart collection name cannot be empty".into(),
+            ));
+        }
+        let color_str = filter.color_label.map(|c| c.as_str().to_string());
+        self.conn
+            .execute(
+                "INSERT INTO smart_collections (name, min_rating, color_label, file_type, search_query, tag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(name) DO UPDATE SET
+                    min_rating = excluded.min_rating,
+                    color_label = excluded.color_label,
+                    file_type = excluded.file_type,
+                    search_query = excluded.search_query,
+                    tag = excluded.tag",
+                params![
+                    trimmed,
+                    filter.min_rating as i64,
+                    color_str,
+                    filter.file_type.as_str(),
+                    filter.search_query,
+                    filter.tag
+                ],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// List all saved Smart Collections sorted alphabetically.
+    pub fn list_smart_collections(&self) -> Result<Vec<SmartCollection>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, min_rating, color_label, file_type, search_query, tag
+                 FROM smart_collections
+                 ORDER BY name ASC",
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let col_str: Option<String> = row.get(3)?;
+                let ft_str: String = row.get(4)?;
+                let file_type = match ft_str.as_str() {
+                    "RAW" => FileTypeFilter::Raw,
+                    "JPEG" => FileTypeFilter::Jpeg,
+                    "PNG" => FileTypeFilter::Png,
+                    "TIFF" => FileTypeFilter::Tiff,
+                    "WebP" => FileTypeFilter::WebP,
+                    _ => FileTypeFilter::All,
+                };
+                Ok(SmartCollection {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    min_rating: (row.get::<_, i64>(2)?).clamp(0, 5) as u8,
+                    color_label: col_str.map(|s| ColorLabel::from_str_name(&s)),
+                    file_type,
+                    search_query: row.get(5)?,
+                    tag: row.get(6)?,
+                })
+            })
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let mut list = Vec::new();
+        for row in rows {
+            list.push(row.map_err(|e| BeamError::Database(e.to_string()))?);
+        }
+        Ok(list)
+    }
+
+    /// Delete a Smart Collection by ID.
+    pub fn delete_smart_collection(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM smart_collections WHERE id = ?1", params![id])
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get IPTC/XMP metadata and GPS coordinates for a photo (returns empty defaults if not yet set).
+    pub fn get_photo_metadata(&self, photo_id: i64) -> Result<PhotoMetadata> {
+        let meta = self
+            .conn
+            .query_row(
+                "SELECT title, caption, copyright, creator, gps_lat, gps_lon FROM photo_metadata WHERE photo_id = ?1",
+                params![photo_id],
+                |row| {
+                    Ok(PhotoMetadata {
+                        title: row.get(0)?,
+                        caption: row.get(1)?,
+                        copyright: row.get(2)?,
+                        creator: row.get(3)?,
+                        gps_lat: row.get(4)?,
+                        gps_lon: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(meta.unwrap_or_default())
+    }
+
+    /// Save IPTC/XMP metadata and GPS coordinates for a photo.
+    pub fn set_photo_metadata(&self, photo_id: i64, meta: &PhotoMetadata) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO photo_metadata (photo_id, title, caption, copyright, creator, gps_lat, gps_lon)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(photo_id) DO UPDATE SET
+                    title = excluded.title,
+                    caption = excluded.caption,
+                    copyright = excluded.copyright,
+                    creator = excluded.creator,
+                    gps_lat = excluded.gps_lat,
+                    gps_lon = excluded.gps_lon",
+                params![
+                    photo_id,
+                    meta.title,
+                    meta.caption,
+                    meta.copyright,
+                    meta.creator,
+                    meta.gps_lat,
+                    meta.gps_lon
+                ],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Detect exact duplicate files by grouping on file_size and verifying content fingerprint.
+    pub fn find_duplicates(&self) -> Result<Vec<Vec<PhotoRecord>>> {
+        let mut size_stmt = self
+            .conn
+            .prepare(
+                "SELECT file_size FROM photos WHERE file_size > 0 GROUP BY file_size HAVING COUNT(*) > 1",
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let sizes: Vec<i64> = size_stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| BeamError::Database(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut groups = Vec::new();
+        for sz in sizes {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT id, file_path, file_name, file_size, created_at, modified_at,
+                            camera_make, camera_model, width, height, rating, color_label,
+                            thumbnail_path, sidecar_path
+                     FROM photos WHERE file_size = ?1 ORDER BY id ASC",
+                )
+                .map_err(|e| BeamError::Database(e.to_string()))?;
+            let candidates: Vec<PhotoRecord> = stmt
+                .query_map(params![sz], |row| {
+                    let col_str: String = row.get(11)?;
+                    Ok(PhotoRecord {
+                        id: row.get(0)?,
+                        file_path: row.get(1)?,
+                        file_name: row.get(2)?,
+                        file_size: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get(4)?,
+                        modified_at: row.get(5)?,
+                        camera_make: row.get(6)?,
+                        camera_model: row.get(7)?,
+                        width: row.get::<_, i64>(8)? as u32,
+                        height: row.get::<_, i64>(9)? as u32,
+                        rating: row.get::<_, i64>(10)? as u8,
+                        color_label: ColorLabel::from_str_name(&col_str),
+                        thumbnail_path: row.get(12)?,
+                        sidecar_path: row.get(13)?,
+                    })
+                })
+                .map_err(|e| BeamError::Database(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let mut by_hash: std::collections::HashMap<u64, Vec<PhotoRecord>> =
+                std::collections::HashMap::new();
+            for rec in candidates {
+                if let Ok(bytes) = fs::read(&rec.file_path) {
+                    let mut h: u64 = 0xcbf29ce484222325;
+                    for &b in &bytes {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
+                    by_hash.entry(h).or_default().push(rec);
+                }
+            }
+            for (_h, g) in by_hash {
+                if g.len() > 1 {
+                    groups.push(g);
+                }
+            }
+        }
+        Ok(groups)
+    }
 }
 
 /// List immediate subdirectories within a directory, ignoring hidden (dot) folders and sorting alphabetically.
@@ -1623,6 +1864,62 @@ mod tests {
         assert_eq!(db.get_photo_tags(id1).unwrap(), vec!["golden-hour"]);
         let matched_after = db.query_photos(&filter).unwrap();
         assert!(matched_after.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_smart_collections_metadata_and_duplicates() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("beam_phase3_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(12, 12, Rgba([80, 120, 160, 255]));
+        let f1 = temp_dir.join("orig.png");
+        let f2 = temp_dir.join("copy.png");
+        img.save(&f1).unwrap();
+        fs::copy(&f1, &f2).unwrap();
+
+        let thumb_dir = temp_dir.join("thumbs");
+        let db = LibraryDb::open_in_memory().unwrap();
+        let id1 = db.import_file(&f1, &thumb_dir).unwrap().id;
+        let _id2 = db.import_file(&f2, &thumb_dir).unwrap().id;
+
+        // 1. Smart Collections
+        let filter = LibraryFilter {
+            min_rating: 4,
+            file_type: FileTypeFilter::Png,
+            tag: Some("best".to_string()),
+            ..Default::default()
+        };
+        let sc_id = db.save_smart_collection("Top PNGs", &filter).unwrap();
+        let cols = db.list_smart_collections().unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(cols[0].name, "Top PNGs");
+        assert_eq!(cols[0].min_rating, 4);
+        assert_eq!(cols[0].file_type, FileTypeFilter::Png);
+        assert_eq!(cols[0].tag.as_deref(), Some("best"));
+        db.delete_smart_collection(sc_id).unwrap();
+        assert!(db.list_smart_collections().unwrap().is_empty());
+
+        // 2. IPTC/XMP Metadata + GPS
+        let meta = PhotoMetadata {
+            title: "Mountain Dawn".into(),
+            caption: "Alpenglow over ridge".into(),
+            copyright: "2026 beaM".into(),
+            creator: "Photographer".into(),
+            gps_lat: Some(46.5775),
+            gps_lon: Some(7.9052),
+        };
+        db.set_photo_metadata(id1, &meta).unwrap();
+        assert_eq!(db.get_photo_metadata(id1).unwrap(), meta);
+
+        // 3. Duplicate Detection
+        let dups = db.find_duplicates().unwrap();
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].len(), 2);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

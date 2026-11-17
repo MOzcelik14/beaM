@@ -17,9 +17,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 }
 
 struct MaskGpuEntry {
-    // x = type (0 = linear, 1 = radial), y = invert (0 or 1), z = feather (0..1), w = enabled (0 or 1)
+    // x = type (0 = linear, 1 = radial, 2 = brush), y = invert (0 or 1), z = feather (0..1), w = enabled (0 or 1)
     geom0: vec4<f32>,
-    // xy = start/center, zw = end/radius
+    // linear/radial: start/center, end/radius; brush: x = start_idx, y = count, z = radius, w = 0
     geom1: vec4<f32>,
     // x = exposure_mult, y = contrast_slope, z = highlights (-1..1), w = shadows (-1..1)
     adj0: vec4<f32>,
@@ -27,6 +27,8 @@ struct MaskGpuEntry {
     adj1: vec4<f32>,
     // x = luma_min (0..1), y = luma_max (0..1), z = smoothness (0.01..1), w = reserved
     luma: vec4<f32>,
+    // x = enabled (0 or 1), y = target_hue (0..1), z = tolerance (0..0.5), w = reserved
+    color_range: vec4<f32>,
 };
 
 struct MaskUniforms {
@@ -36,6 +38,7 @@ struct MaskUniforms {
     _pad1: u32,
     _pad2: u32,
     uv_rect: vec4<f32>, // xy = offset, zw = scale
+    brush_pts: array<vec4<f32>, 128>,
 };
 
 @group(0) @binding(0) var t_input: texture_2d<f32>;
@@ -53,6 +56,34 @@ fn compute_luma_range_weight(rgb: vec3<f32>, luma_params: vec4<f32>) -> f32 {
     return clamp(lo * hi, 0.0, 1.0);
 }
 
+fn compute_color_range_weight(rgb: vec3<f32>, cr: vec4<f32>) -> f32 {
+    if (cr.x < 0.5) {
+        return 1.0;
+    }
+    let c = max(rgb, vec3<f32>(0.0));
+    let cmax = max(c.r, max(c.g, c.b));
+    let cmin = min(c.r, min(c.g, c.b));
+    let delta = cmax - cmin;
+    if (delta < 1e-4) {
+        return 0.0;
+    }
+    var hue: f32 = 0.0;
+    if (cmax == c.r) {
+        hue = ((c.g - c.b) / delta) / 6.0;
+        if (hue < 0.0) { hue = hue + 1.0; }
+    } else if (cmax == c.g) {
+        hue = (((c.b - c.r) / delta) + 2.0) / 6.0;
+    } else {
+        hue = (((c.r - c.g) / delta) + 4.0) / 6.0;
+    }
+    let diff = abs(hue - cr.y);
+    let circ_dist = min(diff, 1.0 - diff);
+    let tol = max(cr.z, 0.01);
+    let sat = delta / max(cmax, 1e-4);
+    let sat_w = smoothstep(0.05, 0.25, sat);
+    return (1.0 - smoothstep(tol * 0.4, tol, circ_dist)) * sat_w;
+}
+
 fn compute_mask_weight(uv: vec2<f32>, m: MaskGpuEntry) -> f32 {
     if (m.geom0.w < 0.5) {
         return 0.0;
@@ -65,7 +96,7 @@ fn compute_mask_weight(uv: vec2<f32>, m: MaskGpuEntry) -> f32 {
         let len_sq = max(dot(dir, dir), 1e-6);
         let proj = clamp(dot(uv - start, dir) / len_sq, 0.0, 1.0);
         return 1.0 - smoothstep(0.0, 1.0, proj);
-    } else {
+    } else if (m.geom0.x < 1.5) {
         // Radial gradient: center, radius
         let center = m.geom1.xy;
         let radius = max(m.geom1.zw, vec2<f32>(1e-4));
@@ -73,6 +104,27 @@ fn compute_mask_weight(uv: vec2<f32>, m: MaskGpuEntry) -> f32 {
         let feather = clamp(m.geom0.z, 0.01, 1.0);
         let inner = max(0.0, 1.0 - feather);
         var w = 1.0 - smoothstep(inner, 1.0, d);
+        if (m.geom0.y > 0.5) {
+            w = 1.0 - w;
+        }
+        return clamp(w, 0.0, 1.0);
+    } else {
+        // Brush strokes
+        let start_idx = u32(max(m.geom1.x, 0.0));
+        let pt_count = u32(max(m.geom1.y, 0.0));
+        let radius = max(m.geom1.z, 0.005);
+        let feather = clamp(m.geom0.z, 0.01, 1.0);
+        var min_d = 1e6;
+        let end_idx = min(start_idx + pt_count, 128u);
+        for (var i: u32 = start_idx; i < end_idx; i = i + 1u) {
+            let d = length(uv - u_params.brush_pts[i].xy);
+            min_d = min(min_d, d);
+        }
+        let inner = radius * max(0.0, 1.0 - feather);
+        var w = 1.0 - smoothstep(inner, radius, min_d);
+        if (pt_count == 0u) {
+            w = 0.0;
+        }
         if (m.geom0.y > 0.5) {
             w = 1.0 - w;
         }
@@ -130,7 +182,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = min(u_params.count, 8u);
     for (var i: u32 = 0u; i < n; i = i + 1u) {
         let m = u_params.masks[i];
-        let w = compute_mask_weight(global_uv, m) * compute_luma_range_weight(rgb, m.luma);
+        let w = compute_mask_weight(global_uv, m)
+            * compute_luma_range_weight(rgb, m.luma)
+            * compute_color_range_weight(rgb, m.color_range);
         if (w > 0.0005) {
             let adjusted = apply_local_adjustments(rgb, m);
             rgb = mix(rgb, adjusted, w);

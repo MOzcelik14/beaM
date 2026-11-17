@@ -160,7 +160,7 @@ pub struct VibranceSaturationUniforms {
     pub vibrance: f32,
     pub saturation: f32,
     pub enabled: u32,
-    pub _pad0: u32,
+    pub profile_id: u32,
 }
 
 #[repr(C)]
@@ -229,6 +229,7 @@ pub struct MaskGpuEntry {
     pub adj0: [f32; 4],
     pub adj1: [f32; 4],
     pub luma: [f32; 4],
+    pub color_range: [f32; 4],
 }
 
 #[repr(C)]
@@ -240,6 +241,7 @@ pub struct MaskUniforms {
     pub _pad1: u32,
     pub _pad2: u32,
     pub uv_rect: [f32; 4],
+    pub brush_pts: [[f32; 4]; 128],
 }
 
 #[repr(C)]
@@ -1330,7 +1332,7 @@ impl EditPipeline {
                 vibrance: 0.0,
                 saturation: 0.0,
                 enabled: 1,
-                _pad0: 0,
+                profile_id: 0,
             },
             working_format,
         );
@@ -1397,12 +1399,14 @@ impl EditPipeline {
                     adj0: [1.0, 1.0, 0.0, 0.0],
                     adj1: [1.0, 1.0, 1.0, 0.0],
                     luma: [0.0, 1.0, 0.15, 0.0],
+                    color_range: [0.0; 4],
                 }; 8],
                 count: 0,
                 _pad0: 0,
                 _pad1: 0,
                 _pad2: 0,
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
+                brush_pts: [[0.0; 4]; 128],
             },
             working_format,
         );
@@ -1611,7 +1615,7 @@ impl EditPipeline {
                 } else {
                     0
                 },
-                _pad0: 0,
+                profile_id: edit_stack.camera_profile.to_gpu_id(),
             },
         );
 
@@ -1695,10 +1699,13 @@ impl EditPipeline {
             adj0: [1.0, 1.0, 0.0, 0.0],
             adj1: [1.0, 1.0, 1.0, 0.0],
             luma: [0.0, 1.0, 0.15, 0.0],
+            color_range: [0.0; 4],
         }; 8];
+        let mut brush_pts = [[0.0f32; 4]; 128];
+        let mut brush_cursor = 0usize;
         let mask_count = edit_stack.masks.len().min(8);
         for (i, m) in edit_stack.masks.iter().take(8).enumerate() {
-            let (geom0, geom1) = match m.shape {
+            let (geom0, geom1) = match &m.shape {
                 beam_core::sidecar::MaskShape::LinearGradient { start, end } => (
                     [0.0, 0.0, 0.0, if m.enabled { 1.0 } else { 0.0 }],
                     [start[0], start[1], end[0], end[1]],
@@ -1711,12 +1718,35 @@ impl EditPipeline {
                 } => (
                     [
                         1.0,
-                        if invert { 1.0 } else { 0.0 },
-                        feather,
+                        if *invert { 1.0 } else { 0.0 },
+                        *feather,
                         if m.enabled { 1.0 } else { 0.0 },
                     ],
                     [center[0], center[1], radius[0], radius[1]],
                 ),
+                beam_core::sidecar::MaskShape::Brush {
+                    strokes,
+                    radius,
+                    feather,
+                    invert,
+                } => {
+                    let start_idx = brush_cursor;
+                    let avail = 128usize.saturating_sub(brush_cursor);
+                    let take_n = strokes.len().min(avail);
+                    for pt in strokes.iter().take(take_n) {
+                        brush_pts[brush_cursor] = [pt[0], pt[1], 0.0, 0.0];
+                        brush_cursor += 1;
+                    }
+                    (
+                        [
+                            2.0,
+                            if *invert { 1.0 } else { 0.0 },
+                            *feather,
+                            if m.enabled { 1.0 } else { 0.0 },
+                        ],
+                        [start_idx as f32, take_n as f32, *radius, 0.0],
+                    )
+                }
             };
             let wb_gains = beam_core::color::white_balance_gains(m.temperature, m.tint);
             let exp_mult = 2.0f32.powf(m.exposure);
@@ -1732,6 +1762,12 @@ impl EditPipeline {
                 ],
                 adj1: [wb_gains[0], wb_gains[1], wb_gains[2], m.saturation / 100.0],
                 luma: [m.luma_min, m.luma_max, m.luma_smoothness, 0.0],
+                color_range: [
+                    if m.color_range_enabled { 1.0 } else { 0.0 },
+                    (m.color_range_hue / 360.0).rem_euclid(1.0),
+                    (m.color_range_tolerance / 360.0).clamp(0.01, 0.5),
+                    0.0,
+                ],
             };
         }
         self.mask_stage.update_uniform(
@@ -1743,6 +1779,7 @@ impl EditPipeline {
                 _pad1: 0,
                 _pad2: 0,
                 uv_rect,
+                brush_pts,
             },
         );
     }
@@ -1782,9 +1819,10 @@ impl EditPipeline {
             && edit_stack.tone_curve != beam_core::sidecar::ToneCurveAdjustment::default();
         let hsl_active = edit_stack.hsl.enabled
             && edit_stack.hsl != beam_core::sidecar::HslAdjustment::default();
-        let vs_active = edit_stack.vibrance_saturation.enabled
+        let vs_active = (edit_stack.vibrance_saturation.enabled
             && (edit_stack.vibrance_saturation.vibrance.abs() >= 1e-4
-                || edit_stack.vibrance_saturation.saturation.abs() >= 1e-4);
+                || edit_stack.vibrance_saturation.saturation.abs() >= 1e-4))
+            || edit_stack.camera_profile != beam_core::sidecar::CameraProfile::Standard;
         let cg_active = edit_stack.color_grading.enabled
             && edit_stack.color_grading != beam_core::sidecar::ColorGradingAdjustment::default();
         let detail_active = edit_stack.detail.enabled
@@ -3127,6 +3165,9 @@ mod tests {
             luma_min: 0.0,
             luma_max: 1.0,
             luma_smoothness: 0.15,
+            color_range_enabled: false,
+            color_range_hue: 0.0,
+            color_range_tolerance: 35.0,
         });
 
         let monolithic = pipeline
@@ -3536,6 +3577,101 @@ mod tests {
         assert!(
             edge_g > 200 && edge_r < 80,
             "Sharp step edge must trigger green focus peaking overlay (got R={edge_r}, G={edge_g})"
+        );
+    }
+
+    #[test]
+    fn test_mask_brush_and_color_range() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 16u32;
+        let height = 16u32;
+        // Left half: pure red, Right half: pure blue
+        let mut input_data = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                if x < 8 {
+                    input_data.extend_from_slice(&[0.5, 0.05, 0.05, 1.0]);
+                } else {
+                    input_data.extend_from_slice(&[0.05, 0.05, 0.5, 1.0]);
+                }
+            }
+        }
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut stack = EditStack::default();
+        let baseline = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack)
+            .expect("baseline render failed");
+
+        // Brush covering center (0.5, 0.5) with radius 0.6, restricted to Red hue (0 deg)
+        let mut mask = beam_core::sidecar::MaskLayer::new_brush(1, "RedBrush".to_string());
+        if let beam_core::sidecar::MaskShape::Brush {
+            strokes, radius, ..
+        } = &mut mask.shape
+        {
+            strokes.push([0.5, 0.5]);
+            *radius = 0.6;
+        }
+        mask.exposure = 1.5;
+        mask.color_range_enabled = true;
+        mask.color_range_hue = 0.0;
+        mask.color_range_tolerance = 30.0;
+        stack.masks.push(mask);
+
+        let masked = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack)
+            .expect("brush+color render failed");
+
+        let red_idx = ((8 * width + 4) * 4) as usize;
+        let blue_idx = ((8 * width + 12) * 4) as usize;
+        assert!(
+            masked[red_idx] > baseline[red_idx] + 20,
+            "Red pixel inside brush must brighten (baseline={}, masked={})",
+            baseline[red_idx],
+            masked[red_idx]
+        );
+        assert!(
+            (masked[blue_idx + 2] as i32 - baseline[blue_idx + 2] as i32).abs() <= 1,
+            "Blue pixel outside red hue range must remain unchanged (baseline={}, masked={})",
+            baseline[blue_idx + 2],
+            masked[blue_idx + 2]
+        );
+    }
+
+    #[test]
+    fn test_camera_profile_monochrome() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 8u32;
+        let height = 8u32;
+        let input_data = [0.6f32, 0.2, 0.1, 1.0].repeat((width * height) as usize);
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let stack = EditStack {
+            camera_profile: beam_core::sidecar::CameraProfile::Monochrome,
+            ..Default::default()
+        };
+
+        let out = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack)
+            .expect("monochrome render failed");
+
+        assert!(
+            (out[0] as i32 - out[1] as i32).abs() <= 1
+                && (out[1] as i32 - out[2] as i32).abs() <= 1,
+            "Monochrome camera profile must produce neutral grey (got RGB={},{},{})",
+            out[0],
+            out[1],
+            out[2]
         );
     }
 }

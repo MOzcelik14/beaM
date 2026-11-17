@@ -149,6 +149,43 @@ pub fn show_mask_overlay(
             }
             stopped |= s_ry;
         }
+        MaskShape::Brush {
+            strokes, radius, ..
+        } => {
+            let px_r = (*radius * w.min(h)).max(4.0);
+            for pt in strokes.iter() {
+                let sp = norm_to_screen(*pt, image_rect);
+                painter.circle_stroke(
+                    sp,
+                    px_r,
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(59, 130, 246, 90)),
+                );
+            }
+            let paint_resp = ui.interact(
+                image_rect,
+                ui.scope_id().with("mask_brush_canvas"),
+                egui::Sense::drag(),
+            );
+            if paint_resp.dragged() {
+                if let Some(pos) = paint_resp.interact_pointer_pos() {
+                    let u = ((pos.x - image_rect.left()) / w).clamp(0.0, 1.0);
+                    let v = ((pos.y - image_rect.top()) / h).clamp(0.0, 1.0);
+                    let min_step = (*radius * 0.25).max(0.005);
+                    let far_enough = strokes.last().is_none_or(|last| {
+                        let dx = last[0] - u;
+                        let dy = last[1] - v;
+                        (dx * dx + dy * dy).sqrt() >= min_step
+                    });
+                    if far_enough && strokes.len() < 128 {
+                        strokes.push([u, v]);
+                        changed = true;
+                    }
+                }
+            }
+            if paint_resp.drag_stopped() {
+                stopped = true;
+            }
+        }
     }
 
     (changed, stopped)

@@ -1286,7 +1286,11 @@ impl BeamApp {
             self.egui_before_texture_id = Some(id);
         }
 
-        self.histogram_data = Some(HistogramData::compute_from_rgba32f(&decoded.proxy_data));
+        self.histogram_data = Some(HistogramData::compute_from_rgba32f_dims(
+            &decoded.proxy_data,
+            decoded.proxy_width as usize,
+            decoded.proxy_height as usize,
+        ));
         self.texture_aspect_ratio =
             calculate_effective_aspect_ratio(decoded.width, decoded.height, &self.edit_stack.crop);
         self.gpu_display_texture = Some(display_texture);
@@ -1459,7 +1463,11 @@ impl BeamApp {
                 }
                 let edited =
                     beam_media::decoder::apply_cpu_edits(sw, sh, &sample, &self.edit_stack);
-                self.histogram_data = Some(HistogramData::compute_from_rgba32f(&edited));
+                self.histogram_data = Some(HistogramData::compute_from_rgba32f_dims(
+                    &edited,
+                    sw as usize,
+                    sh as usize,
+                ));
             }
         }
     }
@@ -3112,6 +3120,31 @@ impl eframe::App for BeamApp {
                                                         }
                                                     },
                                                 );
+                                            });
+                                            ui.add_space(4.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    RichText::new(t!("develop_camera_profile"))
+                                                        .size(11.5)
+                                                        .color(Color32::from_rgb(180, 185, 200)),
+                                                );
+                                                egui::ComboBox::from_id_salt("develop_camera_profile_combo")
+                                                    .selected_text(self.edit_stack.camera_profile.label())
+                                                    .width(130.0)
+                                                    .show_ui(ui, |ui| {
+                                                        for prof in beam_core::sidecar::CameraProfile::ALL {
+                                                            if ui
+                                                                .selectable_value(
+                                                                    &mut self.edit_stack.camera_profile,
+                                                                    prof,
+                                                                    prof.label(),
+                                                                )
+                                                                .changed()
+                                                            {
+                                                                clipping_changed = true;
+                                                            }
+                                                        }
+                                                    });
                                             });
                                         });
                                         ui.add_space(6.0);
@@ -5119,6 +5152,29 @@ impl eframe::App for BeamApp {
                                                 immediate_action = true;
                                                 action_label = Some(t!("history_masks"));
                                             }
+                                            if ui
+                                                .add_enabled(
+                                                    can_add,
+                                                    egui::Button::new(t!("masks_add_brush")),
+                                                )
+                                                .clicked()
+                                            {
+                                                let id = self.next_mask_id;
+                                                self.next_mask_id += 1;
+                                                let name = t!(
+                                                    "masks_brush_name",
+                                                    "num" => (self.edit_stack.masks.len() + 1).to_string()
+                                                );
+                                                self.edit_stack.masks.push(
+                                                    beam_core::sidecar::MaskLayer::new_brush(
+                                                        id, name,
+                                                    ),
+                                                );
+                                                self.selected_mask_id = Some(id);
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_masks"));
+                                            }
                                         });
 
                                         if self.edit_stack.masks.is_empty() {
@@ -5224,6 +5280,148 @@ impl eframe::App for BeamApp {
                                                                 Some(t!("history_masks"));
                                                         }
                                                         if f_res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+                                                    } else if let beam_core::sidecar::MaskShape::Brush {
+                                                        strokes,
+                                                        radius,
+                                                        feather,
+                                                        invert,
+                                                    } = &mut mask.shape
+                                                    {
+                                                        ui.horizontal(|ui| {
+                                                            if ui
+                                                                .checkbox(invert, t!("masks_invert"))
+                                                                .changed()
+                                                            {
+                                                                edits_changed = true;
+                                                                immediate_action = true;
+                                                                action_label =
+                                                                    Some(t!("history_masks"));
+                                                            }
+                                                            if !strokes.is_empty()
+                                                                && ui
+                                                                    .small_button(t!("masks_brush_clear"))
+                                                                    .clicked()
+                                                            {
+                                                                strokes.clear();
+                                                                edits_changed = true;
+                                                                immediate_action = true;
+                                                                action_label =
+                                                                    Some(t!("history_masks"));
+                                                            }
+                                                        });
+                                                        let r_lbl = t!("masks_brush_radius");
+                                                        let (r_res, r_reset) = draw_slider_row(
+                                                            ui,
+                                                            &r_lbl,
+                                                            Slider::new(radius, 0.01..=0.25)
+                                                                .fixed_decimals(3),
+                                                            &r_lbl,
+                                                        );
+                                                        if r_reset {
+                                                            *radius = 0.06;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if r_res.changed() {
+                                                            edits_changed = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if r_res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+                                                        let f_lbl = t!("masks_feather");
+                                                        let (f_res, f_reset) = draw_slider_row(
+                                                            ui,
+                                                            &f_lbl,
+                                                            Slider::new(feather, 0.0..=1.0)
+                                                                .fixed_decimals(2),
+                                                            &f_lbl,
+                                                        );
+                                                        if f_reset {
+                                                            *feather = 0.5;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if f_res.changed() {
+                                                            edits_changed = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if f_res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+                                                    }
+
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut mask.color_range_enabled,
+                                                            t!("masks_color_range"),
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!("history_masks"));
+                                                    }
+                                                    if mask.color_range_enabled {
+                                                        let h_lbl = t!("masks_color_hue");
+                                                        let (h_res, h_reset) = draw_slider_row(
+                                                            ui,
+                                                            &h_lbl,
+                                                            Slider::new(
+                                                                &mut mask.color_range_hue,
+                                                                0.0..=360.0,
+                                                            )
+                                                            .fixed_decimals(0),
+                                                            &h_lbl,
+                                                        );
+                                                        if h_reset {
+                                                            mask.color_range_hue = 0.0;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if h_res.changed() {
+                                                            edits_changed = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if h_res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+
+                                                        let t_lbl = t!("masks_color_tolerance");
+                                                        let (t_res, t_reset) = draw_slider_row(
+                                                            ui,
+                                                            &t_lbl,
+                                                            Slider::new(
+                                                                &mut mask.color_range_tolerance,
+                                                                5.0..=180.0,
+                                                            )
+                                                            .fixed_decimals(0),
+                                                            &t_lbl,
+                                                        );
+                                                        if t_reset {
+                                                            mask.color_range_tolerance = 35.0;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if t_res.changed() {
+                                                            edits_changed = true;
+                                                            action_label =
+                                                                Some(t!("history_masks"));
+                                                        }
+                                                        if t_res.drag_stopped() {
                                                             immediate_action = true;
                                                         }
                                                     }

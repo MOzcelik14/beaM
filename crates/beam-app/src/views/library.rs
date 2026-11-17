@@ -142,6 +142,15 @@ pub struct LibraryViewState {
     pub selected_photo_tags: Vec<String>,
     pub cached_tags_photo_id: Option<i64>,
     pub tag_input: String,
+    pub smart_collections: Vec<beam_library::SmartCollection>,
+    pub smart_collection_name: String,
+    pub metadata_draft: beam_library::PhotoMetadata,
+    pub cached_meta_photo_id: Option<i64>,
+    pub duplicate_status: Option<String>,
+    pub gps_lat_input: String,
+    pub gps_lon_input: String,
+    pub tethered_watch: bool,
+    pub last_tether_scan: Option<std::time::Instant>,
 }
 
 impl Default for LibraryViewState {
@@ -165,6 +174,15 @@ impl Default for LibraryViewState {
             selected_photo_tags: Vec::new(),
             cached_tags_photo_id: None,
             tag_input: String::new(),
+            smart_collections: Vec::new(),
+            smart_collection_name: String::new(),
+            metadata_draft: beam_library::PhotoMetadata::default(),
+            cached_meta_photo_id: None,
+            duplicate_status: None,
+            gps_lat_input: String::new(),
+            gps_lon_input: String::new(),
+            tethered_watch: false,
+            last_tether_scan: None,
         }
     }
 }
@@ -203,7 +221,9 @@ impl LibraryViewState {
                 .collect();
             self.photos = photos;
             self.available_tags = db.list_all_tags().unwrap_or_default();
+            self.smart_collections = db.list_smart_collections().unwrap_or_default();
             self.cached_tags_photo_id = None;
+            self.cached_meta_photo_id = None;
             self.needs_refresh = false;
         }
     }
@@ -281,6 +301,38 @@ pub fn show_library_view(
             .and_then(|id| db.get_photo_tags(id).ok())
             .unwrap_or_default();
         state.cached_tags_photo_id = state.selected_photo_id;
+    }
+
+    if state.cached_meta_photo_id != state.selected_photo_id {
+        state.metadata_draft = state
+            .selected_photo_id
+            .and_then(|id| db.get_photo_metadata(id).ok())
+            .unwrap_or_default();
+        state.gps_lat_input = state
+            .metadata_draft
+            .gps_lat
+            .map(|v| format!("{v:.6}"))
+            .unwrap_or_default();
+        state.gps_lon_input = state
+            .metadata_draft
+            .gps_lon
+            .map(|v| format!("{v:.6}"))
+            .unwrap_or_default();
+        state.cached_meta_photo_id = state.selected_photo_id;
+    }
+
+    if state.tethered_watch && !state.is_importing {
+        if let Some(folder) = state.active_folder.clone() {
+            let should_scan = state
+                .last_tether_scan
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2));
+            if should_scan {
+                state.last_tether_scan = Some(std::time::Instant::now());
+                action = LibraryAction::ChangeFolder(folder);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
+        }
     }
 
     // Keyboard shortcuts for selected photo rating: keys 0-5
@@ -1055,6 +1107,151 @@ pub fn show_library_view(
                             state.tag_input.clear();
                             state.needs_refresh = true;
                             state.cached_tags_photo_id = None;
+                        }
+                    });
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Smart Collections
+                ui.label(
+                    RichText::new(t!("library_smart_collections"))
+                        .size(11.0)
+                        .color(Color32::from_rgb(140, 145, 160)),
+                );
+                ui.add_space(2.0);
+                let collections_snapshot = state.smart_collections.clone();
+                for col in collections_snapshot {
+                    ui.horizontal(|ui| {
+                        if ui.small_button(&col.name).clicked() {
+                            state.filter.min_rating = col.min_rating;
+                            state.filter.color_label = col.color_label;
+                            state.filter.file_type = col.file_type;
+                            state.filter.search_query = col.search_query.clone();
+                            state.filter.tag = col.tag.clone();
+                            state.needs_refresh = true;
+                        }
+                        if ui.small_button("x").clicked() {
+                            let _ = db.delete_smart_collection(col.id);
+                            state.needs_refresh = true;
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [ui.available_width() - 68.0, 22.0],
+                        egui::TextEdit::singleline(&mut state.smart_collection_name)
+                            .hint_text(t!("library_smart_name_hint")),
+                    );
+                    if ui.small_button(t!("library_smart_save")).clicked()
+                        && !state.smart_collection_name.trim().is_empty()
+                    {
+                        let _ =
+                            db.save_smart_collection(&state.smart_collection_name, &state.filter);
+                        state.smart_collection_name.clear();
+                        state.needs_refresh = true;
+                    }
+                });
+
+                ui.add_space(6.0);
+                if ui.button(t!("library_duplicates")).clicked() {
+                    match db.find_duplicates() {
+                        Ok(groups) if !groups.is_empty() => {
+                            state.duplicate_status = Some(
+                                t!("library_duplicates_found", "count" => groups.len()).to_string(),
+                            );
+                            state.selected_photo_ids =
+                                groups.into_iter().flatten().map(|p| p.id).collect();
+                            state.selected_photo_id =
+                                state.selected_photo_ids.iter().next().copied();
+                        }
+                        Ok(_) => {
+                            state.duplicate_status =
+                                Some(t!("library_duplicates_none").to_string());
+                        }
+                        Err(_) => {}
+                    }
+                }
+                if let Some(status) = &state.duplicate_status {
+                    ui.label(
+                        RichText::new(status)
+                            .size(10.5)
+                            .color(Color32::from_rgb(230, 180, 90)),
+                    );
+                }
+
+                ui.add_space(4.0);
+                ui.checkbox(&mut state.tethered_watch, t!("library_tether_watch"));
+                if state.tethered_watch {
+                    ui.label(
+                        RichText::new(t!("library_tether_active"))
+                            .size(10.5)
+                            .color(Color32::from_rgb(100, 210, 140)),
+                    );
+                }
+
+                if let Some(selected_id) = state.selected_photo_id {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(t!("library_metadata"))
+                            .size(11.0)
+                            .color(Color32::from_rgb(140, 145, 160)),
+                    );
+                    ui.add_space(2.0);
+                    ui.add_sized(
+                        [ui.available_width(), 22.0],
+                        egui::TextEdit::singleline(&mut state.metadata_draft.title)
+                            .hint_text(t!("library_meta_title")),
+                    );
+                    ui.add_sized(
+                        [ui.available_width(), 22.0],
+                        egui::TextEdit::singleline(&mut state.metadata_draft.caption)
+                            .hint_text(t!("library_meta_caption")),
+                    );
+                    ui.add_sized(
+                        [ui.available_width(), 22.0],
+                        egui::TextEdit::singleline(&mut state.metadata_draft.creator)
+                            .hint_text(t!("library_meta_creator")),
+                    );
+                    ui.add_sized(
+                        [ui.available_width(), 22.0],
+                        egui::TextEdit::singleline(&mut state.metadata_draft.copyright)
+                            .hint_text(t!("library_meta_copyright")),
+                    );
+                    ui.horizontal(|ui| {
+                        let half = (ui.available_width() - 6.0) * 0.5;
+                        ui.add_sized(
+                            [half, 22.0],
+                            egui::TextEdit::singleline(&mut state.gps_lat_input)
+                                .hint_text(t!("library_meta_gps_lat")),
+                        );
+                        ui.add_sized(
+                            [half, 22.0],
+                            egui::TextEdit::singleline(&mut state.gps_lon_input)
+                                .hint_text(t!("library_meta_gps_lon")),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.small_button(t!("library_meta_save")).clicked() {
+                            state.metadata_draft.gps_lat =
+                                state.gps_lat_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-90.0..=90.0).contains(v));
+                            state.metadata_draft.gps_lon =
+                                state.gps_lon_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-180.0..=180.0).contains(v));
+                            let _ = db.set_photo_metadata(selected_id, &state.metadata_draft);
+                        }
+                        if let (Some(lat), Some(lon)) = (
+                            state.gps_lat_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-90.0..=90.0).contains(v)),
+                            state.gps_lon_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-180.0..=180.0).contains(v)),
+                        ) {
+                            if ui.small_button(t!("library_open_map")).clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab(format!(
+                                    "https://www.openstreetmap.org/?mlat={lat:.6}&mlon={lon:.6}#map=15/{lat:.6}/{lon:.6}"
+                                )));
+                            }
                         }
                     });
                 }

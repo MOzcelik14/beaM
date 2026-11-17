@@ -417,6 +417,12 @@ pub enum MaskShape {
         feather: f32,
         invert: bool,
     },
+    Brush {
+        strokes: Vec<[f32; 2]>,
+        radius: f32,
+        feather: f32,
+        invert: bool,
+    },
 }
 
 fn default_one() -> f32 {
@@ -425,6 +431,10 @@ fn default_one() -> f32 {
 
 fn default_luma_smooth() -> f32 {
     0.15
+}
+
+fn default_color_tol() -> f32 {
+    35.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -453,6 +463,12 @@ pub struct MaskLayer {
     pub luma_max: f32,
     #[serde(default = "default_luma_smooth")]
     pub luma_smoothness: f32,
+    #[serde(default)]
+    pub color_range_enabled: bool,
+    #[serde(default)]
+    pub color_range_hue: f32,
+    #[serde(default = "default_color_tol")]
+    pub color_range_tolerance: f32,
 }
 
 impl MaskLayer {
@@ -475,6 +491,9 @@ impl MaskLayer {
             luma_min: 0.0,
             luma_max: 1.0,
             luma_smoothness: 0.15,
+            color_range_enabled: false,
+            color_range_hue: 0.0,
+            color_range_tolerance: 35.0,
         }
     }
 
@@ -499,6 +518,36 @@ impl MaskLayer {
             luma_min: 0.0,
             luma_max: 1.0,
             luma_smoothness: 0.15,
+            color_range_enabled: false,
+            color_range_hue: 0.0,
+            color_range_tolerance: 35.0,
+        }
+    }
+
+    pub fn new_brush(id: u64, name: String) -> Self {
+        Self {
+            id,
+            name,
+            enabled: true,
+            shape: MaskShape::Brush {
+                strokes: Vec::new(),
+                radius: 0.06,
+                feather: 0.5,
+                invert: false,
+            },
+            exposure: 0.0,
+            contrast: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+            saturation: 0.0,
+            luma_min: 0.0,
+            luma_max: 1.0,
+            luma_smoothness: 0.15,
+            color_range_enabled: false,
+            color_range_hue: 0.0,
+            color_range_tolerance: 35.0,
         }
     }
 }
@@ -536,6 +585,51 @@ impl Default for LensAdjustment {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraProfile {
+    #[default]
+    Standard,
+    Neutral,
+    Vivid,
+    Portrait,
+    Landscape,
+    Monochrome,
+}
+
+impl CameraProfile {
+    pub fn to_gpu_id(self) -> u32 {
+        match self {
+            Self::Standard => 0,
+            Self::Neutral => 1,
+            Self::Vivid => 2,
+            Self::Portrait => 3,
+            Self::Landscape => 4,
+            Self::Monochrome => 5,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Neutral => "Neutral",
+            Self::Vivid => "Vivid",
+            Self::Portrait => "Portrait",
+            Self::Landscape => "Landscape",
+            Self::Monochrome => "Monochrome",
+        }
+    }
+
+    pub const ALL: [Self; 6] = [
+        Self::Standard,
+        Self::Neutral,
+        Self::Vivid,
+        Self::Portrait,
+        Self::Landscape,
+        Self::Monochrome,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditStack {
     pub white_balance: WhiteBalanceAdjustment,
@@ -560,6 +654,8 @@ pub struct EditStack {
     pub crop: CropAdjustment,
     #[serde(default)]
     pub lens: LensAdjustment,
+    #[serde(default)]
+    pub camera_profile: CameraProfile,
 }
 
 impl EditStack {
@@ -723,6 +819,20 @@ impl EditStack {
                     sanitize_float(&mut radius[1], 0.02, 2.0, 0.3);
                     sanitize_float(feather, 0.0, 1.0, 0.5);
                 }
+                MaskShape::Brush {
+                    strokes,
+                    radius,
+                    feather,
+                    ..
+                } => {
+                    strokes.truncate(128);
+                    for pt in strokes.iter_mut() {
+                        sanitize_float(&mut pt[0], -0.5, 1.5, 0.5);
+                        sanitize_float(&mut pt[1], -0.5, 1.5, 0.5);
+                    }
+                    sanitize_float(radius, 0.005, 0.5, 0.06);
+                    sanitize_float(feather, 0.0, 1.0, 0.5);
+                }
             }
             sanitize_float(&mut mask.exposure, -5.0, 5.0, 0.0);
             sanitize_float(&mut mask.contrast, -100.0, 100.0, 0.0);
@@ -737,6 +847,8 @@ impl EditStack {
                 mask.luma_max = mask.luma_min;
             }
             sanitize_float(&mut mask.luma_smoothness, 0.01, 1.0, 0.15);
+            sanitize_float(&mut mask.color_range_hue, 0.0, 360.0, 0.0);
+            sanitize_float(&mut mask.color_range_tolerance, 5.0, 180.0, 35.0);
         }
 
         // 13. Crop & Geometry
