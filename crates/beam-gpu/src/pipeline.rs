@@ -209,7 +209,7 @@ pub struct DetailUniforms {
     pub noise_reduction_luma: f32,
     pub noise_reduction_color: f32,
     pub enabled: u32,
-    pub _pad0: u32,
+    pub ai_denoise: f32,
     pub _pad1: u32,
 }
 
@@ -1361,7 +1361,7 @@ impl EditPipeline {
                 noise_reduction_luma: 0.0,
                 noise_reduction_color: 0.0,
                 enabled: 0,
-                _pad0: 0,
+                ai_denoise: 0.0,
                 _pad1: 0,
             },
             working_format,
@@ -1666,7 +1666,7 @@ impl EditPipeline {
                 noise_reduction_luma: det.noise_reduction_luma,
                 noise_reduction_color: det.noise_reduction_color,
                 enabled: if det.enabled { 1 } else { 0 },
-                _pad0: 0,
+                ai_denoise: det.ai_denoise,
                 _pad1: 0,
             },
         );
@@ -1830,7 +1830,8 @@ impl EditPipeline {
                 || edit_stack.detail.dehaze.abs() >= 1e-4
                 || edit_stack.detail.sharpening >= 1e-4
                 || edit_stack.detail.noise_reduction_luma >= 1e-4
-                || edit_stack.detail.noise_reduction_color >= 1e-4);
+                || edit_stack.detail.noise_reduction_color >= 1e-4
+                || edit_stack.detail.ai_denoise >= 1e-4);
         let lut_active = edit_stack.lut.enabled
             && edit_stack.lut.path.is_some()
             && edit_stack.lut.intensity >= 1e-4;
@@ -3672,6 +3673,46 @@ mod tests {
             out[0],
             out[1],
             out[2]
+        );
+    }
+
+    #[test]
+    fn test_ai_denoise_smooths_high_frequency_noise() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 16u32;
+        let height = 16u32;
+        // High-frequency checkerboard noise around 0.25
+        let mut input_data = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let v = if (x + y) % 2 == 0 { 0.22 } else { 0.28 };
+                input_data.extend_from_slice(&[v, v, v, 1.0]);
+            }
+        }
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let baseline = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &EditStack::default())
+            .expect("baseline render failed");
+
+        let mut stack_nr = EditStack::default();
+        stack_nr.detail.ai_denoise = 1.0;
+        let denoised = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack_nr)
+            .expect("ai denoise render failed");
+
+        let idx0 = ((8 * width + 8) * 4) as usize;
+        let idx1 = ((8 * width + 9) * 4) as usize;
+        let base_diff = (baseline[idx0] as i32 - baseline[idx1] as i32).abs();
+        let nr_diff = (denoised[idx0] as i32 - denoised[idx1] as i32).abs();
+        assert!(
+            nr_diff < base_diff,
+            "AI denoise must reduce high-frequency noise amplitude (base_diff={base_diff}, nr_diff={nr_diff})"
         );
     }
 }

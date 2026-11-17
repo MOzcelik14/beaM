@@ -239,6 +239,9 @@ pub struct DetailAdjustment {
     pub noise_reduction_luma: f32,
     /// Chroma/color noise reduction (0.0 to 1.0)
     pub noise_reduction_color: f32,
+    /// Local edge-preserving AI/bilateral denoise (0.0 to 1.0)
+    #[serde(default)]
+    pub ai_denoise: f32,
 }
 
 impl Default for DetailAdjustment {
@@ -250,6 +253,7 @@ impl Default for DetailAdjustment {
             sharpening: 0.0,
             noise_reduction_luma: 0.0,
             noise_reduction_color: 0.0,
+            ai_denoise: 0.0,
         }
     }
 }
@@ -793,6 +797,7 @@ impl EditStack {
         sanitize_float(&mut self.detail.sharpening, 0.0, 1.0, 0.0);
         sanitize_float(&mut self.detail.noise_reduction_luma, 0.0, 1.0, 0.0);
         sanitize_float(&mut self.detail.noise_reduction_color, 0.0, 1.0, 0.0);
+        sanitize_float(&mut self.detail.ai_denoise, 0.0, 1.0, 0.0);
 
         // 11. 3D LUT
         sanitize_float(&mut self.lut.intensity, 0.0, 1.0, 1.0);

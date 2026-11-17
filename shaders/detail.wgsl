@@ -23,7 +23,7 @@ struct DetailUniforms {
     noise_reduction_luma: f32,
     noise_reduction_color: f32,
     enabled: u32,
-    _pad0: u32,
+    ai_denoise: f32,
     _pad1: u32,
 };
 
@@ -51,6 +51,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     var rgb = max(center.rgb, vec3<f32>(0.0));
+
+    // 0. 5x5 Edge-Preserving Local AI/Bilateral Denoise
+    if (u_params.ai_denoise > 0.001) {
+        let strength = clamp(u_params.ai_denoise, 0.0, 1.0);
+        let sigma_r = mix(0.02, 0.16, strength);
+        let c_lum = rec2020_lum(rgb);
+        var acc_rgb = vec3<f32>(0.0);
+        var acc_w = 0.0;
+        for (var dy: i32 = -2; dy <= 2; dy = dy + 1) {
+            for (var dx: i32 = -2; dx <= 2; dx = dx + 1) {
+                let s = load_clamped(tex_coords + vec2<i32>(dx, dy), max_coords);
+                let s_lum = rec2020_lum(s);
+                let d_lum = abs(s_lum - c_lum);
+                let dist2 = f32(dx * dx + dy * dy);
+                let w_spatial = exp(-dist2 / 6.0);
+                let w_range = exp(-(d_lum * d_lum) / (2.0 * sigma_r * sigma_r + 1e-6));
+                let w = w_spatial * w_range;
+                acc_rgb = acc_rgb + s * w;
+                acc_w = acc_w + w;
+            }
+        }
+        let denoised = acc_rgb / max(acc_w, 1e-5);
+        rgb = mix(rgb, denoised, strength);
+    }
 
     // 3x3 neighborhood for Sharpening and Noise Reduction
     var blur3 = vec3<f32>(0.0);

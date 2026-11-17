@@ -570,6 +570,16 @@ masks_brush_clear = Çizimleri Temizle
 masks_color_range = Renk Aralığı Maskesi
 masks_color_hue = Hedef Ton
 masks_color_tolerance = Ton Toleransı
+masks_auto_sky = Oto Gökyüzü
+masks_auto_subject = Oto Özne
+masks_sky_name = Gökyüzü {$num}
+masks_subject_name = Özne {$num}
+develop_ai_denoise = Akıllı Gürültü Azaltma
+settings_plugins = Eklentiler
+plugins_refresh = Eklentileri Yenile
+plugins_install_sample = Örnek Eklenti Oluştur
+plugins_run = Aktif Fotoğrafta Çalıştır
+plugins_none = config/beam/plugins içinde eklenti bulunamadı
 masks_delete = Sil
 history_masks = Maske Ayarı
 

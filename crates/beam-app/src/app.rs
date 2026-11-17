@@ -54,6 +54,7 @@ pub enum SettingsTab {
     #[default]
     General,
     Shortcuts,
+    Plugins,
 }
 
 enum BackgroundMsg {
@@ -163,8 +164,10 @@ pub struct BeamApp {
     filmstrip_height: f32,
     is_fullscreen: bool,
 
-    // Settings modal tab
+    // Settings modal tab & plugins
     settings_tab: SettingsTab,
+    plugins: Vec<beam_core::PluginManifest>,
+    plugin_status: Option<String>,
 
     // Presets & Settings Sync
     left_panel_tab: LeftPanelTab,
@@ -520,6 +523,8 @@ impl BeamApp {
             filmstrip_height: app_config.filmstrip_height.unwrap_or(110.0),
             is_fullscreen: false,
             settings_tab: SettingsTab::General,
+            plugins: beam_core::discover_plugins(&beam_core::default_plugins_dir()),
+            plugin_status: None,
             left_panel_tab: LeftPanelTab::Presets,
             user_presets,
             preset_dir,
@@ -4825,12 +4830,13 @@ impl eframe::App for BeamApp {
                                         });
                                         ui.add_space(6.0);
 
-                                        let detail_sliders: [(&str, &mut f32, std::ops::RangeInclusive<f32>); 5] = [
+                                        let detail_sliders: [(&str, &mut f32, std::ops::RangeInclusive<f32>); 6] = [
                                             ("detail_clarity", &mut self.edit_stack.detail.clarity, -1.0..=1.0),
                                             ("detail_dehaze", &mut self.edit_stack.detail.dehaze, -1.0..=1.0),
                                             ("detail_sharpening", &mut self.edit_stack.detail.sharpening, 0.0..=1.0),
                                             ("detail_nr_luma", &mut self.edit_stack.detail.noise_reduction_luma, 0.0..=1.0),
                                             ("detail_nr_color", &mut self.edit_stack.detail.noise_reduction_color, 0.0..=1.0),
+                                            ("develop_ai_denoise", &mut self.edit_stack.detail.ai_denoise, 0.0..=1.0),
                                         ];
                                         for (key, val, range) in detail_sliders {
                                             let lbl = t!(key);
@@ -5174,6 +5180,62 @@ impl eframe::App for BeamApp {
                                                 edits_changed = true;
                                                 immediate_action = true;
                                                 action_label = Some(t!("history_masks"));
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    can_add && self.current_image.is_some(),
+                                                    egui::Button::new(t!("masks_auto_sky")),
+                                                )
+                                                .clicked()
+                                            {
+                                                if let Some(img) = &self.current_image {
+                                                    let id = self.next_mask_id;
+                                                    self.next_mask_id += 1;
+                                                    let name = t!(
+                                                        "masks_sky_name",
+                                                        "num" => (self.edit_stack.masks.len() + 1).to_string()
+                                                    );
+                                                    let layer = beam_core::detect_sky_mask(
+                                                        &img.proxy_data,
+                                                        img.proxy_width,
+                                                        img.proxy_height,
+                                                        id,
+                                                        name,
+                                                    );
+                                                    self.edit_stack.masks.push(layer);
+                                                    self.selected_mask_id = Some(id);
+                                                    edits_changed = true;
+                                                    immediate_action = true;
+                                                    action_label = Some(t!("history_masks"));
+                                                }
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    can_add && self.current_image.is_some(),
+                                                    egui::Button::new(t!("masks_auto_subject")),
+                                                )
+                                                .clicked()
+                                            {
+                                                if let Some(img) = &self.current_image {
+                                                    let id = self.next_mask_id;
+                                                    self.next_mask_id += 1;
+                                                    let name = t!(
+                                                        "masks_subject_name",
+                                                        "num" => (self.edit_stack.masks.len() + 1).to_string()
+                                                    );
+                                                    let layer = beam_core::detect_subject_mask(
+                                                        &img.proxy_data,
+                                                        img.proxy_width,
+                                                        img.proxy_height,
+                                                        id,
+                                                        name,
+                                                    );
+                                                    self.edit_stack.masks.push(layer);
+                                                    self.selected_mask_id = Some(id);
+                                                    edits_changed = true;
+                                                    immediate_action = true;
+                                                    action_label = Some(t!("history_masks"));
+                                                }
                                             }
                                         });
 
@@ -6976,6 +7038,11 @@ impl BeamApp {
                             SettingsTab::Shortcuts,
                             t!("settings_tab_shortcuts"),
                         );
+                        ui.selectable_value(
+                            &mut self.settings_tab,
+                            SettingsTab::Plugins,
+                            t!("settings_plugins"),
+                        );
                     });
                     ui.separator();
                     ui.add_space(4.0);
@@ -7122,6 +7189,99 @@ impl BeamApp {
 
                             if shortcuts_changed {
                                 let _ = self.app_config.save();
+                            }
+                        }
+                        SettingsTab::Plugins => {
+                            ui.heading(t!("settings_plugins"));
+                            ui.separator();
+                            ui.add_space(4.0);
+
+                            ui.horizontal(|ui| {
+                                if ui.button(t!("plugins_refresh")).clicked() {
+                                    self.plugins = beam_core::discover_plugins(
+                                        &beam_core::default_plugins_dir(),
+                                    );
+                                }
+                                if ui.button(t!("plugins_install_sample")).clicked() {
+                                    match beam_core::install_sample_plugin(
+                                        &beam_core::default_plugins_dir(),
+                                    ) {
+                                        Ok(p) => {
+                                            self.plugins = beam_core::discover_plugins(
+                                                &beam_core::default_plugins_dir(),
+                                            );
+                                            self.plugin_status =
+                                                Some(format!("Created {}", p.display()));
+                                        }
+                                        Err(e) => {
+                                            self.plugin_status = Some(e.to_string());
+                                        }
+                                    }
+                                }
+                            });
+                            ui.add_space(6.0);
+
+                            if self.plugins.is_empty() {
+                                ui.label(RichText::new(t!("plugins_none")).weak());
+                            } else {
+                                let plugins_snapshot = self.plugins.clone();
+                                for p in plugins_snapshot {
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.strong(&p.name);
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    let can_run = self.current_path.is_some();
+                                                    if ui
+                                                        .add_enabled(
+                                                            can_run,
+                                                            egui::Button::new(t!("plugins_run")),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        if let Some(img_path) = &self.current_path {
+                                                            let sc = beam_core::Sidecar::path_for(
+                                                                img_path,
+                                                            );
+                                                            match beam_core::run_plugin(
+                                                                &p,
+                                                                img_path,
+                                                                sc.exists().then_some(sc.as_path()),
+                                                            ) {
+                                                                Ok(out) => {
+                                                                    self.plugin_status =
+                                                                        Some(format!(
+                                                                            "[{}] exit {}: {}",
+                                                                            p.id,
+                                                                            out.exit_code,
+                                                                            out.stdout
+                                                                        ));
+                                                                }
+                                                                Err(e) => {
+                                                                    self.plugin_status =
+                                                                        Some(e.to_string());
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        if !p.description.is_empty() {
+                                            ui.label(RichText::new(&p.description).small().weak());
+                                        }
+                                    });
+                                }
+                            }
+
+                            if let Some(status) = &self.plugin_status {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(status)
+                                        .small()
+                                        .color(Color32::from_rgb(130, 210, 170)),
+                                );
                             }
                         }
                     }
@@ -7815,6 +7975,8 @@ mod tests {
             filmstrip_height: 110.0,
             is_fullscreen: false,
             settings_tab: SettingsTab::General,
+            plugins: Vec::new(),
+            plugin_status: None,
             left_panel_tab: LeftPanelTab::Presets,
             user_presets: Vec::new(),
             preset_dir: std::env::temp_dir(),

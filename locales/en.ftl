@@ -570,6 +570,16 @@ masks_brush_clear = Clear Strokes
 masks_color_range = Color Range Mask
 masks_color_hue = Target Hue
 masks_color_tolerance = Hue Tolerance
+masks_auto_sky = Auto Sky
+masks_auto_subject = Auto Subject
+masks_sky_name = Sky {$num}
+masks_subject_name = Subject {$num}
+develop_ai_denoise = Smart Denoise
+settings_plugins = Plugins
+plugins_refresh = Refresh Plugins
+plugins_install_sample = Create Sample Plugin
+plugins_run = Run on Active Photo
+plugins_none = No plugins found in config/beam/plugins
 masks_delete = Delete
 history_masks = Mask Adjustment
 

@@ -10,7 +10,9 @@ pub mod fs_util;
 pub mod geometry;
 pub mod i18n;
 pub mod lut;
+pub mod plugin;
 pub mod preset;
+pub mod segmentation;
 pub mod sidecar;
 
 pub use color::ExportColorSpace;
@@ -24,10 +26,15 @@ pub use i18n::{
     current_language, set_language, t, t_with_args, AppConfig, I18n, Language, ShortcutConfig,
     ShortcutProfile,
 };
+pub use plugin::{
+    default_plugins_dir, discover_plugins, install_sample_plugin, run_plugin, PluginCategory,
+    PluginManifest, PluginOutput,
+};
 pub use preset::{
     built_in_presets, default_presets_dir, delete_user_preset, load_user_presets, save_user_preset,
     Preset, PresetGroupMask, PRESET_SCHEMA_VERSION,
 };
+pub use segmentation::{detect_sky_mask, detect_subject_mask};
 pub use sidecar::{
     ColorLabel, CropAdjustment, CropAspectPreset, EditStack, HistoryStep, LensAdjustment, Sidecar,
     CURRENT_FORMAT_VERSION, MAX_HISTORY_STEPS,
