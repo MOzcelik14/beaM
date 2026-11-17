@@ -359,9 +359,13 @@ pub fn show_library_view(
     Panel::left("library_sidebar")
         .default_size(270.0)
         .min_size(240.0)
+        .max_size(420.0)
         .resizable(true)
         .show(ui, |ui| {
-            ui.vertical(|ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
                 // Header with Select Folder button
                 ui.horizontal(|ui| {
                     ui.label(
@@ -1088,7 +1092,7 @@ pub fn show_library_view(
 
                     ui.horizontal(|ui| {
                         let input_resp = ui.add_sized(
-                            [ui.available_width() - 48.0, 22.0],
+                            [(ui.available_width() - 48.0).max(60.0), 22.0],
                             egui::TextEdit::singleline(&mut state.tag_input)
                                 .hint_text(t!("library_tag_add_hint")),
                         );
@@ -1141,7 +1145,7 @@ pub fn show_library_view(
                 }
                 ui.horizontal(|ui| {
                     ui.add_sized(
-                        [ui.available_width() - 68.0, 22.0],
+                        [(ui.available_width() - 68.0).max(60.0), 22.0],
                         egui::TextEdit::singleline(&mut state.smart_collection_name)
                             .hint_text(t!("library_smart_name_hint")),
                     );
@@ -1263,6 +1267,7 @@ pub fn show_library_view(
                         .size(11.0),
                 );
             });
+        });
         });
 
     // Central Area: Multi-Column Thumbnail Grid
