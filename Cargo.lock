@@ -236,7 +236,7 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
 name = "beam-app"
-version = "1.2.0"
+version = "1.2.5"
 dependencies = [
  "beam-core",
  "beam-gpu",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "beam-core"
-version = "1.2.0"
+version = "1.2.5"
 dependencies = [
  "fluent-bundle",
  "proptest",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "beam-gpu"
-version = "1.2.0"
+version = "1.2.5"
 dependencies = [
  "beam-core",
  "bytemuck",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "beam-library"
-version = "1.2.0"
+version = "1.2.5"
 dependencies = [
  "beam-core",
  "beam-media",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "beam-media"
-version = "1.2.0"
+version = "1.2.5"
 dependencies = [
  "beam-core",
  "beam-gpu",

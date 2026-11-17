@@ -50,6 +50,11 @@
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
   <releases>
+    <release version="1.2.5" date="2026-11-17">
+      <description>
+        <p>beaM. 1.2.5: Local 5x5 edge-preserving Smart Denoise, Auto Sky &amp; Auto Subject segmentation masks, and CLI Plugin Architecture.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-11-17">
       <description>
         <p>beaM. 1.2.0: True 16-bit GPU export and ICC-embedded TIFFs, Manual Lens &amp; Perspective correction, Soft Proofing with Out-of-Gamut &amp; Focus Peaking overlays, Waveform/RGB Parade/Vectorscope, Brush/Luminance/Color Range masks, Camera Profiles, Named Snapshots, Tags, Smart Collections, IPTC/XMP Metadata &amp; GPS Map links, Duplicate Detection, and Tethered Watch.</p>
