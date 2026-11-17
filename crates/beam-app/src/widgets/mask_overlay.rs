@@ -70,13 +70,13 @@ pub fn show_mask_overlay(
                 );
             }
 
-            if let (Some(d), s) = drag_handle(ui, "mask_lin_start", p_start, accent) {
+            let (d_start, s_start) = drag_handle(ui, "mask_lin_start", p_start, accent);
+            if let Some(d) = d_start {
                 start[0] = (start[0] + d.x / w).clamp(-0.5, 1.5);
                 start[1] = (start[1] + d.y / h).clamp(-0.5, 1.5);
                 changed = true;
-                stopped |= s;
-            } else if let (_, true) = (None::<Vec2>, false) {
             }
+            stopped |= s_start;
 
             let (d_end, s_end) =
                 drag_handle(ui, "mask_lin_end", p_end, Color32::from_rgb(80, 86, 102));

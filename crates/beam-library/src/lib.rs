@@ -141,6 +141,7 @@ pub struct LibraryFilter {
     pub sort_by: SortOrder,
     pub folder_path: Option<PathBuf>,
     pub recursive: bool,
+    pub tag: Option<String>,
 }
 
 pub struct LibraryDb {
@@ -186,6 +187,7 @@ impl LibraryDb {
                 r#"
             PRAGMA foreign_keys = ON;
             PRAGMA journal_mode = WAL;
+            PRAGMA busy_timeout = 5000;
 
             CREATE TABLE IF NOT EXISTS schema_version (
                 version INTEGER PRIMARY KEY
@@ -211,6 +213,7 @@ impl LibraryDb {
             CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(file_path);
             CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating);
             CREATE INDEX IF NOT EXISTS idx_photos_color ON photos(color_label);
+            CREATE INDEX IF NOT EXISTS idx_photos_created_at ON photos(created_at DESC, id DESC);
 
             CREATE TABLE IF NOT EXISTS virtual_copies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +224,20 @@ impl LibraryDb {
             );
 
             CREATE INDEX IF NOT EXISTS idx_virtual_copies_photo ON virtual_copies(photo_id);
+
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS photo_tags (
+                photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+                tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                PRIMARY KEY (photo_id, tag_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+            CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag_id);
             "#,
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
@@ -426,6 +443,7 @@ impl LibraryDb {
 
         // Stack contains (directory_path, current_depth)
         let mut stack = vec![(folder.to_path_buf(), 0usize)];
+        let in_tx = self.conn.execute("BEGIN IMMEDIATE", []).is_ok();
 
         while let Some((dir, depth)) = stack.pop() {
             if count >= Self::MAX_FOLDER_IMPORT_COUNT {
@@ -483,6 +501,10 @@ impl LibraryDb {
                     }
                 }
             }
+        }
+
+        if in_tx {
+            let _ = self.conn.execute("COMMIT", []);
         }
 
         Ok(count)
@@ -558,6 +580,16 @@ impl LibraryDb {
                 sql.push_str(" AND file_path LIKE ? AND file_path NOT LIKE ?");
                 params_vec.push(format!("{prefix}%").into());
                 params_vec.push(format!("{prefix}%/%").into());
+            }
+        }
+
+        if let Some(tag) = &filter.tag {
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM photo_tags pt JOIN tags t ON t.id = pt.tag_id WHERE pt.photo_id = photos.id AND t.name = ?)",
+                );
+                params_vec.push(trimmed.to_string().into());
             }
         }
 
@@ -899,6 +931,89 @@ impl LibraryDb {
             .execute("DELETE FROM virtual_copies WHERE id = ?1", params![copy_id])
             .map_err(|e| BeamError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Add a keyword/tag to a photo (trimmed, case-preserving, deduplicated).
+    pub fn add_tag(&self, photo_id: i64, tag_name: &str) -> Result<()> {
+        let trimmed = tag_name.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+                params![trimmed],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO photo_tags (photo_id, tag_id)
+                 SELECT ?1, id FROM tags WHERE name = ?2",
+                params![photo_id, trimmed],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Remove a keyword/tag from a photo.
+    pub fn remove_tag(&self, photo_id: i64, tag_name: &str) -> Result<()> {
+        let trimmed = tag_name.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        self.conn
+            .execute(
+                "DELETE FROM photo_tags
+                 WHERE photo_id = ?1 AND tag_id IN (SELECT id FROM tags WHERE name = ?2)",
+                params![photo_id, trimmed],
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// List all tags attached to a specific photo, sorted alphabetically.
+    pub fn get_photo_tags(&self, photo_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT t.name FROM tags t
+                 JOIN photo_tags pt ON pt.tag_id = t.id
+                 WHERE pt.photo_id = ?1
+                 ORDER BY t.name ASC",
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![photo_id], |row| row.get::<_, String>(0))
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let mut tags = Vec::new();
+        for row in rows {
+            tags.push(row.map_err(|e| BeamError::Database(e.to_string()))?);
+        }
+        Ok(tags)
+    }
+
+    /// List all tags currently assigned to at least one photo, with photo counts.
+    pub fn list_all_tags(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT t.name, COUNT(pt.photo_id)
+                 FROM tags t
+                 JOIN photo_tags pt ON pt.tag_id = t.id
+                 GROUP BY t.id, t.name
+                 ORDER BY t.name ASC",
+            )
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+            })
+            .map_err(|e| BeamError::Database(e.to_string()))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| BeamError::Database(e.to_string()))?);
+        }
+        Ok(result)
     }
 }
 
@@ -1456,6 +1571,58 @@ mod tests {
         let res_sub = db.query_photos(&filter_sub).unwrap();
         assert_eq!(res_sub.len(), 1);
         assert_eq!(res_sub[0].file_name, "beach.png");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_photo_tags_and_filtering() {
+        let temp_dir = std::env::temp_dir().join(format!("beam_tag_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(10, 10, Rgba([50, 100, 150, 255]));
+        let f1 = temp_dir.join("sunset.png");
+        let f2 = temp_dir.join("portrait.png");
+        img.save(&f1).unwrap();
+        img.save(&f2).unwrap();
+
+        let thumb_dir = temp_dir.join("thumbs");
+        let db = LibraryDb::open_in_memory().unwrap();
+        let id1 = db.import_file(&f1, &thumb_dir).unwrap().id;
+        let id2 = db.import_file(&f2, &thumb_dir).unwrap().id;
+
+        db.add_tag(id1, "landscape").unwrap();
+        db.add_tag(id1, "golden-hour").unwrap();
+        db.add_tag(id1, "  landscape  ").unwrap(); // duplicate should be ignored
+        db.add_tag(id2, "portrait").unwrap();
+
+        let tags1 = db.get_photo_tags(id1).unwrap();
+        assert_eq!(tags1, vec!["golden-hour", "landscape"]);
+
+        let all_tags = db.list_all_tags().unwrap();
+        assert_eq!(
+            all_tags,
+            vec![
+                ("golden-hour".to_string(), 1),
+                ("landscape".to_string(), 1),
+                ("portrait".to_string(), 1),
+            ]
+        );
+
+        let filter = LibraryFilter {
+            tag: Some("landscape".to_string()),
+            ..Default::default()
+        };
+        let matched = db.query_photos(&filter).unwrap();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].id, id1);
+
+        db.remove_tag(id1, "landscape").unwrap();
+        assert_eq!(db.get_photo_tags(id1).unwrap(), vec!["golden-hour"]);
+        let matched_after = db.query_photos(&filter).unwrap();
+        assert!(matched_after.is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }

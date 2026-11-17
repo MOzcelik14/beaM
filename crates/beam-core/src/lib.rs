@@ -18,7 +18,7 @@ pub use error::{BeamError, Result};
 pub use fs_util::atomic_write;
 pub use geometry::{
     calculate_cropped_dimensions, calculate_effective_aspect_ratio, create_centered_crop_rect,
-    map_output_uv_to_source,
+    map_output_uv_to_source, map_output_uv_to_source_with_aspect,
 };
 pub use i18n::{
     current_language, set_language, t, t_with_args, AppConfig, I18n, Language, ShortcutConfig,
@@ -29,6 +29,6 @@ pub use preset::{
     Preset, PresetGroupMask, PRESET_SCHEMA_VERSION,
 };
 pub use sidecar::{
-    ColorLabel, CropAdjustment, CropAspectPreset, EditStack, HistoryStep, Sidecar,
+    ColorLabel, CropAdjustment, CropAspectPreset, EditStack, HistoryStep, LensAdjustment, Sidecar,
     CURRENT_FORMAT_VERSION, MAX_HISTORY_STEPS,
 };

@@ -419,6 +419,14 @@ pub enum MaskShape {
     },
 }
 
+fn default_one() -> f32 {
+    1.0
+}
+
+fn default_luma_smooth() -> f32 {
+    0.15
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaskLayer {
     pub id: u64,
@@ -439,6 +447,12 @@ pub struct MaskLayer {
     pub tint: f32,
     #[serde(default)]
     pub saturation: f32,
+    #[serde(default)]
+    pub luma_min: f32,
+    #[serde(default = "default_one")]
+    pub luma_max: f32,
+    #[serde(default = "default_luma_smooth")]
+    pub luma_smoothness: f32,
 }
 
 impl MaskLayer {
@@ -458,6 +472,9 @@ impl MaskLayer {
             temperature: 0.0,
             tint: 0.0,
             saturation: 0.0,
+            luma_min: 0.0,
+            luma_max: 1.0,
+            luma_smoothness: 0.15,
         }
     }
 
@@ -479,6 +496,42 @@ impl MaskLayer {
             temperature: 0.0,
             tint: 0.0,
             saturation: 0.0,
+            luma_min: 0.0,
+            luma_max: 1.0,
+            luma_smoothness: 0.15,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LensAdjustment {
+    pub enabled: bool,
+    /// Barrel/pincushion distortion correction (-100.0 to +100.0)
+    pub distortion: f32,
+    /// Red/Cyan lateral chromatic aberration (-100.0 to +100.0)
+    pub ca_red_cyan: f32,
+    /// Blue/Yellow lateral chromatic aberration (-100.0 to +100.0)
+    pub ca_blue_yellow: f32,
+    /// Optical lens vignette correction (-100.0 to +100.0)
+    pub vignette: f32,
+    /// Vertical perspective / keystone correction (-100.0 to +100.0)
+    #[serde(default)]
+    pub perspective_v: f32,
+    /// Horizontal perspective / keystone correction (-100.0 to +100.0)
+    #[serde(default)]
+    pub perspective_h: f32,
+}
+
+impl Default for LensAdjustment {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            distortion: 0.0,
+            ca_red_cyan: 0.0,
+            ca_blue_yellow: 0.0,
+            vignette: 0.0,
+            perspective_v: 0.0,
+            perspective_h: 0.0,
         }
     }
 }
@@ -505,6 +558,8 @@ pub struct EditStack {
     pub masks: Vec<MaskLayer>,
     #[serde(default)]
     pub crop: CropAdjustment,
+    #[serde(default)]
+    pub lens: LensAdjustment,
 }
 
 impl EditStack {
@@ -676,6 +731,12 @@ impl EditStack {
             sanitize_float(&mut mask.temperature, -100.0, 100.0, 0.0);
             sanitize_float(&mut mask.tint, -100.0, 100.0, 0.0);
             sanitize_float(&mut mask.saturation, -100.0, 100.0, 0.0);
+            sanitize_float(&mut mask.luma_min, 0.0, 1.0, 0.0);
+            sanitize_float(&mut mask.luma_max, 0.0, 1.0, 1.0);
+            if mask.luma_max < mask.luma_min {
+                mask.luma_max = mask.luma_min;
+            }
+            sanitize_float(&mut mask.luma_smoothness, 0.01, 1.0, 0.15);
         }
 
         // 13. Crop & Geometry
@@ -685,6 +746,14 @@ impl EditStack {
         sanitize_float(&mut self.crop.y, 0.0, 1.0 - self.crop.height, 0.0);
         self.crop.rotation = ((self.crop.rotation % 360) / 90) * 90;
         sanitize_float(&mut self.crop.straighten, -45.0, 45.0, 0.0);
+
+        // 14. Lens Correction
+        sanitize_float(&mut self.lens.distortion, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.lens.ca_red_cyan, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.lens.ca_blue_yellow, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.lens.vignette, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.lens.perspective_v, -100.0, 100.0, 0.0);
+        sanitize_float(&mut self.lens.perspective_h, -100.0, 100.0, 0.0);
     }
 }
 
@@ -773,6 +842,8 @@ pub struct Sidecar {
     pub history: Vec<HistoryStep>,
     #[serde(default)]
     pub history_index: usize,
+    #[serde(default)]
+    pub snapshots: Vec<HistoryStep>,
 }
 
 impl Sidecar {
@@ -786,6 +857,7 @@ impl Sidecar {
             edit_stack: default_stack.clone(),
             history: vec![HistoryStep::new("Initial", default_stack)],
             history_index: 0,
+            snapshots: Vec::new(),
         }
     }
 

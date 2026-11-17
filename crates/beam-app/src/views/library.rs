@@ -138,6 +138,10 @@ pub struct LibraryViewState {
     pub active_folder: Option<PathBuf>,
     pub bookmarked_folders: Vec<PathBuf>,
     pub subdirectories: Vec<PathBuf>,
+    pub available_tags: Vec<(String, usize)>,
+    pub selected_photo_tags: Vec<String>,
+    pub cached_tags_photo_id: Option<i64>,
+    pub tag_input: String,
 }
 
 impl Default for LibraryViewState {
@@ -157,6 +161,10 @@ impl Default for LibraryViewState {
             active_folder: None,
             bookmarked_folders: Vec::new(),
             subdirectories: Vec::new(),
+            available_tags: Vec::new(),
+            selected_photo_tags: Vec::new(),
+            cached_tags_photo_id: None,
+            tag_input: String::new(),
         }
     }
 }
@@ -194,6 +202,8 @@ impl LibraryViewState {
                 .map(|p| p.id)
                 .collect();
             self.photos = photos;
+            self.available_tags = db.list_all_tags().unwrap_or_default();
+            self.cached_tags_photo_id = None;
             self.needs_refresh = false;
         }
     }
@@ -265,20 +275,30 @@ pub fn show_library_view(
         state.refresh(db);
     }
 
+    if state.cached_tags_photo_id != state.selected_photo_id {
+        state.selected_photo_tags = state
+            .selected_photo_id
+            .and_then(|id| db.get_photo_tags(id).ok())
+            .unwrap_or_default();
+        state.cached_tags_photo_id = state.selected_photo_id;
+    }
+
     // Keyboard shortcuts for selected photo rating: keys 0-5
-    if let Some(selected_id) = state.selected_photo_id {
-        const RATING_KEYS: [(u8, egui::Key); 6] = [
-            (0, egui::Key::Num0),
-            (1, egui::Key::Num1),
-            (2, egui::Key::Num2),
-            (3, egui::Key::Num3),
-            (4, egui::Key::Num4),
-            (5, egui::Key::Num5),
-        ];
-        for (num, key) in RATING_KEYS {
-            if ctx.input(|i| i.key_pressed(key) && !i.modifiers.command && !i.modifiers.ctrl) {
-                let _ = db.update_rating(selected_id, num);
-                state.needs_refresh = true;
+    if !ctx.egui_wants_keyboard_input() {
+        if let Some(selected_id) = state.selected_photo_id {
+            const RATING_KEYS: [(u8, egui::Key); 6] = [
+                (0, egui::Key::Num0),
+                (1, egui::Key::Num1),
+                (2, egui::Key::Num2),
+                (3, egui::Key::Num3),
+                (4, egui::Key::Num4),
+                (5, egui::Key::Num5),
+            ];
+            for (num, key) in RATING_KEYS {
+                if ctx.input(|i| i.key_pressed(key) && !i.modifiers.command && !i.modifiers.ctrl) {
+                    let _ = db.update_rating(selected_id, num);
+                    state.needs_refresh = true;
+                }
             }
         }
     }
@@ -950,6 +970,94 @@ pub fn show_library_view(
                             state.needs_refresh = true;
                         }
                     });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Tag filter
+                ui.label(
+                    RichText::new(t!("library_tag_filter"))
+                        .size(11.0)
+                        .color(Color32::from_rgb(140, 145, 160)),
+                );
+                ui.add_space(2.0);
+                let selected_tag_text = state
+                    .filter
+                    .tag
+                    .clone()
+                    .unwrap_or_else(|| t!("library_tag_all").to_string());
+                egui::ComboBox::from_id_salt("library_tag_filter_combo")
+                    .width(ui.available_width())
+                    .selected_text(selected_tag_text)
+                    .show_ui(ui, |ui| {
+                        let mut changed = false;
+                        changed |= ui
+                            .selectable_value(&mut state.filter.tag, None, t!("library_tag_all"))
+                            .changed();
+                        for (tag_name, count) in &state.available_tags {
+                            let label = format!("{tag_name} ({count})");
+                            changed |= ui
+                                .selectable_value(
+                                    &mut state.filter.tag,
+                                    Some(tag_name.clone()),
+                                    label,
+                                )
+                                .changed();
+                        }
+                        if changed {
+                            state.needs_refresh = true;
+                        }
+                    });
+
+                // Selected photo tags editor
+                if let Some(selected_id) = state.selected_photo_id {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(t!("library_tags"))
+                            .size(11.0)
+                            .color(Color32::from_rgb(140, 145, 160)),
+                    );
+                    ui.add_space(2.0);
+
+                    if !state.selected_photo_tags.is_empty() {
+                        let tags_snapshot = state.selected_photo_tags.clone();
+                        ui.horizontal_wrapped(|ui| {
+                            for tag in tags_snapshot {
+                                if ui.small_button(format!("{tag} x")).clicked() {
+                                    let _ = db.remove_tag(selected_id, &tag);
+                                    state.needs_refresh = true;
+                                    state.cached_tags_photo_id = None;
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+
+                    ui.horizontal(|ui| {
+                        let input_resp = ui.add_sized(
+                            [ui.available_width() - 48.0, 22.0],
+                            egui::TextEdit::singleline(&mut state.tag_input)
+                                .hint_text(t!("library_tag_add_hint")),
+                        );
+                        let enter_pressed = input_resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let add_clicked = ui.small_button(t!("library_tag_add")).clicked();
+                        if (enter_pressed || add_clicked) && !state.tag_input.trim().is_empty() {
+                            let new_tag = state.tag_input.trim().to_string();
+                            if state.selected_photo_ids.is_empty() {
+                                let _ = db.add_tag(selected_id, &new_tag);
+                            } else {
+                                for &pid in &state.selected_photo_ids {
+                                    let _ = db.add_tag(pid, &new_tag);
+                                }
+                            }
+                            state.tag_input.clear();
+                            state.needs_refresh = true;
+                            state.cached_tags_photo_id = None;
+                        }
+                    });
+                }
 
                 ui.add_space(16.0);
                 ui.label(

@@ -37,6 +37,7 @@ pub enum LeftPanelTab {
     #[default]
     Presets,
     History,
+    Snapshots,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,9 +151,12 @@ pub struct BeamApp {
     gpu_full_texture: Option<wgpu::Texture>,
     egui_full_texture_id: Option<egui::TextureId>,
 
-    // Clipping overlays
+    // Clipping & Soft Proofing overlays
     show_shadow_clipping: bool,
     show_highlight_clipping: bool,
+    soft_proof_space: Option<beam_core::ExportColorSpace>,
+    show_gamut_warning: bool,
+    show_focus_peaking: bool,
 
     // Filmstrip & Fullscreen
     filmstrip_visible: bool,
@@ -214,6 +218,8 @@ pub struct BeamApp {
     allow_close: bool,
     decode_generation: u64,
     active_imports: usize,
+    snapshots: Vec<HistoryStep>,
+    snapshot_name_input: String,
 }
 
 /// Action to be executed after unsaved changes confirmation
@@ -507,6 +513,9 @@ impl BeamApp {
             egui_full_texture_id: None,
             show_shadow_clipping: false,
             show_highlight_clipping: false,
+            soft_proof_space: None,
+            show_gamut_warning: false,
+            show_focus_peaking: false,
             filmstrip_visible: app_config.filmstrip_visible,
             filmstrip_height: app_config.filmstrip_height.unwrap_or(110.0),
             is_fullscreen: false,
@@ -565,6 +574,8 @@ impl BeamApp {
             allow_close: false,
             decode_generation: 0,
             active_imports: 0,
+            snapshots: Vec::new(),
+            snapshot_name_input: String::new(),
         };
 
         if let Some(ref folder) = app.library_state.active_folder.clone() {
@@ -1057,6 +1068,7 @@ impl BeamApp {
                         self.edit_stack = sidecar.edit_stack;
                         self.history = sidecar.history;
                         self.history_index = sidecar.history_index;
+                        self.snapshots = sidecar.snapshots;
                         self.sidecar_status = t!("status_ready");
                     } else {
                         self.edit_stack = EditStack::default();
@@ -1065,6 +1077,7 @@ impl BeamApp {
                             EditStack::default(),
                         )];
                         self.history_index = 0;
+                        self.snapshots.clear();
                         self.sidecar_status = t!("status_ready");
                     }
                     self.slider_drag_start_stack = None;
@@ -1353,7 +1366,7 @@ impl BeamApp {
         };
         let full_view = full_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        pipeline.render_with_options(
+        pipeline.render_with_proof_options(
             device,
             queue,
             gpu_full,
@@ -1362,6 +1375,9 @@ impl BeamApp {
             self.crop_mode_active,
             self.show_shadow_clipping,
             self.show_highlight_clipping,
+            self.soft_proof_space,
+            self.show_gamut_warning,
+            self.show_focus_peaking,
         );
 
         let mut renderer = render_state.renderer.write();
@@ -1409,7 +1425,7 @@ impl BeamApp {
         let queue = &render_state.queue;
         let display_view = display_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        pipeline.render_with_options(
+        pipeline.render_with_proof_options(
             device,
             queue,
             gpu_proxy,
@@ -1418,10 +1434,33 @@ impl BeamApp {
             self.crop_mode_active,
             self.show_shadow_clipping,
             self.show_highlight_clipping,
+            self.soft_proof_space,
+            self.show_gamut_warning,
+            self.show_focus_peaking,
         );
 
         if self.is_one_to_one {
             self.ensure_full_res_rendered(frame);
+        }
+
+        if let Some(img) = &self.current_image {
+            let pw = img.proxy_width as usize;
+            let ph = img.proxy_height as usize;
+            if pw > 0 && ph > 0 && img.proxy_data.len() >= pw * ph * 4 {
+                let step = (pw.max(ph) / 160).max(1);
+                let sw = pw.div_ceil(step) as u32;
+                let sh = ph.div_ceil(step) as u32;
+                let mut sample = Vec::with_capacity((sw * sh * 4) as usize);
+                for y in (0..ph).step_by(step) {
+                    for x in (0..pw).step_by(step) {
+                        let idx = (y * pw + x) * 4;
+                        sample.extend_from_slice(&img.proxy_data[idx..idx + 4]);
+                    }
+                }
+                let edited =
+                    beam_media::decoder::apply_cpu_edits(sw, sh, &sample, &self.edit_stack);
+                self.histogram_data = Some(HistogramData::compute_from_rgba32f(&edited));
+            }
         }
     }
 
@@ -1527,6 +1566,7 @@ impl BeamApp {
             sidecar.edit_stack = self.edit_stack.clone();
             sidecar.history = self.history.clone();
             sidecar.history_index = self.history_index;
+            sidecar.snapshots = self.snapshots.clone();
 
             if let Some(photo_id) = self.library_state.selected_photo_id {
                 if let Ok(Some(photo)) = self.library_db.get_photo(photo_id) {
@@ -1879,6 +1919,7 @@ impl eframe::App for BeamApp {
         });
 
         // Global Keyboard shortcuts
+        let typing = ctx.egui_wants_keyboard_input();
         if ctx.input(|i| {
             (i.modifiers.command || i.modifiers.ctrl)
                 && i.modifiers.shift
@@ -1895,9 +1936,11 @@ impl eframe::App for BeamApp {
             ctx.request_repaint();
         }
 
-        if ctx.input(|i| {
-            i.key_pressed(egui::Key::Backslash) && !i.modifiers.command && !i.modifiers.ctrl
-        }) {
+        if !typing
+            && ctx.input(|i| {
+                i.key_pressed(egui::Key::Backslash) && !i.modifiers.command && !i.modifiers.ctrl
+            })
+        {
             if self.crop_mode_active {
                 self.crop_mode_active = false;
                 self.re_render_edits(frame);
@@ -1925,8 +1968,10 @@ impl eframe::App for BeamApp {
                     self.paste_settings(frame);
                     ctx.request_repaint();
                 }
-            } else if ctx
-                .input(|i| i.key_pressed(egui::Key::C) && !i.modifiers.command && !i.modifiers.ctrl)
+            } else if !typing
+                && ctx.input(|i| {
+                    i.key_pressed(egui::Key::C) && !i.modifiers.command && !i.modifiers.ctrl
+                })
             {
                 self.crop_mode_active = !self.crop_mode_active;
                 if self.crop_mode_active {
@@ -1934,7 +1979,8 @@ impl eframe::App for BeamApp {
                 }
                 self.re_render_edits(frame);
                 ctx.request_repaint();
-            } else if self.crop_mode_active
+            } else if !typing
+                && self.crop_mode_active
                 && ctx.input(|i| {
                     (i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape))
                         && !i.modifiers.command
@@ -1947,14 +1993,20 @@ impl eframe::App for BeamApp {
             }
         }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.command && !i.modifiers.ctrl) {
+        if !typing
+            && ctx
+                .input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.command && !i.modifiers.ctrl)
+        {
             if self.crop_mode_active {
                 self.crop_mode_active = false;
                 self.re_render_edits(frame);
             }
             self.current_view = AppView::Library;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::D) && !i.modifiers.command && !i.modifiers.ctrl) {
+        if !typing
+            && ctx
+                .input(|i| i.key_pressed(egui::Key::D) && !i.modifiers.command && !i.modifiers.ctrl)
+        {
             self.current_view = AppView::Develop;
         }
         if ctx.input(|i| {
@@ -1993,7 +2045,8 @@ impl eframe::App for BeamApp {
         }
 
         // Milestone 13: Ratings (0-5)
-        if self.app_config.shortcuts.number_keys_rate
+        if !typing
+            && self.app_config.shortcuts.number_keys_rate
             && !ctx.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt)
         {
             if ctx.input(|i| i.key_pressed(egui::Key::Num0)) {
@@ -2030,7 +2083,8 @@ impl eframe::App for BeamApp {
         }
 
         // Milestone 13: Navigation (Left/Right Arrows, PageUp/PageDown)
-        if self.app_config.shortcuts.arrow_keys_navigate
+        if !typing
+            && self.app_config.shortcuts.arrow_keys_navigate
             && !ctx.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt)
         {
             if ctx
@@ -2047,7 +2101,8 @@ impl eframe::App for BeamApp {
         }
 
         // Milestone 13: Fullscreen (F11 or F)
-        if self.app_config.shortcuts.f_fullscreen
+        if !typing
+            && self.app_config.shortcuts.f_fullscreen
             && ctx.input(|i| {
                 (i.key_pressed(egui::Key::F11) || i.key_pressed(egui::Key::F))
                     && !i.modifiers.command
@@ -2060,7 +2115,8 @@ impl eframe::App for BeamApp {
         }
 
         // Milestone 13: Zoom to 100% / Fit (Z)
-        if self.app_config.shortcuts.z_zoom
+        if !typing
+            && self.app_config.shortcuts.z_zoom
             && self.current_view == AppView::Develop
             && ctx.input(|i| {
                 i.key_pressed(egui::Key::Z)
@@ -2080,7 +2136,8 @@ impl eframe::App for BeamApp {
         }
 
         // Milestone 13: Clipping Warnings toggle (J)
-        if self.app_config.shortcuts.j_clipping
+        if !typing
+            && self.app_config.shortcuts.j_clipping
             && self.current_view == AppView::Develop
             && ctx
                 .input(|i| i.key_pressed(egui::Key::J) && !i.modifiers.command && !i.modifiers.ctrl)
@@ -2148,6 +2205,24 @@ impl eframe::App for BeamApp {
                 }
             });
         });
+
+        if self.current_view == AppView::Library && self.error_message.is_some() {
+            Panel::top("library_error_banner").show(ui, |ui| {
+                let mut clear_error = false;
+                if let Some(err) = &self.error_message {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(Color32::RED, t!("develop_error_title"));
+                        ui.label(RichText::new(err).color(Color32::LIGHT_RED));
+                        if ui.button(t!("develop_dismiss")).clicked() {
+                            clear_error = true;
+                        }
+                    });
+                }
+                if clear_error {
+                    self.error_message = None;
+                }
+            });
+        }
 
         match self.current_view {
             AppView::Library => {
@@ -2316,7 +2391,7 @@ impl eframe::App for BeamApp {
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 2.0;
-                                        let tab_w = ((ui.available_width() - 2.0) / 2.0).max(10.0);
+                                        let tab_w = ((ui.available_width() - 4.0) / 3.0).max(10.0);
                                         let is_presets =
                                             self.left_panel_tab == LeftPanelTab::Presets;
                                         let (p_bg, p_stroke, p_fg) = if is_presets {
@@ -2336,7 +2411,7 @@ impl eframe::App for BeamApp {
                                             .add(
                                                 egui::Button::new(
                                                     RichText::new(t!("develop_presets"))
-                                                        .size(12.0)
+                                                        .size(11.5)
                                                         .color(p_fg)
                                                         .strong(),
                                                 )
@@ -2368,7 +2443,7 @@ impl eframe::App for BeamApp {
                                             .add(
                                                 egui::Button::new(
                                                     RichText::new(t!("develop_history"))
-                                                        .size(12.0)
+                                                        .size(11.5)
                                                         .color(h_fg)
                                                         .strong(),
                                                 )
@@ -2380,6 +2455,39 @@ impl eframe::App for BeamApp {
                                             .clicked()
                                         {
                                             self.left_panel_tab = LeftPanelTab::History;
+                                        }
+
+                                        let is_snap =
+                                            self.left_panel_tab == LeftPanelTab::Snapshots;
+                                        let (s_bg, s_stroke, s_fg) = if is_snap {
+                                            (
+                                                Color32::from_rgb(46, 56, 78),
+                                                Stroke::new(1.0, Color32::from_rgb(70, 92, 138)),
+                                                Color32::from_rgb(250, 252, 255),
+                                            )
+                                        } else {
+                                            (
+                                                Color32::TRANSPARENT,
+                                                Stroke::NONE,
+                                                Color32::from_rgb(160, 166, 178),
+                                            )
+                                        };
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new(t!("develop_snapshots"))
+                                                        .size(11.5)
+                                                        .color(s_fg)
+                                                        .strong(),
+                                                )
+                                                .fill(s_bg)
+                                                .stroke(s_stroke)
+                                                .corner_radius(5.0)
+                                                .min_size(Vec2::new(tab_w, 24.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.left_panel_tab = LeftPanelTab::Snapshots;
                                         }
                                     });
                                 });
@@ -2750,6 +2858,93 @@ impl eframe::App for BeamApp {
                                         ctx.request_repaint();
                                     }
                                 }
+                                LeftPanelTab::Snapshots => {
+                                    if let Some(orig) = self.stack_before_hover.take() {
+                                        self.edit_stack = orig;
+                                        self.re_render_edits(frame);
+                                        self.hovered_preset = None;
+                                    }
+
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.snapshot_name_input,
+                                            )
+                                            .hint_text(t!("develop_snapshot_placeholder"))
+                                            .desired_width((ui.available_width() - 95.0).max(60.0)),
+                                        );
+                                        if ui
+                                            .button(format!("+ {}", t!("develop_snapshot_save")))
+                                            .clicked()
+                                        {
+                                            let trimmed = self.snapshot_name_input.trim();
+                                            let name = if trimmed.is_empty() {
+                                                format!("Snapshot {}", self.snapshots.len() + 1)
+                                            } else {
+                                                trimmed.to_string()
+                                            };
+                                            self.snapshots.push(HistoryStep::new(
+                                                name,
+                                                self.edit_stack.clone(),
+                                            ));
+                                            self.snapshot_name_input.clear();
+                                            self.save_sidecar();
+                                        }
+                                    });
+                                    ui.add_space(6.0);
+
+                                    let mut apply_idx: Option<usize> = None;
+                                    let mut delete_idx: Option<usize> = None;
+                                    egui::ScrollArea::vertical().auto_shrink([false; 2]).show(
+                                        ui,
+                                        |ui| {
+                                            if self.snapshots.is_empty() {
+                                                ui.label(
+                                                    RichText::new(t!("develop_snapshots_empty"))
+                                                        .color(Color32::from_rgb(140, 146, 160))
+                                                        .size(12.0),
+                                                );
+                                            } else {
+                                                for (idx, snap) in self.snapshots.iter().enumerate()
+                                                {
+                                                    ui.horizontal(|ui| {
+                                                        let row_w =
+                                                            (ui.available_width() - 28.0).max(60.0);
+                                                        if ui
+                                                            .add_sized(
+                                                                [row_w, 24.0],
+                                                                egui::Button::new(&snap.name),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            apply_idx = Some(idx);
+                                                        }
+                                                        if ui.small_button("×").clicked() {
+                                                            delete_idx = Some(idx);
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                        },
+                                    );
+
+                                    if let Some(idx) = apply_idx {
+                                        if let Some(snap) = self.snapshots.get(idx).cloned() {
+                                            self.edit_stack = snap.stack;
+                                            self.re_render_edits(frame);
+                                            self.push_history_step(
+                                                t!("history_snapshot", "name" => snap.name),
+                                            );
+                                            ctx.request_repaint();
+                                        }
+                                    }
+                                    if let Some(idx) = delete_idx {
+                                        if idx < self.snapshots.len() {
+                                            self.snapshots.remove(idx);
+                                            self.save_sidecar();
+                                        }
+                                    }
+                                }
                             }
                         });
                 }
@@ -2858,6 +3053,50 @@ impl eframe::App for BeamApp {
                                             }
                                             ui.add_space(4.0);
                                             ui.horizontal(|ui| {
+                                                let proof_label = match self.soft_proof_space {
+                                                    None => t!("develop_soft_proof_off").to_string(),
+                                                    Some(beam_core::ExportColorSpace::Srgb) => "sRGB".to_string(),
+                                                    Some(beam_core::ExportColorSpace::DisplayP3) => "Display P3".to_string(),
+                                                    Some(beam_core::ExportColorSpace::AdobeRgb) => "Adobe RGB".to_string(),
+                                                };
+                                                egui::ComboBox::from_id_salt("develop_soft_proof_combo")
+                                                    .selected_text(format!("{}: {}", t!("develop_soft_proof"), proof_label))
+                                                    .width(140.0)
+                                                    .show_ui(ui, |ui| {
+                                                        if ui.selectable_value(&mut self.soft_proof_space, None, t!("develop_soft_proof_off")).changed() {
+                                                            clipping_changed = true;
+                                                        }
+                                                        if ui.selectable_value(&mut self.soft_proof_space, Some(beam_core::ExportColorSpace::Srgb), "sRGB").changed() {
+                                                            clipping_changed = true;
+                                                        }
+                                                        if ui.selectable_value(&mut self.soft_proof_space, Some(beam_core::ExportColorSpace::DisplayP3), "Display P3").changed() {
+                                                            clipping_changed = true;
+                                                        }
+                                                        if ui.selectable_value(&mut self.soft_proof_space, Some(beam_core::ExportColorSpace::AdobeRgb), "Adobe RGB").changed() {
+                                                            clipping_changed = true;
+                                                        }
+                                                    });
+                                                if self.soft_proof_space.is_some()
+                                                    && ui
+                                                        .selectable_label(
+                                                            self.show_gamut_warning,
+                                                            t!("develop_gamut_warning"),
+                                                        )
+                                                        .clicked()
+                                                {
+                                                    self.show_gamut_warning = !self.show_gamut_warning;
+                                                    clipping_changed = true;
+                                                }
+                                                if ui
+                                                    .selectable_label(
+                                                        self.show_focus_peaking,
+                                                        t!("develop_focus_peaking"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.show_focus_peaking = !self.show_focus_peaking;
+                                                    clipping_changed = true;
+                                                }
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(egui::Align::Center),
                                                     |ui| {
@@ -4586,6 +4825,106 @@ impl eframe::App for BeamApp {
 
                                     ui.add_space(6.0);
 
+                                    // 11b. Lens Correction Section
+                                    card_frame.show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(t!("develop_lens"))
+                                                    .strong()
+                                                    .size(13.0)
+                                                    .color(Color32::from_rgb(240, 242, 248)),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .small_button("↺")
+                                                        .on_hover_text(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_lens")
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.edit_stack.lens =
+                                                            beam_core::LensAdjustment::default();
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_reset_section",
+                                                            "section" => t!("develop_lens")
+                                                        ));
+                                                    }
+                                                    if ui
+                                                        .checkbox(
+                                                            &mut self.edit_stack.lens.enabled,
+                                                            "",
+                                                        )
+                                                        .changed()
+                                                    {
+                                                        edits_changed = true;
+                                                        immediate_action = true;
+                                                        action_label = Some(t!(
+                                                            "history_toggle_section",
+                                                            "section" => t!("develop_lens")
+                                                        ));
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(6.0);
+
+                                        let lens_sliders: [(&str, &mut f32); 6] = [
+                                            (
+                                                "develop_lens_distortion",
+                                                &mut self.edit_stack.lens.distortion,
+                                            ),
+                                            (
+                                                "develop_lens_ca_red",
+                                                &mut self.edit_stack.lens.ca_red_cyan,
+                                            ),
+                                            (
+                                                "develop_lens_ca_blue",
+                                                &mut self.edit_stack.lens.ca_blue_yellow,
+                                            ),
+                                            (
+                                                "develop_lens_vignette",
+                                                &mut self.edit_stack.lens.vignette,
+                                            ),
+                                            (
+                                                "develop_lens_perspective_v",
+                                                &mut self.edit_stack.lens.perspective_v,
+                                            ),
+                                            (
+                                                "develop_lens_perspective_h",
+                                                &mut self.edit_stack.lens.perspective_h,
+                                            ),
+                                        ];
+                                        for (key, val) in lens_sliders {
+                                            let lbl = t!(key);
+                                            let (res, reset) = draw_slider_row(
+                                                ui,
+                                                &lbl,
+                                                Slider::new(val, -100.0..=100.0).fixed_decimals(1),
+                                                &lbl,
+                                            );
+                                            if reset {
+                                                *val = 0.0;
+                                                edits_changed = true;
+                                                immediate_action = true;
+                                                action_label = Some(t!("history_lens"));
+                                            }
+                                            if res.changed() {
+                                                edits_changed = true;
+                                                action_label = Some(t!("history_lens"));
+                                            }
+                                            if res.drag_stopped() {
+                                                immediate_action = true;
+                                            }
+                                        }
+                                    });
+
+                                    ui.add_space(6.0);
+
                                     // 12. 3D LUT Section (.cube)
                                     card_frame.show(ui, |ui| {
                                         ui.horizontal(|ui| {
@@ -4887,6 +5226,37 @@ impl eframe::App for BeamApp {
                                                         if f_res.drag_stopped() {
                                                             immediate_action = true;
                                                         }
+                                                    }
+
+                                                    let luma_sliders: [(&str, &mut f32, std::ops::RangeInclusive<f32>, f32); 3] = [
+                                                        ("masks_luma_min", &mut mask.luma_min, 0.0..=1.0, 0.0),
+                                                        ("masks_luma_max", &mut mask.luma_max, 0.0..=1.0, 1.0),
+                                                        ("masks_luma_smoothness", &mut mask.luma_smoothness, 0.01..=1.0, 0.15),
+                                                    ];
+                                                    for (key, val, range, default_val) in luma_sliders {
+                                                        let lbl = t!(key);
+                                                        let (res, reset) = draw_slider_row(
+                                                            ui,
+                                                            &lbl,
+                                                            Slider::new(val, range).fixed_decimals(2),
+                                                            &lbl,
+                                                        );
+                                                        if reset {
+                                                            *val = default_val;
+                                                            edits_changed = true;
+                                                            immediate_action = true;
+                                                            action_label = Some(t!("history_masks"));
+                                                        }
+                                                        if res.changed() {
+                                                            edits_changed = true;
+                                                            action_label = Some(t!("history_masks"));
+                                                        }
+                                                        if res.drag_stopped() {
+                                                            immediate_action = true;
+                                                        }
+                                                    }
+                                                    if mask.luma_max < mask.luma_min {
+                                                        mask.luma_max = mask.luma_min;
                                                     }
 
                                                     let mask_sliders: [(&str, &mut f32, std::ops::RangeInclusive<f32>, usize); 7] = [
@@ -7240,6 +7610,9 @@ mod tests {
             egui_full_texture_id: None,
             show_shadow_clipping: false,
             show_highlight_clipping: false,
+            soft_proof_space: None,
+            show_gamut_warning: false,
+            show_focus_peaking: false,
             filmstrip_visible: true,
             filmstrip_height: 110.0,
             is_fullscreen: false,
@@ -7298,6 +7671,8 @@ mod tests {
             allow_close: false,
             decode_generation: 0,
             active_imports: 0,
+            snapshots: Vec::new(),
+            snapshot_name_input: String::new(),
         }
     }
 

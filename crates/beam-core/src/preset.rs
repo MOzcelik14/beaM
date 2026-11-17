@@ -4,8 +4,9 @@
 //! (white balance, exposure, tone curve, HSL, crop).
 
 use crate::sidecar::{
-    ContrastAdjustment, CropAdjustment, EditStack, ExposureAdjustment, HighlightsShadowsAdjustment,
-    HslAdjustment, ToneCurveAdjustment, ToneCurvePoint, VibranceSaturationAdjustment,
+    ColorGradingAdjustment, ContrastAdjustment, CropAdjustment, DetailAdjustment, EditStack,
+    ExposureAdjustment, HighlightsShadowsAdjustment, HslAdjustment, LensAdjustment, LutAdjustment,
+    MaskLayer, ToneCurveAdjustment, ToneCurvePoint, VibranceSaturationAdjustment,
     VignetteGrainAdjustment, WhiteBalanceAdjustment,
 };
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,16 @@ pub struct PresetGroupMask {
     pub vibrance_saturation: bool,
     #[serde(default = "default_true")]
     pub vignette_grain: bool,
+    #[serde(default = "default_true")]
+    pub color_grading: bool,
+    #[serde(default = "default_true")]
+    pub detail: bool,
+    #[serde(default = "default_true")]
+    pub lut: bool,
+    #[serde(default)]
+    pub masks: bool,
+    #[serde(default)]
+    pub lens: bool,
     pub crop: bool,
 }
 
@@ -45,6 +56,11 @@ impl Default for PresetGroupMask {
             hsl: true,
             vibrance_saturation: true,
             vignette_grain: true,
+            color_grading: true,
+            detail: true,
+            lut: true,
+            masks: false,
+            lens: false,
             crop: false, // Crop excluded by default when applying presets
         }
     }
@@ -61,6 +77,11 @@ impl PresetGroupMask {
             hsl: true,
             vibrance_saturation: true,
             vignette_grain: true,
+            color_grading: true,
+            detail: true,
+            lut: true,
+            masks: true,
+            lens: true,
             crop: true,
         }
     }
@@ -75,6 +96,11 @@ impl PresetGroupMask {
             hsl: false,
             vibrance_saturation: false,
             vignette_grain: false,
+            color_grading: false,
+            detail: false,
+            lut: false,
+            masks: false,
+            lens: false,
             crop: false,
         }
     }
@@ -88,6 +114,11 @@ impl PresetGroupMask {
             || self.hsl
             || self.vibrance_saturation
             || self.vignette_grain
+            || self.color_grading
+            || self.detail
+            || self.lut
+            || self.masks
+            || self.lens
             || self.crop
     }
 }
@@ -120,11 +151,27 @@ pub struct Preset {
     #[serde(default)]
     pub vignette_grain: Option<VignetteGrainAdjustment>,
     #[serde(default)]
+    pub color_grading: Option<ColorGradingAdjustment>,
+    #[serde(default)]
+    pub detail: Option<DetailAdjustment>,
+    #[serde(default)]
+    pub lut: Option<LutAdjustment>,
+    #[serde(default)]
+    pub masks: Option<Vec<MaskLayer>>,
+    #[serde(default)]
+    pub lens: Option<LensAdjustment>,
+    #[serde(default)]
     pub crop: Option<CropAdjustment>,
 }
 
 fn default_schema_version() -> u32 {
     PRESET_SCHEMA_VERSION
+}
+
+impl Default for Preset {
+    fn default() -> Self {
+        Self::new("", "")
+    }
 }
 
 impl Preset {
@@ -143,6 +190,11 @@ impl Preset {
             hsl: None,
             vibrance_saturation: None,
             vignette_grain: None,
+            color_grading: None,
+            detail: None,
+            lut: None,
+            masks: None,
+            lens: None,
             crop: None,
         }
     }
@@ -200,6 +252,31 @@ impl Preset {
             } else {
                 None
             },
+            color_grading: if mask.color_grading {
+                Some(stack.color_grading.clone())
+            } else {
+                None
+            },
+            detail: if mask.detail {
+                Some(stack.detail.clone())
+            } else {
+                None
+            },
+            lut: if mask.lut {
+                Some(stack.lut.clone())
+            } else {
+                None
+            },
+            masks: if mask.masks {
+                Some(stack.masks.clone())
+            } else {
+                None
+            },
+            lens: if mask.lens {
+                Some(stack.lens.clone())
+            } else {
+                None
+            },
             crop: if mask.crop {
                 Some(stack.crop.clone())
             } else {
@@ -233,6 +310,21 @@ impl Preset {
         }
         if let Some(vg) = &self.vignette_grain {
             stack.vignette_grain = vg.clone();
+        }
+        if let Some(cg) = &self.color_grading {
+            stack.color_grading = cg.clone();
+        }
+        if let Some(det) = &self.detail {
+            stack.detail = det.clone();
+        }
+        if let Some(lut) = &self.lut {
+            stack.lut = lut.clone();
+        }
+        if let Some(masks) = &self.masks {
+            stack.masks = masks.clone();
+        }
+        if let Some(lens) = &self.lens {
+            stack.lens = lens.clone();
         }
         if let Some(crop) = &self.crop {
             stack.crop = crop.clone();
@@ -348,6 +440,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 2. Vivid (Punchy colors, elevated contrast)
         Preset {
@@ -381,6 +474,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 3. Matte (Lifted blacks, soft highlight rolloff)
         Preset {
@@ -415,6 +509,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 4. Black & White (Desaturated with punchy tonal contrast)
         Preset {
@@ -458,6 +553,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 5. Warm Film (Golden warmth, lifted shadows)
         Preset {
@@ -502,6 +598,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 6. Cool Cinematic (Teal shadows, cool mood)
         Preset {
@@ -546,6 +643,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 7. Punchy Contrast (High clarity and dynamic range)
         Preset {
@@ -580,6 +678,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
         // 8. Moody Landscape (Deep foliage and sky)
         Preset {
@@ -615,6 +714,7 @@ pub fn built_in_presets() -> Vec<Preset> {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         },
     ]
 }
@@ -750,6 +850,7 @@ mod tests {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         };
 
         preset.apply_to(&mut stack);
@@ -771,14 +872,8 @@ mod tests {
 
         let mask = PresetGroupMask {
             white_balance: true,
-            exposure: false,
-            highlights_shadows: false,
             contrast: true,
-            tone_curve: false,
-            hsl: false,
-            vibrance_saturation: false,
-            vignette_grain: false,
-            crop: false,
+            ..PresetGroupMask::none()
         };
 
         let preset = Preset::from_stack("custom_1", "My Preset", &stack, mask);
@@ -812,6 +907,7 @@ mod tests {
             vibrance_saturation: None,
             vignette_grain: None,
             crop: None,
+            ..Default::default()
         };
 
         let saved_path = save_user_preset(&preset, &temp_dir).expect("Save failed");

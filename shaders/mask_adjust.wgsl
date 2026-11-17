@@ -25,6 +25,8 @@ struct MaskGpuEntry {
     adj0: vec4<f32>,
     // xyz = wb gains, w = saturation (-1..1)
     adj1: vec4<f32>,
+    // x = luma_min (0..1), y = luma_max (0..1), z = smoothness (0.01..1), w = reserved
+    luma: vec4<f32>,
 };
 
 struct MaskUniforms {
@@ -38,6 +40,18 @@ struct MaskUniforms {
 
 @group(0) @binding(0) var t_input: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> u_params: MaskUniforms;
+
+fn compute_luma_range_weight(rgb: vec3<f32>, luma_params: vec4<f32>) -> f32 {
+    if (luma_params.x <= 0.001 && luma_params.y >= 0.999) {
+        return 1.0;
+    }
+    let lum = clamp(dot(max(rgb, vec3<f32>(0.0)), vec3<f32>(0.2627, 0.6780, 0.0593)), 0.0, 1.0);
+    let p_lum = pow(lum, 0.45);
+    let s = max(luma_params.z, 0.01);
+    let lo = select(smoothstep(luma_params.x - s, luma_params.x + s, p_lum), 1.0, luma_params.x <= 0.001);
+    let hi = select(1.0 - smoothstep(luma_params.y - s, luma_params.y + s, p_lum), 1.0, luma_params.y >= 0.999);
+    return clamp(lo * hi, 0.0, 1.0);
+}
 
 fn compute_mask_weight(uv: vec2<f32>, m: MaskGpuEntry) -> f32 {
     if (m.geom0.w < 0.5) {
@@ -116,7 +130,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = min(u_params.count, 8u);
     for (var i: u32 = 0u; i < n; i = i + 1u) {
         let m = u_params.masks[i];
-        let w = compute_mask_weight(global_uv, m);
+        let w = compute_mask_weight(global_uv, m) * compute_luma_range_weight(rgb, m.luma);
         if (w > 0.0005) {
             let adjusted = apply_local_adjustments(rgb, m);
             rgb = mix(rgb, adjusted, w);

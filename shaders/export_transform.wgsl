@@ -59,6 +59,17 @@ fn linear_to_adobe(x: f32) -> f32 {
     return pow(clamp(x, 0.0, 1.0), 1.0 / 2.19921875);
 }
 
+fn soft_highlight_rolloff(rgb: vec3<f32>) -> vec3<f32> {
+    let c = max(rgb, vec3<f32>(0.0));
+    let peak = max(c.r, max(c.g, c.b));
+    if (peak <= 0.85) {
+        return c;
+    }
+    let excess = peak - 0.85;
+    let compressed = 0.85 + (0.15 * excess) / (excess + 0.15);
+    return c * (compressed / peak);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let dims = vec2<f32>(textureDimensions(t_input));
@@ -68,7 +79,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var target_rgb: vec3<f32>;
     if (u_params.color_space == 1u) {
         // Display P3: P3 primaries + sRGB transfer curve
-        let lin_p3 = clamp(M_REC2020_TO_DISPLAY_P3 * color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        let lin_p3 = clamp(soft_highlight_rolloff(M_REC2020_TO_DISPLAY_P3 * color.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
         target_rgb = vec3<f32>(
             linear_to_srgb(lin_p3.r),
             linear_to_srgb(lin_p3.g),
@@ -76,7 +87,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
     } else if (u_params.color_space == 2u) {
         // Adobe RGB (1998): Adobe RGB primaries + pure gamma 2.2 curve
-        let lin_adobe = clamp(M_REC2020_TO_ADOBE_RGB * color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        let lin_adobe = clamp(soft_highlight_rolloff(M_REC2020_TO_ADOBE_RGB * color.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
         target_rgb = vec3<f32>(
             linear_to_adobe(lin_adobe.r),
             linear_to_adobe(lin_adobe.g),
@@ -84,7 +95,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         );
     } else {
         // sRGB: Rec.709 primaries + sRGB transfer curve
-        let lin_srgb = clamp(M_REC2020_TO_SRGB * color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        let lin_srgb = clamp(soft_highlight_rolloff(M_REC2020_TO_SRGB * color.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
         target_rgb = vec3<f32>(
             linear_to_srgb(lin_srgb.r),
             linear_to_srgb(lin_srgb.g),

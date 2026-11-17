@@ -21,6 +21,7 @@ pub const LUT3D_SHADER_SRC: &str = include_str!("../../../shaders/lut3d.wgsl");
 pub const MASK_ADJUST_SHADER_SRC: &str = include_str!("../../../shaders/mask_adjust.wgsl");
 pub const EXPORT_TRANSFORM_SHADER_SRC: &str =
     include_str!("../../../shaders/export_transform.wgsl");
+pub const LENS_SHADER_SRC: &str = include_str!("../../../shaders/lens.wgsl");
 
 /// GPU texture container for an image in linear working space.
 pub struct GpuImage {
@@ -227,6 +228,7 @@ pub struct MaskGpuEntry {
     pub geom1: [f32; 4],
     pub adj0: [f32; 4],
     pub adj1: [f32; 4],
+    pub luma: [f32; 4],
 }
 
 #[repr(C)]
@@ -248,6 +250,21 @@ pub struct HslUniforms {
     pub _pad0: u32,
     pub _pad1: u32,
     pub _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct LensUniforms {
+    pub distortion: f32,
+    pub ca_red_cyan: f32,
+    pub ca_blue_yellow: f32,
+    pub vignette: f32,
+    pub enabled: u32,
+    pub perspective_v: f32,
+    pub perspective_h: f32,
+    pub _pad2: u32,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
 }
 
 // ----------------------------------------------------------------------------
@@ -424,7 +441,7 @@ pub struct DisplayGeometryUniforms {
     pub crop_enabled: u32,
     pub show_shadow_clipping: u32,
     pub show_highlight_clipping: u32,
-    pub _pad2: u32,
+    pub proof_flags: u32,
 }
 
 impl Default for DisplayGeometryUniforms {
@@ -441,7 +458,7 @@ impl Default for DisplayGeometryUniforms {
             crop_enabled: 0,
             show_shadow_clipping: 0,
             show_highlight_clipping: 0,
-            _pad2: 0,
+            proof_flags: 0,
         }
     }
 }
@@ -816,6 +833,30 @@ fn f32_to_f16_bits(val: f32) -> u16 {
     sign | ((new_exp as u16) << 10) | ((frac >> 13) as u16)
 }
 
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let frac = (bits & 0x03ff) as u32;
+
+    if exp == 0 {
+        if frac == 0 {
+            return f32::from_bits(sign);
+        }
+        let mut e = 127 - 14;
+        let mut f = frac;
+        while (f & 0x0400) == 0 {
+            f <<= 1;
+            e -= 1;
+        }
+        f &= 0x03ff;
+        return f32::from_bits(sign | (e << 23) | (f << 13));
+    }
+    if exp == 31 {
+        return f32::from_bits(sign | 0x7f80_0000 | (frac << 13));
+    }
+    f32::from_bits(sign | ((exp + 127 - 15) << 23) | (frac << 13))
+}
+
 impl Lut3DPass {
     fn create_3d_texture(
         device: &wgpu::Device,
@@ -1131,6 +1172,7 @@ impl Lut3DPass {
 // ----------------------------------------------------------------------------
 
 pub struct EditPipeline {
+    lens_stage: StagePass<LensUniforms>,
     white_balance_stage: StagePass<WhiteBalanceUniforms>,
     exposure_stage: StagePass<ExposureUniforms>,
     highlights_shadows_stage: StagePass<HighlightsShadowsUniforms>,
@@ -1145,6 +1187,7 @@ pub struct EditPipeline {
     mask_stage: StagePass<MaskUniforms>,
     display_pipeline: DisplayPipeline,
     export_display_pipeline: Option<ExportDisplayPipeline>,
+    export_display_pipeline_16f: Option<ExportDisplayPipeline>,
 
     // Ping-pong intermediate linear working textures
     ping_texture: Option<wgpu::Texture>,
@@ -1157,6 +1200,25 @@ pub struct EditPipeline {
 impl EditPipeline {
     pub fn new(device: &wgpu::Device, display_format: wgpu::TextureFormat) -> Self {
         let working_format = wgpu::TextureFormat::Rgba32Float;
+
+        let lens_stage = StagePass::new(
+            device,
+            "lens_stage",
+            LENS_SHADER_SRC,
+            LensUniforms {
+                distortion: 0.0,
+                ca_red_cyan: 0.0,
+                ca_blue_yellow: 0.0,
+                vignette: 0.0,
+                enabled: 1,
+                perspective_v: 0.0,
+                perspective_h: 0.0,
+                _pad2: 0,
+                uv_offset: [0.0, 0.0],
+                uv_scale: [1.0, 1.0],
+            },
+            working_format,
+        );
 
         let white_balance_stage = StagePass::new(
             device,
@@ -1334,6 +1396,7 @@ impl EditPipeline {
                     geom1: [0.0; 4],
                     adj0: [1.0, 1.0, 0.0, 0.0],
                     adj1: [1.0, 1.0, 1.0, 0.0],
+                    luma: [0.0, 1.0, 0.15, 0.0],
                 }; 8],
                 count: 0,
                 _pad0: 0,
@@ -1347,6 +1410,7 @@ impl EditPipeline {
         let display_pipeline = DisplayPipeline::new(device, display_format);
 
         Self {
+            lens_stage,
             white_balance_stage,
             exposure_stage,
             highlights_shadows_stage,
@@ -1361,6 +1425,7 @@ impl EditPipeline {
             mask_stage,
             display_pipeline,
             export_display_pipeline: None,
+            export_display_pipeline_16f: None,
             ping_texture: None,
             ping_view: None,
             pong_texture: None,
@@ -1420,6 +1485,21 @@ impl EditPipeline {
         edit_stack: &EditStack,
         uv_rect: [f32; 4],
     ) {
+        self.lens_stage.update_uniform(
+            queue,
+            &LensUniforms {
+                distortion: edit_stack.lens.distortion,
+                ca_red_cyan: edit_stack.lens.ca_red_cyan,
+                ca_blue_yellow: edit_stack.lens.ca_blue_yellow,
+                vignette: edit_stack.lens.vignette,
+                enabled: if edit_stack.lens.enabled { 1 } else { 0 },
+                perspective_v: edit_stack.lens.perspective_v,
+                perspective_h: edit_stack.lens.perspective_h,
+                _pad2: 0,
+                uv_offset: [uv_rect[0], uv_rect[1]],
+                uv_scale: [uv_rect[2], uv_rect[3]],
+            },
+        );
         let wb_gains = beam_core::color::white_balance_gains(
             edit_stack.white_balance.temperature,
             edit_stack.white_balance.tint,
@@ -1614,6 +1694,7 @@ impl EditPipeline {
             geom1: [0.0; 4],
             adj0: [1.0, 1.0, 0.0, 0.0],
             adj1: [1.0, 1.0, 1.0, 0.0],
+            luma: [0.0, 1.0, 0.15, 0.0],
         }; 8];
         let mask_count = edit_stack.masks.len().min(8);
         for (i, m) in edit_stack.masks.iter().take(8).enumerate() {
@@ -1650,6 +1731,7 @@ impl EditPipeline {
                     m.shadows / 100.0,
                 ],
                 adj1: [wb_gains[0], wb_gains[1], wb_gains[2], m.saturation / 100.0],
+                luma: [m.luma_min, m.luma_max, m.luma_smoothness, 0.0],
             };
         }
         self.mask_stage.update_uniform(
@@ -1665,67 +1747,117 @@ impl EditPipeline {
         );
     }
 
-    /// Execute intermediate shader stages. Returns `true` if final output is in `pong`, `false` if in `ping`.
+    /// Execute active intermediate shader stages.
+    /// Returns `None` if all stages were no-op (use `input.view` directly),
+    /// `Some(true)` if final output is in `pong`, or `Some(false)` if in `ping`.
     fn render_intermediate_stages(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input: &GpuImage,
-    ) -> bool {
+        edit_stack: &EditStack,
+    ) -> Option<bool> {
         let ping = self.ping_view.as_ref().unwrap();
         let pong = self.pong_view.as_ref().unwrap();
+
+        let lens_active = edit_stack.lens.enabled
+            && (edit_stack.lens.distortion.abs() >= 1e-4
+                || edit_stack.lens.ca_red_cyan.abs() >= 1e-4
+                || edit_stack.lens.ca_blue_yellow.abs() >= 1e-4
+                || edit_stack.lens.vignette.abs() >= 1e-4
+                || edit_stack.lens.perspective_v.abs() >= 1e-4
+                || edit_stack.lens.perspective_h.abs() >= 1e-4);
+        let wb_active = edit_stack.white_balance.enabled
+            && (edit_stack.white_balance.temperature.abs() >= 1e-4
+                || edit_stack.white_balance.tint.abs() >= 1e-4);
+        let exp_active = edit_stack.exposure.enabled && edit_stack.exposure.ev.abs() >= 1e-4;
+        let hs_active = edit_stack.highlights_shadows.enabled
+            && (edit_stack.highlights_shadows.highlights.abs() >= 1e-4
+                || edit_stack.highlights_shadows.shadows.abs() >= 1e-4
+                || edit_stack.highlights_shadows.whites.abs() >= 1e-4
+                || edit_stack.highlights_shadows.blacks.abs() >= 1e-4);
+        let contrast_active =
+            edit_stack.contrast.enabled && edit_stack.contrast.contrast.abs() >= 1e-4;
+        let tc_active = edit_stack.tone_curve.enabled
+            && edit_stack.tone_curve != beam_core::sidecar::ToneCurveAdjustment::default();
+        let hsl_active = edit_stack.hsl.enabled
+            && edit_stack.hsl != beam_core::sidecar::HslAdjustment::default();
+        let vs_active = edit_stack.vibrance_saturation.enabled
+            && (edit_stack.vibrance_saturation.vibrance.abs() >= 1e-4
+                || edit_stack.vibrance_saturation.saturation.abs() >= 1e-4);
+        let cg_active = edit_stack.color_grading.enabled
+            && edit_stack.color_grading != beam_core::sidecar::ColorGradingAdjustment::default();
+        let detail_active = edit_stack.detail.enabled
+            && (edit_stack.detail.clarity.abs() >= 1e-4
+                || edit_stack.detail.dehaze.abs() >= 1e-4
+                || edit_stack.detail.sharpening >= 1e-4
+                || edit_stack.detail.noise_reduction_luma >= 1e-4
+                || edit_stack.detail.noise_reduction_color >= 1e-4);
+        let lut_active = edit_stack.lut.enabled
+            && edit_stack.lut.path.is_some()
+            && edit_stack.lut.intensity >= 1e-4;
+        let vg_active = edit_stack.vignette_grain.enabled
+            && (edit_stack.vignette_grain.vignette_amount.abs() >= 1e-4
+                || edit_stack.vignette_grain.grain_amount >= 1e-4);
+        let mask_active = edit_stack.masks.iter().any(|m| m.enabled);
+
+        if !(lens_active
+            || wb_active
+            || exp_active
+            || hs_active
+            || contrast_active
+            || tc_active
+            || hsl_active
+            || vs_active
+            || cg_active
+            || detail_active
+            || lut_active
+            || vg_active
+            || mask_active)
+        {
+            return None;
+        }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("edit_pipeline_encoder"),
         });
 
-        // Stage 1: White balance (input -> ping)
-        self.white_balance_stage
-            .render(device, &mut encoder, &input.view, ping);
+        let mut cur_is_pong: Option<bool> = None;
 
-        // Stage 2: Exposure (ping -> pong)
-        self.exposure_stage.render(device, &mut encoder, ping, pong);
+        macro_rules! run_if {
+            ($cond:expr, $stage:expr) => {
+                if $cond {
+                    let src = match cur_is_pong {
+                        None => &input.view,
+                        Some(false) => ping,
+                        Some(true) => pong,
+                    };
+                    let dst_is_pong = !cur_is_pong.unwrap_or(true);
+                    let dst = if dst_is_pong { pong } else { ping };
+                    $stage.render(device, &mut encoder, src, dst);
+                    cur_is_pong = Some(dst_is_pong);
+                }
+            };
+        }
 
-        // Stage 3: Highlights, Shadows, Whites & Blacks (pong -> ping)
-        self.highlights_shadows_stage
-            .render(device, &mut encoder, pong, ping);
-
-        // Stage 4: Contrast (ping -> pong)
-        self.contrast_stage.render(device, &mut encoder, ping, pong);
-
-        // Stage 5: Tone Curve (pong -> ping)
-        self.tone_curve_stage
-            .render(device, &mut encoder, pong, ping);
-
-        // Stage 6: HSL (ping -> pong)
-        self.hsl_stage.render(device, &mut encoder, ping, pong);
-
-        // Stage 7: Vibrance & Saturation (pong -> ping)
-        self.vibrance_saturation_stage
-            .render(device, &mut encoder, pong, ping);
-
-        // Stage 8: Color Grading (ping -> pong)
-        self.color_grading_stage
-            .render(device, &mut encoder, ping, pong);
-
-        // Stage 9: Detail (pong -> ping)
-        self.detail_stage.render(device, &mut encoder, pong, ping);
-
-        // Stage 10: 3D LUT (ping -> pong)
-        self.lut3d_stage.render(device, &mut encoder, ping, pong);
-
-        // Stage 11: Vignette & Grain (pong -> ping)
-        self.vignette_grain_stage
-            .render(device, &mut encoder, pong, ping);
-
-        // Stage 12: Parametric Masks (ping -> pong)
-        self.mask_stage.render(device, &mut encoder, ping, pong);
+        run_if!(lens_active, self.lens_stage);
+        run_if!(wb_active, self.white_balance_stage);
+        run_if!(exp_active, self.exposure_stage);
+        run_if!(hs_active, self.highlights_shadows_stage);
+        run_if!(contrast_active, self.contrast_stage);
+        run_if!(tc_active, self.tone_curve_stage);
+        run_if!(hsl_active, self.hsl_stage);
+        run_if!(vs_active, self.vibrance_saturation_stage);
+        run_if!(cg_active, self.color_grading_stage);
+        run_if!(detail_active, self.detail_stage);
+        run_if!(lut_active, self.lut3d_stage);
+        run_if!(vg_active, self.vignette_grain_stage);
+        run_if!(mask_active, self.mask_stage);
 
         queue.submit(std::iter::once(encoder.finish()));
-        true
+        cur_is_pong
     }
 
-    /// Execute the full edit stack from input texture to output display target.
     /// Execute the full edit stack from input texture to output display target.
     pub fn render(
         &mut self,
@@ -1773,15 +1905,59 @@ impl EditPipeline {
         show_shadow_clipping: bool,
         show_highlight_clipping: bool,
     ) {
+        self.render_with_proof_options(
+            device,
+            queue,
+            input,
+            target_view,
+            edit_stack,
+            crop_mode_active,
+            show_shadow_clipping,
+            show_highlight_clipping,
+            None,
+            false,
+            false,
+        );
+    }
+
+    /// Execute the full edit stack with clipping overlays, soft proofing, gamut warning, and focus peaking.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_proof_options(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        target_view: &wgpu::TextureView,
+        edit_stack: &EditStack,
+        crop_mode_active: bool,
+        show_shadow_clipping: bool,
+        show_highlight_clipping: bool,
+        soft_proof_space: Option<beam_core::ExportColorSpace>,
+        show_gamut_warning: bool,
+        show_focus_peaking: bool,
+    ) {
         self.ensure_intermediate_textures(device, input.width, input.height);
         self.update_uniforms(device, queue, edit_stack);
-        let in_pong = self.render_intermediate_stages(device, queue, input);
+        let stage_out = self.render_intermediate_stages(device, queue, input, edit_stack);
 
-        let intermediate_view = if in_pong {
-            self.pong_view.as_ref().unwrap()
-        } else {
-            self.ping_view.as_ref().unwrap()
+        let intermediate_view = match stage_out {
+            None => &input.view,
+            Some(true) => self.pong_view.as_ref().unwrap(),
+            Some(false) => self.ping_view.as_ref().unwrap(),
         };
+
+        let space_bits = match soft_proof_space {
+            None => 0u32,
+            Some(beam_core::ExportColorSpace::Srgb) => 1u32,
+            Some(beam_core::ExportColorSpace::DisplayP3) => 2u32,
+            Some(beam_core::ExportColorSpace::AdobeRgb) => 3u32,
+        };
+        let gamut_bit = if show_gamut_warning && soft_proof_space.is_some() {
+            4u32
+        } else {
+            0u32
+        };
+        let focus_bit = if show_focus_peaking { 8u32 } else { 0u32 };
 
         let crop = &edit_stack.crop;
         let uniforms = DisplayGeometryUniforms {
@@ -1800,7 +1976,7 @@ impl EditPipeline {
             },
             show_shadow_clipping: if show_shadow_clipping { 1 } else { 0 },
             show_highlight_clipping: if show_highlight_clipping { 1 } else { 0 },
-            _pad2: 0,
+            proof_flags: space_bits | gamut_bit | focus_bit,
         };
 
         // Final Stage: Display Transform (intermediate -> target_view)
@@ -1884,14 +2060,18 @@ impl EditPipeline {
 
         self.ensure_intermediate_textures(device, width, height);
         self.update_uniforms_with_uv_rect(device, queue, edit_stack, uv_rect);
-        let in_pong = self.render_intermediate_stages(device, queue, input);
+        let stage_out = self.render_intermediate_stages(device, queue, input, edit_stack);
 
-        let intermediate_view = if in_pong {
-            self.pong_view.as_ref()
-        } else {
-            self.ping_view.as_ref()
-        }
-        .ok_or_else(|| BeamError::GpuPipeline("Intermediate texture view missing".into()))?;
+        let intermediate_view =
+            match stage_out {
+                None => &input.view,
+                Some(true) => self.pong_view.as_ref().ok_or_else(|| {
+                    BeamError::GpuPipeline("Intermediate pong view missing".into())
+                })?,
+                Some(false) => self.ping_view.as_ref().ok_or_else(|| {
+                    BeamError::GpuPipeline("Intermediate ping view missing".into())
+                })?,
+            };
         let cs_val = match color_space {
             beam_core::ExportColorSpace::Srgb => 0u32,
             beam_core::ExportColorSpace::DisplayP3 => 1u32,
@@ -2094,6 +2274,245 @@ impl EditPipeline {
         }
 
         Ok(final_rgba8)
+    }
+
+    fn render_to_rgba16_with_colorspace_and_uv_rect(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        input: &GpuImage,
+        edit_stack: &EditStack,
+        color_space: beam_core::ExportColorSpace,
+        uv_rect: [f32; 4],
+    ) -> Result<Vec<u16>> {
+        let width = input.width;
+        let height = input.height;
+
+        if width == 0 || height == 0 {
+            return Err(BeamError::GpuPipeline(
+                "Cannot render image with zero width or height".into(),
+            ));
+        }
+
+        let max_dim = device.limits().max_texture_dimension_2d;
+        if width > max_dim || height > max_dim {
+            return Err(BeamError::GpuPipeline(format!(
+                "Render dimensions ({width}x{height}) exceed GPU maximum 2D texture limit ({max_dim})"
+            )));
+        }
+
+        let target_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("beam_export_target_texture_16f"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        if self.export_display_pipeline_16f.is_none() {
+            self.export_display_pipeline_16f = Some(ExportDisplayPipeline::new(
+                device,
+                wgpu::TextureFormat::Rgba16Float,
+            ));
+        }
+
+        self.ensure_intermediate_textures(device, width, height);
+        self.update_uniforms_with_uv_rect(device, queue, edit_stack, uv_rect);
+        let stage_out = self.render_intermediate_stages(device, queue, input, edit_stack);
+
+        let intermediate_view =
+            match stage_out {
+                None => &input.view,
+                Some(true) => self.pong_view.as_ref().ok_or_else(|| {
+                    BeamError::GpuPipeline("Intermediate pong view missing".into())
+                })?,
+                Some(false) => self.ping_view.as_ref().ok_or_else(|| {
+                    BeamError::GpuPipeline("Intermediate ping view missing".into())
+                })?,
+            };
+
+        let cs_val = match color_space {
+            beam_core::ExportColorSpace::Srgb => 0u32,
+            beam_core::ExportColorSpace::DisplayP3 => 1u32,
+            beam_core::ExportColorSpace::AdobeRgb => 2u32,
+        };
+        self.export_display_pipeline_16f
+            .as_ref()
+            .ok_or_else(|| BeamError::GpuPipeline("16-bit export display pipeline missing".into()))?
+            .render_to_target(device, queue, intermediate_view, &target_view, cs_val);
+
+        let bytes_per_pixel = 8u32;
+        let unaligned_bytes_per_row = width * bytes_per_pixel;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let bytes_per_row = (unaligned_bytes_per_row + align - 1) & !(align - 1);
+
+        let staging_buffer_size = (bytes_per_row as u64)
+            .checked_mul(height as u64)
+            .ok_or_else(|| {
+                BeamError::GpuPipeline("16-bit staging buffer size overflowed".into())
+            })?;
+
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("beam_export_staging_buffer_16f"),
+            size: staging_buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("beam_export_copy_encoder_16f"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let buffer_slice = staging_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res);
+        });
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        rx.recv()
+            .map_err(|e| BeamError::GpuPipeline(format!("GPU 16-bit readback channel error: {e}")))?
+            .map_err(|e| BeamError::GpuPipeline(format!("GPU 16-bit buffer map error: {e}")))?;
+
+        let mapped_data = buffer_slice
+            .get_mapped_range()
+            .map_err(|e| BeamError::GpuPipeline(format!("GPU 16-bit mapped range error: {e}")))?;
+        let mut out_u16 = Vec::with_capacity((width * height * 4) as usize);
+        for row in 0..height {
+            let row_start = (row * bytes_per_row) as usize;
+            let row_end = row_start + (unaligned_bytes_per_row as usize);
+            let row_bytes = &mapped_data[row_start..row_end];
+            for pair in row_bytes.as_chunks::<2>().0 {
+                let h = u16::from_le_bytes([pair[0], pair[1]]);
+                let v = (f16_bits_to_f32(h).clamp(0.0, 1.0) * 65535.0).round() as u16;
+                out_u16.push(v);
+            }
+        }
+        drop(mapped_data);
+        staging_buffer.unmap();
+        Ok(out_u16)
+    }
+
+    /// Execute the complete edit stack and read back true 16-bit RGBA pixels using halo-padded tiling.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_tiled_to_rgba16(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[f32],
+        edit_stack: &EditStack,
+        color_space: beam_core::ExportColorSpace,
+        max_tile_size: u32,
+    ) -> Result<Vec<u16>> {
+        const TILE_HALO: u32 = 8;
+        let max_tile_size = max_tile_size.max(256);
+
+        if width <= max_tile_size && height <= max_tile_size {
+            let gpu_image = GpuImage::from_rgba32f(device, queue, width, height, data)?;
+            return self.render_to_rgba16_with_colorspace_and_uv_rect(
+                device,
+                queue,
+                &gpu_image,
+                edit_stack,
+                color_space,
+                [0.0, 0.0, 1.0, 1.0],
+            );
+        }
+
+        let mut final_rgba16 = vec![0u16; (width * height * 4) as usize];
+        let tiles_x = width.div_ceil(max_tile_size);
+        let tiles_y = height.div_ceil(max_tile_size);
+
+        for ty in 0..tiles_y {
+            let tile_y = ty * max_tile_size;
+            let tile_h = max_tile_size.min(height - tile_y);
+            let ext_y = tile_y.saturating_sub(TILE_HALO);
+            let ext_bottom = (tile_y + tile_h + TILE_HALO).min(height);
+            let ext_h = ext_bottom - ext_y;
+            let inner_y = tile_y - ext_y;
+
+            for tx in 0..tiles_x {
+                let tile_x = tx * max_tile_size;
+                let tile_w = max_tile_size.min(width - tile_x);
+                let ext_x = tile_x.saturating_sub(TILE_HALO);
+                let ext_right = (tile_x + tile_w + TILE_HALO).min(width);
+                let ext_w = ext_right - ext_x;
+                let inner_x = tile_x - ext_x;
+
+                let mut tile_data = Vec::with_capacity((ext_w * ext_h * 4) as usize);
+                for row in 0..ext_h {
+                    let src_y = ext_y + row;
+                    let src_start = ((src_y * width + ext_x) * 4) as usize;
+                    let src_end = src_start + (ext_w * 4) as usize;
+                    tile_data.extend_from_slice(&data[src_start..src_end]);
+                }
+
+                let tile_gpu_image =
+                    GpuImage::from_rgba32f(device, queue, ext_w, ext_h, &tile_data)?;
+
+                let uv_rect = [
+                    ext_x as f32 / width as f32,
+                    ext_y as f32 / height as f32,
+                    ext_w as f32 / width as f32,
+                    ext_h as f32 / height as f32,
+                ];
+                let tile_rgba16 = self.render_to_rgba16_with_colorspace_and_uv_rect(
+                    device,
+                    queue,
+                    &tile_gpu_image,
+                    edit_stack,
+                    color_space,
+                    uv_rect,
+                )?;
+
+                for row in 0..tile_h {
+                    let dst_y = tile_y + row;
+                    let dst_start = ((dst_y * width + tile_x) * 4) as usize;
+                    let dst_end = dst_start + (tile_w * 4) as usize;
+                    let tile_row_start = (((inner_y + row) * ext_w + inner_x) * 4) as usize;
+                    let tile_row_end = tile_row_start + (tile_w * 4) as usize;
+
+                    final_rgba16[dst_start..dst_end]
+                        .copy_from_slice(&tile_rgba16[tile_row_start..tile_row_end]);
+                }
+            }
+        }
+
+        Ok(final_rgba16)
     }
 }
 
@@ -2705,6 +3124,9 @@ mod tests {
             temperature: 0.0,
             tint: 0.0,
             saturation: 0.0,
+            luma_min: 0.0,
+            luma_max: 1.0,
+            luma_smoothness: 0.15,
         });
 
         let monolithic = pipeline
@@ -2734,6 +3156,386 @@ mod tests {
         assert!(
             max_diff <= 1,
             "Tiled render with detail/vignette/masks must match monolithic render (max_diff={max_diff})"
+        );
+    }
+
+    #[test]
+    fn test_16bit_export_preserves_smooth_gradient() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 64u32;
+        let height = 4u32;
+        let mut input_data = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                // Very subtle 0.20..0.205 linear ramp where 8-bit collapses to ~1-2 levels
+                let v = 0.20 + (x as f32 / (width - 1) as f32) * 0.005;
+                input_data.extend_from_slice(&[v, v, v, 1.0]);
+            }
+        }
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let out16 = pipeline
+            .render_tiled_to_rgba16(
+                &gpu.device,
+                &gpu.queue,
+                width,
+                height,
+                &input_data,
+                &EditStack::default(),
+                beam_core::ExportColorSpace::Srgb,
+                256,
+            )
+            .expect("16-bit render failed");
+
+        let mut unique_vals = std::collections::BTreeSet::new();
+        for x in 0..width {
+            unique_vals.insert(out16[(x * 4) as usize]);
+        }
+        assert!(
+            unique_vals.len() > 16,
+            "16-bit readback must preserve subtle tonal steps (found only {} unique values)",
+            unique_vals.len()
+        );
+    }
+
+    #[test]
+    fn test_lens_correction_vignette_and_distortion() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 32u32;
+        let height = 32u32;
+        let input_data = [0.2f32, 0.2, 0.2, 1.0].repeat((width * height) as usize);
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut stack = EditStack::default();
+        stack.lens.vignette = 60.0;
+
+        let out = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack)
+            .expect("lens render failed");
+
+        let center_idx = ((16 * width + 16) * 4) as usize;
+        let corner_idx = 0usize;
+        assert!(
+            out[corner_idx] > out[center_idx] + 15,
+            "Positive lens vignette correction must brighten corners (corner={}, center={})",
+            out[corner_idx],
+            out[center_idx]
+        );
+    }
+
+    #[test]
+    fn test_soft_proofing_gamut_warning() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 8u32;
+        let height = 8u32;
+        // Pure Rec.2020 saturated green (100% inside Rec.2020, out-of-gamut for sRGB)
+        let input_data = [0.0f32, 0.7, 0.0, 1.0].repeat((width * height) as usize);
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let stack = EditStack::default();
+
+        let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("soft_proof_test_tex"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Render with sRGB soft proof + gamut warning -> should highlight magenta (0.95, 0.20, 0.85)
+        pipeline.render_with_proof_options(
+            &gpu.device,
+            &gpu.queue,
+            &img,
+            &view,
+            &stack,
+            false,
+            false,
+            false,
+            Some(beam_core::ExportColorSpace::Srgb),
+            true,
+            false,
+        );
+
+        let bytes_per_row = 256u32;
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("soft_proof_readback"),
+            size: (bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range().unwrap();
+        let r = data[0];
+        let g = data[1];
+        let b = data[2];
+        drop(data);
+        readback.unmap();
+
+        assert!(
+            r > 200 && g < 100 && b > 180,
+            "Out-of-gamut Rec.2020 green under sRGB soft proof must show magenta gamut warning (got RGB={r},{g},{b})"
+        );
+    }
+
+    #[test]
+    fn test_lens_perspective_keystone_correction() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 32u32;
+        let height = 32u32;
+        let input_data = [0.4f32, 0.4, 0.4, 1.0].repeat((width * height) as usize);
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut stack = EditStack::default();
+        stack.lens.perspective_v = 80.0;
+
+        let out = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack)
+            .expect("perspective render failed");
+
+        let top_corner_idx = 0usize;
+        let center_idx = ((16 * width + 16) * 4) as usize;
+        assert_eq!(
+            out[top_corner_idx], 0,
+            "Positive vertical perspective must pull top corners out-of-bounds to black"
+        );
+        assert!(
+            out[center_idx] > 100,
+            "Center pixel must remain intact under perspective warp (got {})",
+            out[center_idx]
+        );
+    }
+
+    #[test]
+    fn test_mask_luminance_range_restriction() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 8u32;
+        let height = 8u32;
+        // Left half: dark (0.02), Right half: bright (0.50)
+        let mut input_data = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                let v = if x < width / 2 { 0.02 } else { 0.50 };
+                input_data.extend_from_slice(&[v, v, v, 1.0]);
+            }
+        }
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut stack_unmasked = EditStack::default();
+        let baseline = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack_unmasked)
+            .expect("baseline render failed");
+
+        // Radial mask covering the entire image, restricted to highlights (luma_min = 0.55)
+        let mut mask = beam_core::sidecar::MaskLayer::new_radial(1, "Highlights".to_string());
+        if let beam_core::sidecar::MaskShape::RadialGradient { radius, .. } = &mut mask.shape {
+            *radius = [2.0, 2.0];
+        }
+        mask.exposure = 1.5;
+        mask.luma_min = 0.55;
+        mask.luma_max = 1.0;
+        mask.luma_smoothness = 0.08;
+        stack_unmasked.masks.push(mask);
+
+        let masked = pipeline
+            .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack_unmasked)
+            .expect("luma mask render failed");
+
+        let dark_idx = 0usize;
+        let bright_idx = ((width - 1) * 4) as usize;
+        assert!(
+            (masked[dark_idx] as i32 - baseline[dark_idx] as i32).abs() <= 1,
+            "Dark pixel should be unaffected by highlight-restricted mask (baseline={}, masked={})",
+            baseline[dark_idx],
+            masked[dark_idx]
+        );
+        assert!(
+            masked[bright_idx] > baseline[bright_idx] + 20,
+            "Bright pixel should be brightened by highlight-restricted mask (baseline={}, masked={})",
+            baseline[bright_idx],
+            masked[bright_idx]
+        );
+    }
+
+    #[test]
+    fn test_focus_peaking_overlay() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+
+        let width = 16u32;
+        let height = 16u32;
+        // Sharp vertical edge at x = 8 (left dark 0.02, right bright 0.80)
+        let mut input_data = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                let v = if x < 8 { 0.02 } else { 0.80 };
+                input_data.extend_from_slice(&[v, v, v, 1.0]);
+            }
+        }
+        let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
+            .expect("Failed to create input image");
+
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let stack = EditStack::default();
+
+        let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("focus_peaking_test_tex"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        pipeline.render_with_proof_options(
+            &gpu.device,
+            &gpu.queue,
+            &img,
+            &view,
+            &stack,
+            false,
+            false,
+            false,
+            None,
+            false,
+            true,
+        );
+
+        let bytes_per_row = 256u32;
+        let readback = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("focus_peaking_readback"),
+            size: (bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        rx.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range().unwrap();
+        let row8_offset = (8 * bytes_per_row) as usize;
+        // Flat left pixel at x=1 should stay dark grey (not green)
+        let flat_r = data[row8_offset + 4];
+        let flat_g = data[row8_offset + 5];
+        // Edge pixel at x=8 should be highlighted green (0.15, 0.95, 0.45)
+        let edge_r = data[row8_offset + 8 * 4];
+        let edge_g = data[row8_offset + 8 * 4 + 1];
+        drop(data);
+        readback.unmap();
+
+        assert!(
+            flat_g < 100 && (flat_r as i32 - flat_g as i32).abs() <= 2,
+            "Flat dark region must not trigger focus peaking (got R={flat_r}, G={flat_g})"
+        );
+        assert!(
+            edge_g > 200 && edge_r < 80,
+            "Sharp step edge must trigger green focus peaking overlay (got R={edge_r}, G={edge_g})"
         );
     }
 }

@@ -1568,11 +1568,18 @@ pub fn generate_thumbnail_with_edits(
         .map(|s| s != &EditStack::default())
         .unwrap_or(false);
     if !has_edits && is_raster_file(path) {
-        if let Ok(img) = image::open(path) {
-            let thumb = img.thumbnail(max_dim, max_dim).to_rgba8();
-            let exif = extract_exif_metadata(path);
-            let oriented = apply_orientation(thumb, exif.orientation);
-            return Ok(oriented);
+        if let Ok(mut reader) = image::ImageReader::open(path) {
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+            limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+            limits.max_alloc = Some(MAX_IMAGE_DECODE_ALLOC);
+            reader.limits(limits);
+            if let Ok(img) = reader.decode() {
+                let thumb = img.thumbnail(max_dim, max_dim).to_rgba8();
+                let exif = extract_exif_metadata(path);
+                let oriented = apply_orientation(thumb, exif.orientation);
+                return Ok(oriented);
+            }
         }
     }
 
@@ -1623,21 +1630,27 @@ pub fn generate_thumbnail(path: &Path, max_dim: u32) -> Result<image::RgbaImage>
 /// Compute persistent thumbnail path in cache directory using hash of canonical path,
 /// modification time, file size, and sidecar modification time/size for robust cache invalidation.
 pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    #[inline]
+    fn fnv1a_update(state: &mut u64, bytes: &[u8]) {
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+        for &b in bytes {
+            *state ^= b as u64;
+            *state = state.wrapping_mul(FNV_PRIME);
+        }
+    }
 
-    let mut hasher = DefaultHasher::new();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let canonical = image_path
         .canonicalize()
         .unwrap_or_else(|_| image_path.to_path_buf());
-    canonical.to_string_lossy().hash(&mut hasher);
+    fnv1a_update(&mut hash, canonical.to_string_lossy().as_bytes());
 
     // Hash source file size and modification time
     if let Ok(meta) = std::fs::metadata(image_path) {
-        meta.len().hash(&mut hasher);
+        fnv1a_update(&mut hash, &meta.len().to_le_bytes());
         if let Ok(mtime) = meta.modified() {
             if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
-                dur.as_millis().hash(&mut hasher);
+                fnv1a_update(&mut hash, &dur.as_millis().to_le_bytes());
             }
         }
     }
@@ -1646,15 +1659,14 @@ pub fn thumbnail_cache_path(image_path: &Path, cache_dir: &Path) -> PathBuf {
     let sidecar_p =
         Sidecar::find_sidecar_for(image_path).unwrap_or_else(|| Sidecar::path_for(image_path));
     if let Ok(sc_meta) = std::fs::metadata(&sidecar_p) {
-        sc_meta.len().hash(&mut hasher);
+        fnv1a_update(&mut hash, &sc_meta.len().to_le_bytes());
         if let Ok(sc_mtime) = sc_meta.modified() {
             if let Ok(dur) = sc_mtime.duration_since(std::time::UNIX_EPOCH) {
-                dur.as_millis().hash(&mut hasher);
+                fnv1a_update(&mut hash, &dur.as_millis().to_le_bytes());
             }
         }
     }
 
-    let hash = hasher.finish();
     let filename = image_path
         .file_name()
         .and_then(|s| s.to_str())

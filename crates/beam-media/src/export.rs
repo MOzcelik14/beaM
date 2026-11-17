@@ -858,6 +858,126 @@ pub struct BatchProgress {
     pub error: Option<String>,
 }
 
+fn export_tiff16_decoded_image(
+    gpu: &HeadlessGpu,
+    pipeline: &mut EditPipeline,
+    decoded: &crate::decoder::DecodedImage,
+    edit_stack: &EditStack,
+    output_path: &Path,
+    config: &ExportConfig,
+) -> Result<PathBuf> {
+    let rgba_u16 = pipeline.render_tiled_to_rgba16(
+        &gpu.device,
+        &gpu.queue,
+        decoded.width,
+        decoded.height,
+        &decoded.data,
+        edit_stack,
+        config.color_space,
+        2048,
+    )?;
+
+    let mut img16: image::ImageBuffer<image::Rgba<u16>, Vec<u16>> =
+        image::ImageBuffer::from_raw(decoded.width, decoded.height, rgba_u16).ok_or_else(|| {
+            BeamError::ImageProcessing("Failed to construct 16-bit RGBA image buffer".into())
+        })?;
+
+    if edit_stack.crop.is_active() {
+        let crop = &edit_stack.crop;
+        match crop.rotation % 360 {
+            90 => img16 = image::imageops::rotate90(&img16),
+            180 => img16 = image::imageops::rotate180(&img16),
+            270 => img16 = image::imageops::rotate270(&img16),
+            _ => {}
+        }
+        if crop.flip_h {
+            img16 = image::imageops::flip_horizontal(&img16);
+        }
+        if crop.flip_v {
+            img16 = image::imageops::flip_vertical(&img16);
+        }
+        if crop.enabled {
+            let (w, h) = img16.dimensions();
+            let x =
+                ((crop.x.clamp(0.0, 0.99) * (w as f32)).round() as u32).min(w.saturating_sub(1));
+            let y =
+                ((crop.y.clamp(0.0, 0.99) * (h as f32)).round() as u32).min(h.saturating_sub(1));
+            let cw = ((crop.width.clamp(0.01, 1.0) * (w as f32)).round() as u32)
+                .max(1)
+                .min(w.saturating_sub(x));
+            let ch = ((crop.height.clamp(0.01, 1.0) * (h as f32)).round() as u32)
+                .max(1)
+                .min(h.saturating_sub(y));
+            img16 = image::imageops::crop_imm(&img16, x, y, cw, ch).to_image();
+        }
+    }
+
+    let (target_w, target_h) =
+        calculate_target_dimensions(img16.width(), img16.height(), config.resize);
+    if target_w != img16.width() || target_h != img16.height() {
+        img16 = image::imageops::resize(
+            &img16,
+            target_w,
+            target_h,
+            image::imageops::FilterType::Lanczos3,
+        );
+    }
+
+    let final_w = img16.width();
+    let final_h = img16.height();
+    let mut rgb16_bytes = Vec::with_capacity((final_w as usize) * (final_h as usize) * 6);
+    for p in img16.pixels() {
+        for c in 0..3 {
+            rgb16_bytes.extend_from_slice(&p[c].to_ne_bytes());
+        }
+    }
+
+    let pid = std::process::id();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = match output_path.file_name() {
+        Some(name) => output_path.with_file_name(format!(
+            "{}.{pid}_{nonce}.tmp.partial",
+            name.to_string_lossy()
+        )),
+        None => output_path.with_extension("tmp.partial"),
+    };
+
+    let write_res = (|| -> Result<()> {
+        let file = std::fs::File::create(&tmp_path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let mut encoder = image::codecs::tiff::TiffEncoder::new(&mut writer);
+        if let Ok(icc) = get_icc_profile_bytes(config.color_space) {
+            let _ = encoder.set_icc_profile(icc);
+        }
+        encoder
+            .write_image(
+                &rgb16_bytes,
+                final_w,
+                final_h,
+                image::ExtendedColorType::Rgb16,
+            )
+            .map_err(|e| BeamError::ImageProcessing(format!("TIFF16 encode error: {e}")))?;
+        Ok(())
+    })();
+
+    match write_res {
+        Ok(()) => {
+            if let Err(e) = std::fs::rename(&tmp_path, output_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(BeamError::Io(e));
+            }
+            Ok(output_path.to_path_buf())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(e)
+        }
+    }
+}
+
 /// Export an already decoded in-memory image through the GPU pipeline and encode to disk.
 pub fn export_decoded_image(
     gpu: &HeadlessGpu,
@@ -870,6 +990,17 @@ pub fn export_decoded_image(
 ) -> Result<PathBuf> {
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+
+    if matches!(config.format, ExportFormat::Tiff16) {
+        return export_tiff16_decoded_image(
+            gpu,
+            pipeline,
+            decoded,
+            edit_stack,
+            output_path,
+            config,
+        );
     }
 
     // 1. Render through GPU pipeline with tiling to ensure bounded VRAM execution

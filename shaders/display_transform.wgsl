@@ -30,7 +30,7 @@ struct DisplayGeometryUniforms {
     crop_enabled: u32,
     show_shadow_clipping: u32,
     show_highlight_clipping: u32,
-    _pad2: u32,
+    proof_flags: u32,
 };
 
 @group(0) @binding(0) var t_input: texture_2d<f32>;
@@ -41,6 +41,30 @@ const M_REC2020_TO_SRGB: mat3x3<f32> = mat3x3<f32>(
     vec3<f32>(1.6604910, -0.1245505, -0.0181508),
     vec3<f32>(-0.5876411, 1.1328999, -0.1005789),
     vec3<f32>(-0.0728499, -0.0083494, 1.1187297)
+);
+
+const M_REC2020_TO_DISPLAY_P3: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(1.3435782, -0.0652975, 0.0028218),
+    vec3<f32>(-0.2821797, 1.0757879, -0.0195985),
+    vec3<f32>(-0.0613986, -0.0104905, 1.0167767)
+);
+
+const M_DISPLAY_P3_TO_SRGB: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(1.2249402, -0.0420569, -0.0196375),
+    vec3<f32>(-0.2249402, 1.0420569, -0.0786361),
+    vec3<f32>(0.0, 0.0, 1.0982736)
+);
+
+const M_REC2020_TO_ADOBE_RGB: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(1.1489381, -0.0695484, -0.0145109),
+    vec3<f32>(-0.1008568, 1.0808862, -0.0806439),
+    vec3<f32>(-0.0480813, -0.0113378, 1.0951548)
+);
+
+const M_ADOBE_RGB_TO_SRGB: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(1.3983556, 0.0, 0.0),
+    vec3<f32>(-0.3983556, 1.0, -0.0429289),
+    vec3<f32>(0.0, 0.0, 1.0429289)
 );
 
 fn linear_to_srgb(x: f32) -> f32 {
@@ -123,9 +147,49 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let clamped_uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
     let color = sample_input_bilinear(clamped_uv, dims);
-    
-    // Convert wide-gamut linear Rec.2020 to linear sRGB
-    let linear_srgb = M_REC2020_TO_SRGB * color.rgb;
+
+    let proof_space = u_geo.proof_flags & 3u;
+    let show_gamut = (u_geo.proof_flags & 4u) != 0u;
+    let show_focus_peaking = (u_geo.proof_flags & 8u) != 0u;
+
+    if (show_focus_peaking) {
+        let step = vec2<f32>(1.0) / max(dims, vec2<f32>(1.0));
+        let luma_w = vec3<f32>(0.2627, 0.6780, 0.0593);
+        let lp = sqrt(clamp(dot(sample_input_bilinear(clamp(clamped_uv + vec2<f32>(step.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)), dims).rgb, luma_w), 0.0, 1.0));
+        let lm = sqrt(clamp(dot(sample_input_bilinear(clamp(clamped_uv - vec2<f32>(step.x, 0.0), vec2<f32>(0.0), vec2<f32>(1.0)), dims).rgb, luma_w), 0.0, 1.0));
+        let up = sqrt(clamp(dot(sample_input_bilinear(clamp(clamped_uv + vec2<f32>(0.0, step.y), vec2<f32>(0.0), vec2<f32>(1.0)), dims).rgb, luma_w), 0.0, 1.0));
+        let um = sqrt(clamp(dot(sample_input_bilinear(clamp(clamped_uv - vec2<f32>(0.0, step.y), vec2<f32>(0.0), vec2<f32>(1.0)), dims).rgb, luma_w), 0.0, 1.0));
+        let grad = length(vec2<f32>(lp - lm, up - um));
+        if (grad > 0.14) {
+            return vec4<f32>(0.15, 0.95, 0.45, 1.0);
+        }
+    }
+
+    var linear_srgb = M_REC2020_TO_SRGB * color.rgb;
+    if (proof_space != 0u) {
+        var proof_lin = linear_srgb;
+        if (proof_space == 2u) {
+            proof_lin = M_REC2020_TO_DISPLAY_P3 * color.rgb;
+        } else if (proof_space == 3u) {
+            proof_lin = M_REC2020_TO_ADOBE_RGB * color.rgb;
+        }
+
+        if (show_gamut && (
+            proof_lin.r < -0.002 || proof_lin.g < -0.002 || proof_lin.b < -0.002 ||
+            proof_lin.r > 1.002 || proof_lin.g > 1.002 || proof_lin.b > 1.002
+        )) {
+            return vec4<f32>(0.95, 0.20, 0.85, 1.0);
+        }
+
+        let proof_clamped = clamp(proof_lin, vec3<f32>(0.0), vec3<f32>(1.0));
+        if (proof_space == 2u) {
+            linear_srgb = M_DISPLAY_P3_TO_SRGB * proof_clamped;
+        } else if (proof_space == 3u) {
+            linear_srgb = M_ADOBE_RGB_TO_SRGB * proof_clamped;
+        } else {
+            linear_srgb = proof_clamped;
+        }
+    }
 
     // Highlight clipping overlay (red) for blown out highlights
     if (u_geo.show_highlight_clipping != 0u) {
@@ -141,8 +205,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
     
+    // Soft hue-preserving highlight rolloff above 0.85 to avoid harsh flat clipping
+    let pos_rgb = max(linear_srgb, vec3<f32>(0.0));
+    let peak = max(pos_rgb.r, max(pos_rgb.g, pos_rgb.b));
+    var rolled = pos_rgb;
+    if (peak > 0.85) {
+        let excess = peak - 0.85;
+        let compressed = 0.85 + (0.15 * excess) / (excess + 0.15);
+        rolled = pos_rgb * (compressed / peak);
+    }
+
     // Clamp to valid gamut range [0.0, 1.0] for SDR display
-    let clamped = clamp(linear_srgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let clamped = clamp(rolled, vec3<f32>(0.0), vec3<f32>(1.0));
     
     // Apply sRGB transfer function (gamma curve)
     let srgb = vec3<f32>(
