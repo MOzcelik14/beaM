@@ -1,5 +1,5 @@
 Name:           beam
-Version:        1.2.5
+Version:        1.2.6
 Release:        1%{?dist}
 Summary:        Professional, non-destructive RAW photo editor and library manager
 License:        GPL-3.0-only

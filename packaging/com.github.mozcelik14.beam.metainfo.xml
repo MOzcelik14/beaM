@@ -50,6 +50,11 @@
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
   <releases>
+    <release version="1.2.6" date="2026-11-17">
+      <description>
+        <p>beaM. 1.2.6: Fix library sidebar expanding across full window width and hiding the photo grid.</p>
+      </description>
+    </release>
     <release version="1.2.5" date="2026-11-17">
       <description>
         <p>beaM. 1.2.5: Local 5x5 edge-preserving Smart Denoise, Auto Sky &amp; Auto Subject segmentation masks, and CLI Plugin Architecture.</p>
