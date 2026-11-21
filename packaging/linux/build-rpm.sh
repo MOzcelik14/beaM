@@ -25,6 +25,7 @@ if command -v rpmbuild >/dev/null 2>&1; then
 
     mkdir -p "${RPM_TOPDIR}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
     cp "${REPO_ROOT}/packaging/linux/beam.spec" "${RPM_TOPDIR}/SPECS/"
+    sed -i "s/^Version:.*/Version:        ${VERSION}/" "${RPM_TOPDIR}/SPECS/beam.spec"
 
     # Run rpmbuild directly using current directory as build root
     rpmbuild -bb \
