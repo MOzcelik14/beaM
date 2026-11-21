@@ -1,3 +1,5 @@
+%global debug_package %{nil}
+
 Name:           beam
 Version:        1.2.6
 Release:        1%{?dist}
@@ -5,9 +7,6 @@ Summary:        Professional, non-destructive RAW photo editor and library manag
 License:        GPL-3.0-only
 URL:            https://mozcelik14.github.io/beaM/
 Source0:        %{name}-%{version}.tar.gz
-
-BuildRequires:  rust >= 1.75
-BuildRequires:  cargo
 
 Requires:       hicolor-icon-theme
 Requires:       shared-mime-info
@@ -26,15 +25,15 @@ mkdir -p %{buildroot}%{_datadir}/applications
 mkdir -p %{buildroot}%{_datadir}/metainfo
 mkdir -p %{buildroot}%{_datadir}/mime/packages
 
-install -m 0755 target/release/beam %{buildroot}%{_bindir}/beam
-install -m 0644 packaging/beam.desktop %{buildroot}%{_datadir}/applications/beam.desktop
-install -m 0644 packaging/com.github.mozcelik14.beam.metainfo.xml %{buildroot}%{_datadir}/metainfo/com.github.mozcelik14.beam.metainfo.xml
-install -m 0644 packaging/beam-mime.xml %{buildroot}%{_datadir}/mime/packages/beam-mime.xml
+install -m 0755 "%{_sourcedir}/target/release/beam" %{buildroot}%{_bindir}/beam
+install -m 0644 "%{_sourcedir}/packaging/beam.desktop" %{buildroot}%{_datadir}/applications/beam.desktop
+install -m 0644 "%{_sourcedir}/packaging/com.github.mozcelik14.beam.metainfo.xml" %{buildroot}%{_datadir}/metainfo/com.github.mozcelik14.beam.metainfo.xml
+install -m 0644 "%{_sourcedir}/packaging/beam-mime.xml" %{buildroot}%{_datadir}/mime/packages/beam-mime.xml
 
 for s in 16 32 48 64 128 256 512; do
-    if [ -f packaging/icons/hicolor/${s}x${s}/apps/beam.png ]; then
+    if [ -f "%{_sourcedir}/packaging/icons/hicolor/${s}x${s}/apps/beam.png" ]; then
         mkdir -p %{buildroot}%{_datadir}/icons/hicolor/${s}x${s}/apps
-        install -m 0644 packaging/icons/hicolor/${s}x${s}/apps/beam.png %{buildroot}%{_datadir}/icons/hicolor/${s}x${s}/apps/beam.png
+        install -m 0644 "%{_sourcedir}/packaging/icons/hicolor/${s}x${s}/apps/beam.png" %{buildroot}%{_datadir}/icons/hicolor/${s}x${s}/apps/beam.png
     fi
 done
 

@@ -120,9 +120,48 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  build-macos:
+    name: Build macOS Package
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build macOS release binary
+        run: cargo build --locked --release -p beam-app
+
+      - name: Package macOS archive
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.check-version.outputs.version }}"
+          mkdir -p dist
+          STAGE="$(mktemp -d)"
+          PKG="${STAGE}/beaM-v${VERSION}-macos-arm64"
+          mkdir -p "${PKG}/assets"
+          cp target/release/beam "${PKG}/beam"
+          cp README.md LICENSE "${PKG}/"
+          cp assets/logo.png assets/icon.png assets/icon_64.png "${PKG}/assets/" || true
+          tar -C "${STAGE}" -czf "dist/beaM-v${VERSION}-macos-arm64.tar.gz" "beaM-v${VERSION}-macos-arm64"
+          rm -rf "${STAGE}"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   publish-release:
     name: Publish GitHub Release
-    needs: [check-version, build-linux, build-windows]
+    needs: [check-version, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     if: needs.check-version.outputs.should_release == 'true'
     steps:
