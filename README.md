@@ -23,7 +23,7 @@
   <a href="#features">Features</a> |
   <a href="#installation">Installation</a> |
   <a href="#getting-started">Getting Started</a> |
-  <a href="#keyboard-shortcuts">Shortcuts</a> |
+  <a href="#keyboard-shortcuts">Keyboard Shortcuts</a> |
   <a href="#supported-formats">Formats</a> |
   <a href="#architecture">Architecture</a> |
   <a href="#development">Development</a>
