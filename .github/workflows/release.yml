@@ -138,11 +138,12 @@ jobs:
       - name: Build macOS release binary
         run: cargo build --locked --release -p beam-app
 
-      - name: Package macOS archive
+      - name: Package macOS dmg and tar.gz
         run: |
           set -euo pipefail
           VERSION="${{ needs.check-version.outputs.version }}"
           mkdir -p dist
+
           STAGE="$(mktemp -d)"
           PKG="${STAGE}/beaM-v${VERSION}-macos-arm64"
           mkdir -p "${PKG}/assets"
@@ -152,11 +153,54 @@ jobs:
           tar -C "${STAGE}" -czf "dist/beaM-v${VERSION}-macos-arm64.tar.gz" "beaM-v${VERSION}-macos-arm64"
           rm -rf "${STAGE}"
 
+          DMG_STAGE="$(mktemp -d)"
+          APP_DIR="${DMG_STAGE}/beaM..app"
+          mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
+          cp target/release/beam "${APP_DIR}/Contents/MacOS/beam"
+          chmod +x "${APP_DIR}/Contents/MacOS/beam"
+
+          if [ -f assets/icon.png ]; then
+            ICONSET="$(mktemp -d)/beam.iconset"
+            mkdir -p "${ICONSET}"
+            sips -z 16 16     assets/icon.png --out "${ICONSET}/icon_16x16.png" >/dev/null
+            sips -z 32 32     assets/icon.png --out "${ICONSET}/icon_16x16@2x.png" >/dev/null
+            sips -z 32 32     assets/icon.png --out "${ICONSET}/icon_32x32.png" >/dev/null
+            sips -z 64 64     assets/icon.png --out "${ICONSET}/icon_32x32@2x.png" >/dev/null
+            sips -z 128 128   assets/icon.png --out "${ICONSET}/icon_128x128.png" >/dev/null
+            sips -z 256 256   assets/icon.png --out "${ICONSET}/icon_128x128@2x.png" >/dev/null
+            sips -z 256 256   assets/icon.png --out "${ICONSET}/icon_256x256.png" >/dev/null
+            sips -z 512 512   assets/icon.png --out "${ICONSET}/icon_256x256@2x.png" >/dev/null
+            iconutil -c icns "${ICONSET}" -o "${APP_DIR}/Contents/Resources/beam.icns"
+          fi
+
+          cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>beam</string>
+            <key>CFBundleIdentifier</key><string>com.mozcelik14.beam</string>
+            <key>CFBundleName</key><string>beaM.</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleIconFile</key><string>beam</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+          ln -s /Applications "${DMG_STAGE}/Applications"
+          hdiutil create -volname "beaM. ${VERSION}" -srcfolder "${DMG_STAGE}" -ov -format UDZO "dist/beaM-v${VERSION}-macos-arm64.dmg"
+          rm -rf "${DMG_STAGE}"
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-dist
-          path: dist/*.tar.gz
+          path: |
+            dist/*.dmg
+            dist/*.tar.gz
           if-no-files-found: error
 
   publish-release:
@@ -176,7 +220,7 @@ jobs:
       - name: Prepare distribution files and SHA256 checksums
         run: |
           mkdir -p release_assets
-          find artifacts -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.tar.gz" -o -name "*.zip" -o -name "*.exe" \) -exec cp {} release_assets/ \;
+          find artifacts -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.tar.gz" -o -name "*.zip" -o -name "*.exe" \) -exec cp {} release_assets/ \;
           cd release_assets
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
