@@ -153,8 +153,8 @@ tar -xzf beam-v1.2.6-linux-x86_64.tar.gz
 
 #### Windows (64-bit)
 
-- **Kurucu (Installer)**: `beaM-v1.2.6-windows-x86_64-setup.exe` dosyasını indirip çalıştırın. Başlat Menüsü kısayolu, masaüstü simgesi, `.beam` proje ilişkilendirmesi ve kamera RAW dosya ilişkilendirmesi seçenekleri içerir.
-- **Taşınabilir (Portable)**: `beaM-v1.2.6-windows-x86_64.zip` arşivini açıp `beam.exe` dosyasını doğrudan çalıştırın.
+- **Kurucu (Installer)**: `beaM-v1.2.7-windows-x86_64-setup.exe` dosyasını indirip çalıştırın. Başlat Menüsü kısayolu, masaüstü simgesi, `.beam` proje ilişkilendirmesi ve kamera RAW dosya ilişkilendirmesi seçenekleri içerir.
+- **Taşınabilir (Portable)**: `beaM-v1.2.7-windows-x86_64.zip` arşivini açıp `beam.exe` dosyasını doğrudan çalıştırın.
 
 ### Kaynaktan Derleme
 

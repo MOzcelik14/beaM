@@ -153,8 +153,8 @@ tar -xzf beam-v1.2.6-linux-x86_64.tar.gz
 
 #### Windows (64-bit)
 
-- **Installer**: Download and run `beaM-v1.2.6-windows-x86_64-setup.exe`. Optional tasks include Start Menu shortcuts, desktop icon, `.beam` project association, and camera RAW file association.
-- **Portable**: Extract `beaM-v1.2.6-windows-x86_64.zip` and launch `beam.exe`.
+- **Installer**: Download and run `beaM-v1.2.7-windows-x86_64-setup.exe`. Optional tasks include Start Menu shortcuts, desktop icon, `.beam` project association, and camera RAW file association.
+- **Portable**: Extract `beaM-v1.2.7-windows-x86_64.zip` and launch `beam.exe`.
 
 ### Building from Source
 
