@@ -63,15 +63,15 @@ pub const SRGB_TO_REC2020: [f32; 9] = [
 #[allow(clippy::excessive_precision)]
 /// Direct transformation matrix: Linear Rec.2020 -> Linear Display P3 (D65).
 pub const REC2020_TO_DISPLAY_P3: [f32; 9] = [
-    1.3435774, -0.2821798, -0.0613987, -0.0652972, 1.0757884, -0.0104912, 0.0028224, -0.0195982,
-    1.0167768,
+    1.3435783, -0.2821797, -0.0613986, -0.0652975, 1.0757879, -0.0104905, 0.0028218, -0.0195985,
+    1.0167767,
 ];
 
 #[allow(clippy::excessive_precision)]
 /// Direct transformation matrix: Linear Rec.2020 -> Linear Adobe RGB (1998) (D65).
 pub const REC2020_TO_ADOBE_RGB: [f32; 9] = [
-    1.4883403, -0.4042402, -0.0841001, -0.0827202, 1.0924901, -0.0097701, 0.0068800, -0.0381300,
-    1.0312500,
+    1.1519784, -0.0975031, -0.0544753, -0.1245505, 1.1328999, -0.0083494, -0.0225304, -0.0498065,
+    1.0723369,
 ];
 
 /// Supported export color spaces.
@@ -127,6 +127,20 @@ pub fn linear_to_adobe_rgb(x: f32) -> f32 {
     x.clamp(0.0, 1.0).powf(256.0 / 563.0)
 }
 
+/// Soft highlight rolloff above 0.85 matching GPU display/export shaders.
+#[inline]
+pub fn soft_highlight_rolloff(rgb: [f32; 3]) -> [f32; 3] {
+    let c = [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)];
+    let peak = c[0].max(c[1].max(c[2]));
+    if peak <= 0.85 {
+        return c;
+    }
+    let excess = peak - 0.85;
+    let compressed = 0.85 + (0.15 * excess) / (excess + 0.15);
+    let scale = compressed / peak;
+    [c[0] * scale, c[1] * scale, c[2] * scale]
+}
+
 /// Converts a linear Rec.2020 RGB triplet to gamma-encoded sRGB.
 pub fn rec2020_linear_to_srgb_display(rec2020: [f32; 3]) -> [f32; 3] {
     let linear_srgb = mat3_mul_vec3(&REC2020_TO_SRGB, rec2020);
@@ -166,6 +180,20 @@ pub fn rec2020_linear_to_color_space(rec2020: [f32; 3], cs: ExportColorSpace) ->
     }
 }
 
+#[allow(clippy::excessive_precision)]
+/// Bradford cone response matrix (CIE XYZ -> LMS).
+const M_BRADFORD: [f32; 9] = [
+    0.8951000, 0.2664000, -0.1614000, -0.7502000, 1.7135000, 0.0367000, 0.0389000, -0.0685000,
+    1.0296000,
+];
+
+#[allow(clippy::excessive_precision)]
+/// Inverse Bradford cone response matrix (LMS -> CIE XYZ).
+const M_BRADFORD_INV: [f32; 9] = [
+    0.9869929, -0.1470543, 0.1599627, 0.4323053, 0.5183603, 0.0492912, -0.0085287, 0.0400428,
+    0.9684867,
+];
+
 /// Converts temperature and tint slider offsets [-100.0, +100.0] into linear RGB gains.
 pub fn white_balance_gains(temp_offset: f32, tint_offset: f32) -> [f32; 3] {
     let t = (temp_offset.clamp(-100.0, 100.0) / 100.0) * 0.5;
@@ -176,6 +204,47 @@ pub fn white_balance_gains(temp_offset: f32, tint_offset: f32) -> [f32; 3] {
     let b_gain = 2.0f32.powf(-t);
 
     [r_gain, g_gain, b_gain]
+}
+
+/// Computes a 3x3 Bradford chromatic adaptation matrix in Linear Rec.2020 space
+/// for temperature and tint slider offsets [-100.0, +100.0].
+pub fn white_balance_bradford_matrix(temp_offset: f32, tint_offset: f32) -> [f32; 9] {
+    if temp_offset.abs() < 1e-6 && tint_offset.abs() < 1e-6 {
+        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    }
+
+    let gains = white_balance_gains(temp_offset, tint_offset);
+    let raw_src = [1.0 / gains[0], 1.0 / gains[1], 1.0 / gains[2]];
+    let src_lum = (0.2627 * raw_src[0] + 0.6780 * raw_src[1] + 0.0593 * raw_src[2]).max(1e-6);
+    let src_rec2020 = [
+        raw_src[0] / src_lum,
+        raw_src[1] / src_lum,
+        raw_src[2] / src_lum,
+    ];
+
+    let src_xyz = mat3_mul_vec3(&REC2020_TO_XYZ_D65, src_rec2020);
+    let dst_xyz = mat3_mul_vec3(&REC2020_TO_XYZ_D65, [1.0, 1.0, 1.0]);
+
+    let src_lms = mat3_mul_vec3(&M_BRADFORD, src_xyz);
+    let dst_lms = mat3_mul_vec3(&M_BRADFORD, dst_xyz);
+
+    let scale_mat = [
+        dst_lms[0] / src_lms[0].max(1e-6),
+        0.0,
+        0.0,
+        0.0,
+        dst_lms[1] / src_lms[1].max(1e-6),
+        0.0,
+        0.0,
+        0.0,
+        dst_lms[2] / src_lms[2].max(1e-6),
+    ];
+
+    let cat_xyz = mat3_mul(&M_BRADFORD_INV, &mat3_mul(&scale_mat, &M_BRADFORD));
+    mat3_mul(
+        &XYZ_TO_REC2020_D65,
+        &mat3_mul(&cat_xyz, &REC2020_TO_XYZ_D65),
+    )
 }
 
 /// Computes (temperature, tint) slider offsets [-100.0, +100.0] that neutralize a sampled linear RGB pixel.
@@ -200,8 +269,28 @@ pub fn contrast_slope(contrast: f32) -> f32 {
 // Tone Curve Spline Interpolation (Monotone Cubic / Fritsch-Carlson)
 // ----------------------------------------------------------------------------
 
-/// Evaluates a 256-sample lookup table from a list of ToneCurvePoints using monotone cubic spline interpolation.
+/// Evaluates a 256-sample lookup table from a list of ToneCurvePoints using monotone cubic spline interpolation
+/// with linear [0, 1] indexing.
 pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
+    generate_tone_curve_lut_with_shaper(points, 1.0)
+}
+
+/// Evaluates a 256-sample lookup table with a perceptual power shaper (x = (i/255)^2.2)
+/// to preserve shadow precision in linear working space.
+pub fn generate_shaper_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
+    generate_tone_curve_lut_with_shaper(points, 2.2)
+}
+
+fn generate_tone_curve_lut_with_shaper(points: &[ToneCurvePoint], shaper_gamma: f32) -> [f32; 256] {
+    let sample_x = |i: usize| -> f32 {
+        let u = i as f32 / 255.0;
+        if (shaper_gamma - 1.0).abs() < 1e-6 {
+            u
+        } else {
+            u.powf(shaper_gamma)
+        }
+    };
+
     // Filter non-finite points and clamp coordinates
     let mut pts: Vec<ToneCurvePoint> = points
         .iter()
@@ -217,7 +306,7 @@ pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
     if pts.is_empty() {
         let mut lut = [0.0f32; 256];
         for (i, item) in lut.iter_mut().enumerate() {
-            *item = i as f32 / 255.0;
+            *item = sample_x(i);
         }
         return lut;
     }
@@ -243,7 +332,7 @@ pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
         let p1 = pts[1];
         let dx = (p1.x - p0.x).max(1e-5);
         for (i, item) in lut.iter_mut().enumerate() {
-            let x = i as f32 / 255.0;
+            let x = sample_x(i);
             let t = ((x - p0.x) / dx).clamp(0.0, 1.0);
             *item = (p0.y + t * (p1.y - p0.y)).clamp(0.0, 1.0);
         }
@@ -289,7 +378,7 @@ pub fn generate_tone_curve_lut(points: &[ToneCurvePoint]) -> [f32; 256] {
     let mut lut = [0.0f32; 256];
     let mut seg = 0;
     for (i, item) in lut.iter_mut().enumerate() {
-        let x = i as f32 / 255.0;
+        let x = sample_x(i);
 
         while seg < n - 2 && x > pts[seg + 1].x {
             seg += 1;
@@ -527,5 +616,81 @@ mod tests {
             proptest::prop_assert!(g2.is_finite() && (0.0..=1.0).contains(&g2));
             proptest::prop_assert!(b2.is_finite() && (0.0..=1.0).contains(&b2));
         }
+    }
+
+    #[allow(clippy::excessive_precision)]
+    #[test]
+    fn test_adobe_rgb_and_display_p3_matrix_consistency() {
+        // Adobe RGB (1998) -> sRGB (D65)
+        let adobe_to_srgb = [
+            1.3983557, -0.3983557, 0.0, 0.0, 1.0, 0.0, 0.0, -0.0429290, 1.0429290,
+        ];
+        let composed_adobe = mat3_mul(&adobe_to_srgb, &REC2020_TO_ADOBE_RGB);
+        for i in 0..9 {
+            assert!(
+                (composed_adobe[i] - REC2020_TO_SRGB[i]).abs() < 1e-4,
+                "Adobe RGB composition mismatch at {i}: {} vs {}",
+                composed_adobe[i],
+                REC2020_TO_SRGB[i]
+            );
+        }
+
+        // Display P3 -> sRGB (D65)
+        let p3_to_srgb = [
+            1.2249402, -0.2249402, 0.0, -0.0420570, 1.0420570, 0.0, -0.0196376, -0.0786360,
+            1.0982736,
+        ];
+        let composed_p3 = mat3_mul(&p3_to_srgb, &REC2020_TO_DISPLAY_P3);
+        for i in 0..9 {
+            assert!(
+                (composed_p3[i] - REC2020_TO_SRGB[i]).abs() < 1e-4,
+                "Display P3 composition mismatch at {i}: {} vs {}",
+                composed_p3[i],
+                REC2020_TO_SRGB[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_bradford_wb_identity_and_neutrality() {
+        let id = white_balance_bradford_matrix(0.0, 0.0);
+        for r in 0..3 {
+            for c in 0..3 {
+                let expected = if r == c { 1.0 } else { 0.0 };
+                assert!((id[r * 3 + c] - expected).abs() < 1e-5);
+            }
+        }
+
+        let mat = white_balance_bradford_matrix(35.0, -15.0);
+        let gains = white_balance_gains(35.0, -15.0);
+        let raw_src = [1.0 / gains[0], 1.0 / gains[1], 1.0 / gains[2]];
+        let src_lum = 0.2627 * raw_src[0] + 0.6780 * raw_src[1] + 0.0593 * raw_src[2];
+        let src = [
+            raw_src[0] / src_lum,
+            raw_src[1] / src_lum,
+            raw_src[2] / src_lum,
+        ];
+        let adapted = mat3_mul_vec3(&mat, src);
+        for ch in adapted {
+            assert!(
+                (ch - 1.0).abs() < 1e-4,
+                "Bradford WB failed to neutralize source illuminant: {adapted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shaper_tone_curve_lifted_black() {
+        let pts = vec![
+            ToneCurvePoint { x: 0.0, y: 0.12 },
+            ToneCurvePoint { x: 0.5, y: 0.5 },
+            ToneCurvePoint { x: 1.0, y: 1.0 },
+        ];
+        let lut = generate_shaper_tone_curve_lut(&pts);
+        assert!(
+            (lut[0] - 0.12).abs() < 1e-4,
+            "Lifted black point should evaluate to 0.12 at index 0, got {}",
+            lut[0]
+        );
     }
 }

@@ -39,11 +39,8 @@ fn unpack_lut(v: vec4<f32>, comp_idx: u32) -> f32 {
 }
 
 fn evaluate_channel_curve(val: f32, channel: u32) -> f32 {
-    if (val <= 0.0) {
-        return 0.0;
-    }
-    let clamped = min(val, 1.0);
-    let pos = clamped * 255.0;
+    let clamped = clamp(val, 0.0, 1.0);
+    let pos = pow(clamped, 1.0 / 2.2) * 255.0;
     let i0 = min(u32(floor(pos)), 254u);
     let i1 = i0 + 1u;
     let frac = pos - f32(i0);

@@ -50,6 +50,16 @@
     <mediatype>image/x-adobe-dng</mediatype>
   </provides>
   <releases>
+    <release version="1.2.8" date="2026-11-22">
+      <description>
+        <p>beaM. 1.2.8: Accurate Linear Rec.2020 color science, Bradford white balance, 16-bit and tiled lens GPU export, XMP sidecar export, SQLite &amp; UI performance optimizations, security hardening, and AccessKit accessibility support.</p>
+      </description>
+    </release>
+    <release version="1.2.7" date="2026-11-22">
+      <description>
+        <p>beaM. 1.2.7: RAW white balance and Linear Rec.2020 calibration, color matrix precision, ICC wide-gamut preservation, and security hardening.</p>
+      </description>
+    </release>
     <release version="1.2.6" date="2026-11-17">
       <description>
         <p>beaM. 1.2.6: Fix library sidebar expanding across full window width and hiding the photo grid.</p>

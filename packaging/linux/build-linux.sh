@@ -18,7 +18,7 @@ mkdir -p "${DIST_DIR}"
 
 # 1. Compile release binary once
 echo "[1/5] Compiling optimized release binary..."
-cargo build --release -p beam-app
+cargo build --locked --release -p beam-app
 
 # 2. Build portable tar.gz
 echo "[2/5] Creating portable tar.gz bundle..."
@@ -27,6 +27,7 @@ rm -rf "${PORTABLE_DIR}"
 mkdir -p "${PORTABLE_DIR}/assets"
 cp "target/release/beam" "${PORTABLE_DIR}/"
 cp "README.md" "${PORTABLE_DIR}/"
+cp "LICENSE" "${PORTABLE_DIR}/"
 cp "assets/logo.png" "${PORTABLE_DIR}/assets/"
 cp "assets/icon.png" "${PORTABLE_DIR}/assets/"
 cp "assets/icon_64.png" "${PORTABLE_DIR}/assets/"
@@ -39,11 +40,11 @@ echo "[3/5] Building .deb package..."
 
 # 4. Build RPM package
 echo "[4/5] Building .rpm package..."
-"${SCRIPT_DIR}/build-rpm.sh" "${VERSION}" || true
+"${SCRIPT_DIR}/build-rpm.sh" "${VERSION}"
 
 # 5. Build AppImage
 echo "[5/5] Building .AppImage package..."
-"${SCRIPT_DIR}/build-appimage.sh" "${VERSION}" || true
+"${SCRIPT_DIR}/build-appimage.sh" "${VERSION}"
 
 echo "========================================="
 echo "Linux package generation complete! Output files in dist/:"

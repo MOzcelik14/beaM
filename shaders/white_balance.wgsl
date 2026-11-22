@@ -17,7 +17,9 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 }
 
 struct WhiteBalanceUniforms {
-    gain: vec4<f32>, // (r_gain, g_gain, b_gain, unused)
+    mat_col0: vec4<f32>,
+    mat_col1: vec4<f32>,
+    mat_col2: vec4<f32>,
     enabled: u32,
     _pad0: u32,
     _pad1: u32,
@@ -37,6 +39,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return color;
     }
 
-    let balanced_rgb = max(color.rgb * u_params.gain.rgb, vec3<f32>(0.0));
+    let wb_mat = mat3x3<f32>(
+        u_params.mat_col0.xyz,
+        u_params.mat_col1.xyz,
+        u_params.mat_col2.xyz
+    );
+    let balanced_rgb = max(wb_mat * color.rgb, vec3<f32>(0.0));
     return vec4<f32>(balanced_rgb, color.a);
 }

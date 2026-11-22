@@ -415,7 +415,9 @@ impl Preset {
     }
 
     pub fn from_ron_str(s: &str) -> Result<Self, ron::error::SpannedError> {
-        let mut preset = ron::from_str::<Self>(s)?;
+        let mut preset = ron::Options::default()
+            .with_recursion_limit(32)
+            .from_str::<Self>(s)?;
         preset.validate_and_sanitize();
         Ok(preset)
     }
@@ -742,9 +744,13 @@ pub fn load_user_presets(dir: &Path) -> Vec<Preset> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("ron") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(preset) = Preset::from_ron_str(&content) {
-                        presets.push(preset);
+                if let Ok(meta) = fs::metadata(&path) {
+                    if meta.len() <= 1024 * 1024 {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            if let Ok(preset) = Preset::from_ron_str(&content) {
+                                presets.push(preset);
+                            }
+                        }
                     }
                 }
             }

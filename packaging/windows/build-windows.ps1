@@ -24,7 +24,7 @@ if (-not (Test-Path $DistDir)) {
 
 # 1. Compile release binary
 Write-Host "[1/3] Compiling release binary for Windows..." -ForegroundColor Yellow
-cargo build --release -p beam-app
+cargo build --locked --release -p beam-app
 
 # 2. Package portable zip
 Write-Host "[2/3] Creating portable ZIP bundle..." -ForegroundColor Yellow
@@ -63,7 +63,7 @@ foreach ($p in $IsccPaths) {
 }
 
 if ($Iscc) {
-    & $Iscc "$ScriptDir\beam-installer.iss"
+    & $Iscc "/DMyAppVersion=$Version" "$ScriptDir\beam-installer.iss"
     Write-Host "Created Inno Setup installer in $DistDir" -ForegroundColor Green
 } else {
     Write-Host "ISCC (Inno Setup) not found. Skipping installer generation." -ForegroundColor Gray

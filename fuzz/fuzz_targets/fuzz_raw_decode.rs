@@ -14,27 +14,25 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let source = RawSource::new_from_slice(data);
-        if let Ok(rawimage) = rawler::decode(&source, &RawDecodeParams::default()) {
-            let orig_w = rawimage.width as u32;
-            let orig_h = rawimage.height as u32;
-            if orig_w == 0 || orig_h == 0 {
-                return;
-            }
-            let total_pixels = (orig_w as u64) * (orig_h as u64);
-            if total_pixels > beam_media::decoder::MAX_IMAGE_PIXELS {
-                return;
-            }
-
-            let develop = RawDevelop {
-                steps: vec![
-                    ProcessingStep::Rescale,
-                    ProcessingStep::Demosaic,
-                    ProcessingStep::CropActiveArea,
-                ],
-            };
-            let _ = develop.develop_intermediate(&rawimage);
+    let source = RawSource::new_from_slice(data);
+    if let Ok(rawimage) = rawler::decode(&source, &RawDecodeParams::default()) {
+        let orig_w = rawimage.width as u32;
+        let orig_h = rawimage.height as u32;
+        if orig_w == 0 || orig_h == 0 {
+            return;
         }
-    }));
+        let total_pixels = (orig_w as u64) * (orig_h as u64);
+        if total_pixels > beam_media::decoder::MAX_IMAGE_PIXELS {
+            return;
+        }
+
+        let develop = RawDevelop {
+            steps: vec![
+                ProcessingStep::Rescale,
+                ProcessingStep::Demosaic,
+                ProcessingStep::CropActiveArea,
+            ],
+        };
+        let _ = develop.develop_intermediate(&rawimage);
+    }
 });

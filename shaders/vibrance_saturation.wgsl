@@ -36,11 +36,12 @@ fn apply_camera_profile(rgb: vec3<f32>, profile_id: u32) -> vec3<f32> {
     let l = dot(c, REC2020_LUMA);
     if (profile_id == 1u) {
         // Neutral: gentler contrast and slightly reduced saturation
-        c = 0.18 * pow(max(c, vec3<f32>(1e-5)) / 0.18, vec3<f32>(0.90));
-        return max(mix(vec3<f32>(l), c, 0.90), vec3<f32>(0.0));
+        c = 0.18 * pow(max(c, vec3<f32>(0.0)) / 0.18, vec3<f32>(0.90));
+        let ln = dot(c, REC2020_LUMA);
+        return max(mix(vec3<f32>(ln), c, 0.90), vec3<f32>(0.0));
     } else if (profile_id == 2u) {
         // Vivid: punchier contrast and richer saturation
-        c = 0.18 * pow(max(c, vec3<f32>(1e-5)) / 0.18, vec3<f32>(1.15));
+        c = 0.18 * pow(max(c, vec3<f32>(0.0)) / 0.18, vec3<f32>(1.15));
         let lv = dot(c, REC2020_LUMA);
         return max(mix(vec3<f32>(lv), c, 1.22), vec3<f32>(0.0));
     } else if (profile_id == 3u) {
@@ -81,12 +82,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let min_c = min(rgb.r, min(rgb.g, rgb.b));
     let chroma_sat = clamp((max_c - min_c) / max(max_c, 1e-4), 0.0, 1.0);
 
-    // Gentle skin-tone attenuation for vibrance (attenuate warm R > G > B hues)
-    var skin_protect = 1.0;
-    if (rgb.r > rgb.g && rgb.g > rgb.b && (rgb.r - rgb.b) > 1e-4) {
-        let warmth = clamp((rgb.r - rgb.b) / max(max_c, 1e-4), 0.0, 1.0);
-        skin_protect = 1.0 - 0.5 * warmth;
-    }
+    // Smooth skin-tone attenuation for vibrance (attenuate warm R > G > B hues without hard branches)
+    let rg_mask = smoothstep(0.0, 0.04, (rgb.r - rgb.g) / max(max_c, 1e-4));
+    let gb_mask = smoothstep(0.0, 0.04, (rgb.g - rgb.b) / max(max_c, 1e-4));
+    let warmth = clamp((rgb.r - rgb.b) / max(max_c, 1e-4), 0.0, 1.0);
+    let skin_protect = 1.0 - 0.5 * warmth * rg_mask * gb_mask;
 
     let vib_delta = (u_params.vibrance / 100.0) * (1.0 - chroma_sat) * skin_protect;
     let sat_delta = u_params.saturation / 100.0;

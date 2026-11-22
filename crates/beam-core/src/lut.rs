@@ -50,26 +50,35 @@ pub fn parse_cube_file(path: &Path) -> Result<CubeLut3D> {
         }
 
         if let Some(rest) = trimmed.strip_prefix("TITLE") {
-            let t = rest.trim().trim_matches('"').to_string();
-            if !t.is_empty() {
-                title = Some(t);
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                let t = rest.trim().trim_matches('"').to_string();
+                if !t.is_empty() {
+                    title = Some(t);
+                }
+                continue;
             }
-            continue;
         }
 
         if let Some(rest) = trimmed.strip_prefix("LUT_3D_SIZE") {
-            let sz: usize = rest
-                .trim()
-                .parse()
-                .map_err(|_| BeamError::Sidecar("Invalid LUT_3D_SIZE value".into()))?;
-            if !(2..=MAX_LUT_SIZE).contains(&sz) {
-                return Err(BeamError::Sidecar(format!(
-                    "Unsupported LUT_3D_SIZE {sz}; expected 2..={MAX_LUT_SIZE}"
-                )));
+            if rest.starts_with(char::is_whitespace) {
+                if lut_size.is_some() {
+                    return Err(BeamError::Sidecar(
+                        "Duplicate LUT_3D_SIZE header in .cube file".into(),
+                    ));
+                }
+                let sz: usize = rest
+                    .trim()
+                    .parse()
+                    .map_err(|_| BeamError::Sidecar("Invalid LUT_3D_SIZE value".into()))?;
+                if !(2..=MAX_LUT_SIZE).contains(&sz) {
+                    return Err(BeamError::Sidecar(format!(
+                        "Unsupported LUT_3D_SIZE {sz}; expected 2..={MAX_LUT_SIZE}"
+                    )));
+                }
+                lut_size = Some(sz);
+                entries.reserve(sz * sz * sz * 4);
+                continue;
             }
-            lut_size = Some(sz);
-            entries.reserve(sz * sz * sz * 4);
-            continue;
         }
 
         if trimmed.starts_with("LUT_1D_SIZE") {
@@ -79,15 +88,17 @@ pub fn parse_cube_file(path: &Path) -> Result<CubeLut3D> {
         }
 
         if let Some(rest) = trimmed.strip_prefix("DOMAIN_MIN") {
-            let vals = parse_vec3(rest)?;
-            domain_min = vals;
-            continue;
+            if rest.starts_with(char::is_whitespace) {
+                domain_min = parse_vec3(rest)?;
+                continue;
+            }
         }
 
         if let Some(rest) = trimmed.strip_prefix("DOMAIN_MAX") {
-            let vals = parse_vec3(rest)?;
-            domain_max = vals;
-            continue;
+            if rest.starts_with(char::is_whitespace) {
+                domain_max = parse_vec3(rest)?;
+                continue;
+            }
         }
 
         // Data triplet: R G B
@@ -100,6 +111,15 @@ pub fn parse_cube_file(path: &Path) -> Result<CubeLut3D> {
 
     let size = lut_size
         .ok_or_else(|| BeamError::Sidecar("Missing LUT_3D_SIZE header in .cube file".into()))?;
+
+    for i in 0..3 {
+        if domain_min[i] >= domain_max[i] {
+            return Err(BeamError::Sidecar(format!(
+                "Invalid .cube LUT domain bounds: domain_min[{i}] ({}) >= domain_max[{i}] ({})",
+                domain_min[i], domain_max[i]
+            )));
+        }
+    }
 
     let expected_floats = size * size * size * 4;
     if entries.len() != expected_floats {
@@ -165,6 +185,26 @@ mod tests {
         assert_eq!(lut.size, 2);
         assert_eq!(lut.title.as_deref(), Some("Identity 2x2x2"));
         assert_eq!(lut.data.len(), 2 * 2 * 2 * 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_reject_duplicate_size_and_invalid_domain() {
+        let dir = std::env::temp_dir().join("beam_cube_bad_test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let dup_path = dir.join("dup.cube");
+        std::fs::write(&dup_path, "LUT_3D_SIZE 2\nLUT_3D_SIZE 2\n").unwrap();
+        assert!(parse_cube_file(&dup_path).is_err());
+
+        let dom_path = dir.join("bad_domain.cube");
+        std::fs::write(
+            &dom_path,
+            "LUT_3D_SIZE 2\nDOMAIN_MIN 1.0 0.0 0.0\nDOMAIN_MAX 0.5 1.0 1.0\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n",
+        )
+        .unwrap();
+        assert!(parse_cube_file(&dom_path).is_err());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

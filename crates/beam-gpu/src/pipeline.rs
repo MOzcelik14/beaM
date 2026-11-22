@@ -16,6 +16,7 @@ pub const VIBRANCE_SATURATION_SHADER_SRC: &str =
     include_str!("../../../shaders/vibrance_saturation.wgsl");
 pub const VIGNETTE_GRAIN_SHADER_SRC: &str = include_str!("../../../shaders/vignette_grain.wgsl");
 pub const COLOR_GRADING_SHADER_SRC: &str = include_str!("../../../shaders/color_grading.wgsl");
+pub const DENOISE_SHADER_SRC: &str = include_str!("../../../shaders/denoise.wgsl");
 pub const DETAIL_SHADER_SRC: &str = include_str!("../../../shaders/detail.wgsl");
 pub const LUT3D_SHADER_SRC: &str = include_str!("../../../shaders/lut3d.wgsl");
 pub const MASK_ADJUST_SHADER_SRC: &str = include_str!("../../../shaders/mask_adjust.wgsl");
@@ -125,7 +126,9 @@ pub struct ExposureUniforms {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WhiteBalanceUniforms {
-    pub gain: [f32; 4],
+    pub mat_col0: [f32; 4],
+    pub mat_col1: [f32; 4],
+    pub mat_col2: [f32; 4],
     pub enabled: u32,
     pub _pad0: u32,
     pub _pad1: u32,
@@ -835,30 +838,6 @@ fn f32_to_f16_bits(val: f32) -> u16 {
     sign | ((new_exp as u16) << 10) | ((frac >> 13) as u16)
 }
 
-fn f16_bits_to_f32(bits: u16) -> f32 {
-    let sign = ((bits & 0x8000) as u32) << 16;
-    let exp = ((bits >> 10) & 0x1f) as u32;
-    let frac = (bits & 0x03ff) as u32;
-
-    if exp == 0 {
-        if frac == 0 {
-            return f32::from_bits(sign);
-        }
-        let mut e = 127 - 14;
-        let mut f = frac;
-        while (f & 0x0400) == 0 {
-            f <<= 1;
-            e -= 1;
-        }
-        f &= 0x03ff;
-        return f32::from_bits(sign | (e << 23) | (f << 13));
-    }
-    if exp == 31 {
-        return f32::from_bits(sign | 0x7f80_0000 | (frac << 13));
-    }
-    f32::from_bits(sign | ((exp + 127 - 15) << 23) | (frac << 13))
-}
-
 impl Lut3DPass {
     fn create_3d_texture(
         device: &wgpu::Device,
@@ -1183,6 +1162,7 @@ pub struct EditPipeline {
     hsl_stage: StagePass<HslUniforms>,
     vibrance_saturation_stage: StagePass<VibranceSaturationUniforms>,
     color_grading_stage: StagePass<ColorGradingUniforms>,
+    denoise_stage: StagePass<DetailUniforms>,
     detail_stage: StagePass<DetailUniforms>,
     lut3d_stage: Lut3DPass,
     vignette_grain_stage: StagePass<VignetteGrainUniforms>,
@@ -1227,7 +1207,9 @@ impl EditPipeline {
             "wb_stage",
             WHITE_BALANCE_SHADER_SRC,
             WhiteBalanceUniforms {
-                gain: [1.0, 1.0, 1.0, 1.0],
+                mat_col0: [1.0, 0.0, 0.0, 0.0],
+                mat_col1: [0.0, 1.0, 0.0, 0.0],
+                mat_col2: [0.0, 0.0, 1.0, 0.0],
                 enabled: 1,
                 _pad0: 0,
                 _pad1: 0,
@@ -1350,20 +1332,28 @@ impl EditPipeline {
             working_format,
         );
 
+        let default_detail_uniforms = DetailUniforms {
+            clarity: 0.0,
+            dehaze: 0.0,
+            sharpening: 0.0,
+            noise_reduction_luma: 0.0,
+            noise_reduction_color: 0.0,
+            enabled: 0,
+            ai_denoise: 0.0,
+            _pad1: 0,
+        };
+        let denoise_stage = StagePass::new(
+            device,
+            "denoise_stage",
+            DENOISE_SHADER_SRC,
+            default_detail_uniforms,
+            working_format,
+        );
         let detail_stage = StagePass::new(
             device,
             "detail_stage",
             DETAIL_SHADER_SRC,
-            DetailUniforms {
-                clarity: 0.0,
-                dehaze: 0.0,
-                sharpening: 0.0,
-                noise_reduction_luma: 0.0,
-                noise_reduction_color: 0.0,
-                enabled: 0,
-                ai_denoise: 0.0,
-                _pad1: 0,
-            },
+            default_detail_uniforms,
             working_format,
         );
 
@@ -1423,6 +1413,7 @@ impl EditPipeline {
             hsl_stage,
             vibrance_saturation_stage,
             color_grading_stage,
+            denoise_stage,
             detail_stage,
             lut3d_stage,
             vignette_grain_stage,
@@ -1504,14 +1495,16 @@ impl EditPipeline {
                 uv_scale: [uv_rect[2], uv_rect[3]],
             },
         );
-        let wb_gains = beam_core::color::white_balance_gains(
+        let wb_mat = beam_core::color::white_balance_bradford_matrix(
             edit_stack.white_balance.temperature,
             edit_stack.white_balance.tint,
         );
         self.white_balance_stage.update_uniform(
             queue,
             &WhiteBalanceUniforms {
-                gain: [wb_gains[0], wb_gains[1], wb_gains[2], 1.0],
+                mat_col0: [wb_mat[0], wb_mat[3], wb_mat[6], 0.0],
+                mat_col1: [wb_mat[1], wb_mat[4], wb_mat[7], 0.0],
+                mat_col2: [wb_mat[2], wb_mat[5], wb_mat[8], 0.0],
                 enabled: if edit_stack.white_balance.enabled {
                     1
                 } else {
@@ -1564,7 +1557,7 @@ impl EditPipeline {
         );
 
         let pack_curve_lut = |points: &[beam_core::sidecar::ToneCurvePoint]| -> [[f32; 4]; 64] {
-            let curve_lut = beam_core::color::generate_tone_curve_lut(points);
+            let curve_lut = beam_core::color::generate_shaper_tone_curve_lut(points);
             let mut packed = [[0.0f32; 4]; 64];
             for i in 0..64 {
                 packed[i] = [
@@ -1631,7 +1624,7 @@ impl EditPipeline {
                 4 => (f, 0.0, 1.0),
                 _ => (1.0, 0.0, 1.0 - f),
             };
-            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let lum = 0.2627 * r + 0.6780 * g + 0.0593 * b;
             let sat = w.saturation.clamp(0.0, 1.0);
             [
                 (r - lum) * sat,
@@ -1657,19 +1650,18 @@ impl EditPipeline {
         );
 
         let det = &edit_stack.detail;
-        self.detail_stage.update_uniform(
-            queue,
-            &DetailUniforms {
-                clarity: det.clarity,
-                dehaze: det.dehaze,
-                sharpening: det.sharpening,
-                noise_reduction_luma: det.noise_reduction_luma,
-                noise_reduction_color: det.noise_reduction_color,
-                enabled: if det.enabled { 1 } else { 0 },
-                ai_denoise: det.ai_denoise,
-                _pad1: 0,
-            },
-        );
+        let detail_uniforms = DetailUniforms {
+            clarity: det.clarity,
+            dehaze: det.dehaze,
+            sharpening: det.sharpening,
+            noise_reduction_luma: det.noise_reduction_luma,
+            noise_reduction_color: det.noise_reduction_color,
+            enabled: if det.enabled { 1 } else { 0 },
+            ai_denoise: det.ai_denoise,
+            _pad1: 0,
+        };
+        self.denoise_stage.update_uniform(queue, &detail_uniforms);
+        self.detail_stage.update_uniform(queue, &detail_uniforms);
 
         self.lut3d_stage
             .update_from_stack(device, queue, &edit_stack.lut);
@@ -1794,8 +1786,9 @@ impl EditPipeline {
         input: &GpuImage,
         edit_stack: &EditStack,
     ) -> Option<bool> {
-        let ping = self.ping_view.as_ref().unwrap();
-        let pong = self.pong_view.as_ref().unwrap();
+        let (Some(ping), Some(pong)) = (self.ping_view.as_ref(), self.pong_view.as_ref()) else {
+            return None;
+        };
 
         let lens_active = edit_stack.lens.enabled
             && (edit_stack.lens.distortion.abs() >= 1e-4
@@ -1825,13 +1818,14 @@ impl EditPipeline {
             || edit_stack.camera_profile != beam_core::sidecar::CameraProfile::Standard;
         let cg_active = edit_stack.color_grading.enabled
             && edit_stack.color_grading != beam_core::sidecar::ColorGradingAdjustment::default();
+        let denoise_active = edit_stack.detail.enabled
+            && (edit_stack.detail.noise_reduction_luma >= 1e-4
+                || edit_stack.detail.noise_reduction_color >= 1e-4
+                || edit_stack.detail.ai_denoise >= 1e-4);
         let detail_active = edit_stack.detail.enabled
             && (edit_stack.detail.clarity.abs() >= 1e-4
                 || edit_stack.detail.dehaze.abs() >= 1e-4
-                || edit_stack.detail.sharpening >= 1e-4
-                || edit_stack.detail.noise_reduction_luma >= 1e-4
-                || edit_stack.detail.noise_reduction_color >= 1e-4
-                || edit_stack.detail.ai_denoise >= 1e-4);
+                || edit_stack.detail.sharpening >= 1e-4);
         let lut_active = edit_stack.lut.enabled
             && edit_stack.lut.path.is_some()
             && edit_stack.lut.intensity >= 1e-4;
@@ -1841,6 +1835,7 @@ impl EditPipeline {
         let mask_active = edit_stack.masks.iter().any(|m| m.enabled);
 
         if !(lens_active
+            || denoise_active
             || wb_active
             || exp_active
             || hs_active
@@ -1880,6 +1875,7 @@ impl EditPipeline {
         }
 
         run_if!(lens_active, self.lens_stage);
+        run_if!(denoise_active, self.denoise_stage);
         run_if!(wb_active, self.white_balance_stage);
         run_if!(exp_active, self.exposure_stage);
         run_if!(hs_active, self.highlights_shadows_stage);
@@ -1981,8 +1977,8 @@ impl EditPipeline {
 
         let intermediate_view = match stage_out {
             None => &input.view,
-            Some(true) => self.pong_view.as_ref().unwrap(),
-            Some(false) => self.ping_view.as_ref().unwrap(),
+            Some(true) => self.pong_view.as_ref().unwrap_or(&input.view),
+            Some(false) => self.ping_view.as_ref().unwrap_or(&input.view),
         };
 
         let space_bits = match soft_proof_space {
@@ -2234,7 +2230,6 @@ impl EditPipeline {
         color_space: beam_core::ExportColorSpace,
         max_tile_size: u32,
     ) -> Result<Vec<u8>> {
-        const TILE_HALO: u32 = 8;
         let max_tile_size = max_tile_size.max(256);
 
         // If image fits within a single tile along both axes, run standard single pass
@@ -2249,7 +2244,7 @@ impl EditPipeline {
             );
         }
 
-        // Tiled grid processing with halo overlap for spatial filters (detail/sharpening/NR)
+        // Tiled grid processing with halo overlap for spatial filters (detail/sharpening/NR/lens)
         // and global UV rect for vignette, grain, and local masks.
         let mut final_rgba8 = vec![0u8; (width * height * 4) as usize];
         let tiles_x = width.div_ceil(max_tile_size);
@@ -2258,18 +2253,15 @@ impl EditPipeline {
         for ty in 0..tiles_y {
             let tile_y = ty * max_tile_size;
             let tile_h = max_tile_size.min(height - tile_y);
-            let ext_y = tile_y.saturating_sub(TILE_HALO);
-            let ext_bottom = (tile_y + tile_h + TILE_HALO).min(height);
-            let ext_h = ext_bottom - ext_y;
-            let inner_y = tile_y - ext_y;
 
             for tx in 0..tiles_x {
                 let tile_x = tx * max_tile_size;
                 let tile_w = max_tile_size.min(width - tile_x);
-                let ext_x = tile_x.saturating_sub(TILE_HALO);
-                let ext_right = (tile_x + tile_w + TILE_HALO).min(width);
-                let ext_w = ext_right - ext_x;
+                let (ext_x, ext_y, ext_w, ext_h) = compute_tile_ext_bounds(
+                    width, height, tile_x, tile_y, tile_w, tile_h, edit_stack,
+                );
                 let inner_x = tile_x - ext_x;
+                let inner_y = tile_y - ext_y;
 
                 // Extract halo-expanded sub-rectangle of f32 pixel data
                 let mut tile_data = Vec::with_capacity((ext_w * ext_h * 4) as usize);
@@ -2341,7 +2333,7 @@ impl EditPipeline {
         }
 
         let target_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("beam_export_target_texture_16f"),
+            label: Some("beam_export_target_texture_32f"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -2350,7 +2342,7 @@ impl EditPipeline {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -2359,7 +2351,7 @@ impl EditPipeline {
         if self.export_display_pipeline_16f.is_none() {
             self.export_display_pipeline_16f = Some(ExportDisplayPipeline::new(
                 device,
-                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureFormat::Rgba32Float,
             ));
         }
 
@@ -2388,8 +2380,10 @@ impl EditPipeline {
             .ok_or_else(|| BeamError::GpuPipeline("16-bit export display pipeline missing".into()))?
             .render_to_target(device, queue, intermediate_view, &target_view, cs_val);
 
-        let bytes_per_pixel = 8u32;
-        let unaligned_bytes_per_row = width * bytes_per_pixel;
+        let bytes_per_pixel = 16u32;
+        let unaligned_bytes_per_row = width
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| BeamError::GpuPipeline("16-bit staging row stride overflowed".into()))?;
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let bytes_per_row = (unaligned_bytes_per_row + align - 1) & !(align - 1);
 
@@ -2400,14 +2394,14 @@ impl EditPipeline {
             })?;
 
         let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("beam_export_staging_buffer_16f"),
+            label: Some("beam_export_staging_buffer_32f"),
             size: staging_buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("beam_export_copy_encoder_16f"),
+            label: Some("beam_export_copy_encoder_32f"),
         });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
@@ -2448,14 +2442,18 @@ impl EditPipeline {
         let mapped_data = buffer_slice
             .get_mapped_range()
             .map_err(|e| BeamError::GpuPipeline(format!("GPU 16-bit mapped range error: {e}")))?;
-        let mut out_u16 = Vec::with_capacity((width * height * 4) as usize);
+        let mut out_u16 = Vec::with_capacity((width as usize) * (height as usize) * 4);
         for row in 0..height {
             let row_start = (row * bytes_per_row) as usize;
             let row_end = row_start + (unaligned_bytes_per_row as usize);
             let row_bytes = &mapped_data[row_start..row_end];
-            for pair in row_bytes.as_chunks::<2>().0 {
-                let h = u16::from_le_bytes([pair[0], pair[1]]);
-                let v = (f16_bits_to_f32(h).clamp(0.0, 1.0) * 65535.0).round() as u16;
+            for quad in row_bytes.as_chunks::<4>().0 {
+                let f = f32::from_le_bytes(*quad);
+                let v = if f.is_finite() {
+                    (f.clamp(0.0, 1.0) * 65535.0).round() as u16
+                } else {
+                    0
+                };
                 out_u16.push(v);
             }
         }
@@ -2477,7 +2475,6 @@ impl EditPipeline {
         color_space: beam_core::ExportColorSpace,
         max_tile_size: u32,
     ) -> Result<Vec<u16>> {
-        const TILE_HALO: u32 = 8;
         let max_tile_size = max_tile_size.max(256);
 
         if width <= max_tile_size && height <= max_tile_size {
@@ -2499,18 +2496,15 @@ impl EditPipeline {
         for ty in 0..tiles_y {
             let tile_y = ty * max_tile_size;
             let tile_h = max_tile_size.min(height - tile_y);
-            let ext_y = tile_y.saturating_sub(TILE_HALO);
-            let ext_bottom = (tile_y + tile_h + TILE_HALO).min(height);
-            let ext_h = ext_bottom - ext_y;
-            let inner_y = tile_y - ext_y;
 
             for tx in 0..tiles_x {
                 let tile_x = tx * max_tile_size;
                 let tile_w = max_tile_size.min(width - tile_x);
-                let ext_x = tile_x.saturating_sub(TILE_HALO);
-                let ext_right = (tile_x + tile_w + TILE_HALO).min(width);
-                let ext_w = ext_right - ext_x;
+                let (ext_x, ext_y, ext_w, ext_h) = compute_tile_ext_bounds(
+                    width, height, tile_x, tile_y, tile_w, tile_h, edit_stack,
+                );
                 let inner_x = tile_x - ext_x;
+                let inner_y = tile_y - ext_y;
 
                 let mut tile_data = Vec::with_capacity((ext_w * ext_h * 4) as usize);
                 for row in 0..ext_h {
@@ -2553,6 +2547,82 @@ impl EditPipeline {
 
         Ok(final_rgba16)
     }
+}
+
+/// Computes the extended source rectangle `(ext_x, ext_y, ext_w, ext_h)` required for a tile
+/// `[tile_x..tile_x+tile_w, tile_y..tile_y+tile_h]`, accounting for both the 8 px spatial filter
+/// halo and any active `lens.wgsl` geometric warp (distortion, CA, perspective).
+fn compute_tile_ext_bounds(
+    width: u32,
+    height: u32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
+    edit_stack: &EditStack,
+) -> (u32, u32, u32, u32) {
+    const BASE_HALO: u32 = 8;
+    let mut min_x = tile_x.saturating_sub(BASE_HALO);
+    let mut min_y = tile_y.saturating_sub(BASE_HALO);
+    let mut max_x = (tile_x + tile_w + BASE_HALO).min(width);
+    let mut max_y = (tile_y + tile_h + BASE_HALO).min(height);
+
+    let lens = &edit_stack.lens;
+    let lens_warp_active = lens.enabled
+        && (lens.distortion.abs() >= 1e-4
+            || lens.ca_red_cyan.abs() >= 1e-4
+            || lens.ca_blue_yellow.abs() >= 1e-4
+            || lens.perspective_v.abs() >= 1e-4
+            || lens.perspective_h.abs() >= 1e-4);
+
+    if lens_warp_active {
+        let pv = (lens.perspective_v / 100.0) * 0.45;
+        let ph = (lens.perspective_h / 100.0) * 0.45;
+        let k1 = -(lens.distortion / 100.0) * 0.35;
+        let ca_r_scale = 1.0 + (lens.ca_red_cyan / 100.0) * 0.015;
+        let ca_b_scale = 1.0 + (lens.ca_blue_yellow / 100.0) * 0.015;
+        let aspect = (width as f32) / (height.max(1) as f32);
+
+        for gy in 0..=4 {
+            let fy = tile_y as f32 + (tile_h as f32) * (gy as f32 / 4.0);
+            let v = fy / (height.max(1) as f32);
+            for gx in 0..=4 {
+                let fx = tile_x as f32 + (tile_w as f32) * (gx as f32 / 4.0);
+                let u = fx / (width.max(1) as f32);
+
+                let px = u - 0.5;
+                let py = v - 0.5;
+                let denom = (1.0 + pv * py + ph * px).max(0.25);
+                let g_u = 0.5 + px / denom;
+                let g_v = 0.5 + py / denom;
+                if !(0.0..=1.0).contains(&g_u) || !(0.0..=1.0).contains(&g_v) {
+                    continue;
+                }
+
+                let dx = g_u - 0.5;
+                let dy = g_v - 0.5;
+                let r2 = (dx * aspect) * (dx * aspect) + dy * dy;
+                for scale_mul in [ca_r_scale, 1.0, ca_b_scale] {
+                    let factor = (1.0 + k1 * r2) * scale_mul;
+                    let src_u = (0.5 + dx * factor).clamp(0.0, 1.0);
+                    let src_v = (0.5 + dy * factor).clamp(0.0, 1.0);
+                    let sx = src_u * (width as f32);
+                    let sy = src_v * (height as f32);
+                    min_x = min_x.min((sx.floor() as i64 - BASE_HALO as i64).max(0) as u32);
+                    min_y = min_y.min((sy.floor() as i64 - BASE_HALO as i64).max(0) as u32);
+                    max_x = max_x.max(((sx.ceil() as u32) + BASE_HALO).min(width));
+                    max_y = max_y.max(((sy.ceil() as u32) + BASE_HALO).min(height));
+                }
+            }
+        }
+    }
+
+    (
+        min_x,
+        min_y,
+        max_x.saturating_sub(min_x).max(1),
+        max_y.saturating_sub(min_y).max(1),
+    )
 }
 
 // ----------------------------------------------------------------------------
@@ -3713,6 +3783,68 @@ mod tests {
         assert!(
             nr_diff < base_diff,
             "AI denoise must reduce high-frequency noise amplitude (base_diff={base_diff}, nr_diff={nr_diff})"
+        );
+    }
+
+    #[test]
+    fn test_render_tiled_matches_monolithic_with_lens_warp() {
+        let Some(gpu) = HeadlessGpu::new() else {
+            return;
+        };
+        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+
+        let w = 320u32;
+        let h = 320u32;
+        let mut data = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                data.push((x as f32 / w as f32) * 0.8 + 0.05);
+                data.push((y as f32 / h as f32) * 0.8 + 0.05);
+                data.push((((x ^ y) & 31) as f32 / 31.0) * 0.5 + 0.1);
+                data.push(1.0);
+            }
+        }
+
+        let mut stack = EditStack::default();
+        stack.lens.enabled = true;
+        stack.lens.distortion = 35.0;
+        stack.lens.ca_red_cyan = 50.0;
+        stack.lens.perspective_v = 25.0;
+
+        let gpu_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, w, h, &data)
+            .expect("upload lens test image");
+        let monolithic = pipeline
+            .render_to_rgba8_with_colorspace(
+                &gpu.device,
+                &gpu.queue,
+                &gpu_img,
+                &stack,
+                beam_core::ExportColorSpace::Srgb,
+            )
+            .expect("monolithic lens render");
+        let tiled = pipeline
+            .render_tiled_to_rgba8(
+                &gpu.device,
+                &gpu.queue,
+                w,
+                h,
+                &data,
+                &stack,
+                beam_core::ExportColorSpace::Srgb,
+                256,
+            )
+            .expect("tiled lens render");
+
+        assert_eq!(monolithic.len(), tiled.len());
+        let max_diff = monolithic
+            .iter()
+            .zip(tiled.iter())
+            .map(|(&a, &b)| (a as i32 - b as i32).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_diff <= 2,
+            "Tiled lens warp diverged from monolithic render (max_diff={max_diff})"
         );
     }
 }

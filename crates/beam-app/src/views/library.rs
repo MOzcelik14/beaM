@@ -129,6 +129,7 @@ pub struct LibraryViewState {
     pub selected_photo_id: Option<i64>,
     pub selected_photo_ids: HashSet<i64>,
     pub thumbnail_status: HashMap<i64, ThumbnailStatus>,
+    pub thumbnail_order: std::collections::VecDeque<i64>,
     pub pending_thumbnail_requests: Vec<ThumbnailRequest>,
     pub is_importing: bool,
     pub import_status: Option<String>,
@@ -161,6 +162,7 @@ impl Default for LibraryViewState {
             selected_photo_id: None,
             selected_photo_ids: HashSet::new(),
             thumbnail_status: HashMap::new(),
+            thumbnail_order: std::collections::VecDeque::new(),
             pending_thumbnail_requests: Vec::new(),
             is_importing: false,
             import_status: None,
@@ -191,15 +193,19 @@ pub const MAX_IN_MEMORY_THUMBNAILS: usize = 1000;
 pub const MAX_PENDING_THUMBNAILS: usize = 200;
 
 impl LibraryViewState {
-    /// Inserts a thumbnail status, enforcing the in-memory cache capacity bound.
+    /// Inserts a thumbnail status, enforcing the in-memory cache capacity bound with FIFO/LRU eviction.
     pub fn insert_thumbnail(&mut self, photo_id: i64, status: ThumbnailStatus) {
-        if self.thumbnail_status.len() >= MAX_IN_MEMORY_THUMBNAILS
-            && !self.thumbnail_status.contains_key(&photo_id)
-        {
-            if let Some(&old_key) = self.thumbnail_status.keys().next() {
+        if let Some(pos) = self.thumbnail_order.iter().position(|&id| id == photo_id) {
+            self.thumbnail_order.remove(pos);
+        }
+        while self.thumbnail_status.len() >= MAX_IN_MEMORY_THUMBNAILS {
+            if let Some(old_key) = self.thumbnail_order.pop_front() {
                 self.thumbnail_status.remove(&old_key);
+            } else {
+                break;
             }
         }
+        self.thumbnail_order.push_back(photo_id);
         self.thumbnail_status.insert(photo_id, status);
     }
 
@@ -214,11 +220,16 @@ impl LibraryViewState {
         }
 
         if let Ok(photos) = db.query_photos(&self.filter) {
-            self.missing_photo_ids = photos
-                .iter()
-                .filter(|p| !Path::new(&p.file_path).exists())
-                .map(|p| p.id)
-                .collect();
+            // Avoid synchronous O(N) stat() storms on the UI thread for large catalogs
+            self.missing_photo_ids = if photos.len() <= 500 {
+                photos
+                    .iter()
+                    .filter(|p| !Path::new(&p.file_path).exists())
+                    .map(|p| p.id)
+                    .collect()
+            } else {
+                HashSet::new()
+            };
             self.photos = photos;
             self.available_tags = db.list_all_tags().unwrap_or_default();
             self.smart_collections = db.list_smart_collections().unwrap_or_default();

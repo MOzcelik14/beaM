@@ -755,6 +755,9 @@ impl EditStack {
                 p.y = p.y.clamp(0.0, 1.0);
             }
             pts.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+            if pts.len() > 64 {
+                pts.truncate(64);
+            }
             if pts.len() < 2 {
                 *pts = default_identity_curve_points();
             }
@@ -801,6 +804,23 @@ impl EditStack {
 
         // 11. 3D LUT
         sanitize_float(&mut self.lut.intensity, 0.0, 1.0, 1.0);
+        if let Some(ref p) = self.lut.path {
+            let trimmed = p.trim();
+            let has_traversal = std::path::Path::new(trimmed)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir));
+            let is_unc = trimmed.starts_with("\\\\") || trimmed.starts_with("//");
+            let has_bad_chars = trimmed.chars().any(|c| c.is_control() || c == '\0');
+            let is_cube = std::path::Path::new(trimmed)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("cube"))
+                .unwrap_or(false);
+            if trimmed.is_empty() || has_traversal || is_unc || has_bad_chars || !is_cube {
+                self.lut.path = None;
+                self.lut.enabled = false;
+            }
+        }
 
         // 12. Parametric Masks (cap at 8 layers)
         self.masks.truncate(8);
@@ -1143,6 +1163,11 @@ impl Sidecar {
                 self.history_index = self.history.len() - 1;
             }
         }
+
+        self.snapshots.truncate(50);
+        for snap in &mut self.snapshots {
+            snap.stack.validate_and_sanitize();
+        }
     }
 
     /// Parse sidecar from RON string and automatically run migrations if necessary.
@@ -1153,7 +1178,10 @@ impl Sidecar {
                 content.len()
             )));
         }
-        let mut sidecar: Sidecar = ron::from_str(content).map_err(BeamError::from)?;
+        let mut sidecar: Sidecar = ron::Options::default()
+            .with_recursion_limit(32)
+            .from_str(content)
+            .map_err(BeamError::from)?;
         if sidecar.history.is_empty() {
             let initial = sidecar.edit_stack.clone();
             sidecar.history.push(HistoryStep::new("Initial", initial));
@@ -1617,5 +1645,34 @@ mod tests {
             proptest::prop_assert!(stack.crop.rotation.is_multiple_of(90));
             proptest::prop_assert!(stack.crop.straighten.is_finite() && (-45.0..=45.0).contains(&stack.crop.straighten));
         }
+    }
+
+    #[test]
+    fn test_lut_path_and_snapshots_sanitization() {
+        for bad_path in [
+            "\\\\attacker\\share\\evil.cube",
+            "//attacker/share/evil.cube",
+            "../../../etc/passwd.cube",
+            "/tmp/not_a_lut.txt",
+        ] {
+            let mut stack = EditStack::default();
+            stack.lut.enabled = true;
+            stack.lut.path = Some(bad_path.to_string());
+            stack.validate_and_sanitize();
+            assert!(
+                stack.lut.path.is_none() && !stack.lut.enabled,
+                "Malicious/invalid LUT path should be cleared: {bad_path}"
+            );
+        }
+
+        let mut sc = Sidecar::new("test.dng");
+        for i in 0..75 {
+            let mut s = EditStack::default();
+            s.exposure.ev = 999.0;
+            sc.snapshots.push(HistoryStep::new(format!("s{i}"), s));
+        }
+        sc.validate_and_sanitize();
+        assert_eq!(sc.snapshots.len(), 50);
+        assert_eq!(sc.snapshots[0].stack.exposure.ev, 5.0);
     }
 }

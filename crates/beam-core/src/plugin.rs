@@ -3,10 +3,31 @@
 use crate::error::{BeamError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+const MAX_PLUGIN_OUTPUT_BYTES: usize = 1024 * 1024;
+const PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+const DISALLOWED_SHELLS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "ksh",
+    "csh",
+    "tcsh",
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +73,7 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginManifest> {
         return plugins;
     };
 
+    let ron_opts = ron::Options::default().with_recursion_limit(16);
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("ron") {
@@ -66,7 +88,7 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginManifest> {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        if let Ok(manifest) = ron::from_str::<PluginManifest>(&content) {
+        if let Ok(manifest) = ron_opts.from_str::<PluginManifest>(&content) {
             if validate_manifest(&manifest) {
                 plugins.push(manifest);
             }
@@ -77,7 +99,7 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginManifest> {
     plugins
 }
 
-fn validate_manifest(m: &PluginManifest) -> bool {
+pub fn validate_manifest(m: &PluginManifest) -> bool {
     let id = m.id.trim();
     let name = m.name.trim();
     let cmd = m.command.trim();
@@ -85,6 +107,17 @@ fn validate_manifest(m: &PluginManifest) -> bool {
         return false;
     }
     if cmd.contains("..") || cmd.contains('\0') {
+        return false;
+    }
+    if m.args.iter().any(|a| a.contains('\0')) {
+        return false;
+    }
+    let exe_name = Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd)
+        .to_ascii_lowercase();
+    if DISALLOWED_SHELLS.contains(&exe_name.as_str()) {
         return false;
     }
     true
@@ -97,16 +130,16 @@ pub fn install_sample_plugin(dir: &Path) -> Result<PathBuf> {
     let sample = PluginManifest {
         id: "sample_exif_inspect".into(),
         name: "Sample File Inspector".into(),
-        description: "Logs the active photo path and sidecar path via system echo.".into(),
+        description: "Runs a direct non-shell inspection command with BEAM_IMAGE_PATH set.".into(),
         command: if cfg!(windows) {
-            "cmd".into()
+            "hostname".into()
         } else {
-            "sh".into()
+            "printenv".into()
         },
         args: if cfg!(windows) {
-            vec!["/C".into(), "echo %BEAM_IMAGE_PATH%".into()]
+            Vec::new()
         } else {
-            vec!["-c".into(), "echo \"$BEAM_IMAGE_PATH\"".into()]
+            vec!["BEAM_IMAGE_PATH".into()]
         },
         category: PluginCategory::Analyze,
     };
@@ -115,7 +148,14 @@ pub fn install_sample_plugin(dir: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Execute a validated plugin manifest against the given image and optional sidecar path.
+fn read_capped<R: Read>(mut reader: R, limit: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = reader.by_ref().take(limit as u64).read_to_end(&mut buf);
+    buf
+}
+
+/// Execute a validated plugin manifest against the given image and optional sidecar path
+/// with a strict 30-second timeout and 1 MB stdout/stderr cap.
 pub fn run_plugin(
     manifest: &PluginManifest,
     image_path: &Path,
@@ -124,7 +164,7 @@ pub fn run_plugin(
     if !validate_manifest(manifest) {
         return Err(BeamError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Invalid plugin manifest",
+            "Invalid or disallowed plugin manifest",
         )));
     }
 
@@ -135,15 +175,52 @@ pub fn run_plugin(
     if let Some(sc) = sidecar_path {
         cmd.env("BEAM_SIDECAR_PATH", sc);
     }
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| BeamError::Io(std::io::Error::other(format!("Plugin exec failed: {e}"))))?;
 
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_handle = std::thread::spawn(move || {
+        stdout_pipe
+            .map(|r| read_capped(r, MAX_PLUGIN_OUTPUT_BYTES))
+            .unwrap_or_default()
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        stderr_pipe
+            .map(|r| read_capped(r, MAX_PLUGIN_OUTPUT_BYTES))
+            .unwrap_or_default()
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if start.elapsed() >= PLUGIN_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
+            return Err(BeamError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Plugin execution timed out after 30s",
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+
     Ok(PluginOutput {
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        exit_code: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout_bytes).trim().to_string(),
+        stderr: String::from_utf8_lossy(&stderr_bytes).trim().to_string(),
     })
 }
 
@@ -167,8 +244,32 @@ mod tests {
         let img_path = dir.join("test_shot.dng");
         let out = run_plugin(&discovered[0], &img_path, None).unwrap();
         assert_eq!(out.exit_code, 0);
-        assert!(out.stdout.contains("test_shot.dng"));
+        if !cfg!(windows) {
+            assert!(out.stdout.contains("test_shot.dng"));
+        }
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_plugin_rejects_shell_wrappers() {
+        for shell in [
+            "sh",
+            "/bin/bash",
+            "cmd",
+            "cmd.exe",
+            "powershell.exe",
+            "pwsh",
+        ] {
+            let m = PluginManifest {
+                id: "bad".into(),
+                name: "Bad".into(),
+                description: String::new(),
+                command: shell.into(),
+                args: vec!["-c".into(), "id".into()],
+                category: PluginCategory::Analyze,
+            };
+            assert!(!validate_manifest(&m), "Shell {shell} should be rejected");
+        }
     }
 }

@@ -148,9 +148,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return color;
     }
 
-    d_hue = d_hue / total_weight;
-    d_sat = d_sat / total_weight;
-    d_lum = d_lum / total_weight;
+    let norm_w = max(total_weight, 1.0);
+    d_hue = d_hue / norm_w;
+    d_sat = d_sat / norm_w;
+    d_lum = d_lum / norm_w;
 
     var new_h = (hsl.x + d_hue + 360.0) % 360.0;
     var new_s = clamp(hsl.y * (1.0 + d_sat), 0.0, 1.0);

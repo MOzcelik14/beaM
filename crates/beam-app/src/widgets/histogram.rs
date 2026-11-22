@@ -52,11 +52,6 @@ impl Default for HistogramData {
 }
 
 impl HistogramData {
-    /// Compute 256-bin histogram from RGBA32F linear or sRGB pixel data.
-    pub fn compute_from_rgba32f(data: &[f32]) -> Self {
-        Self::compute_from_rgba32f_dims(data, 0, 0)
-    }
-
     /// Compute 256-bin histogram, Waveform, RGB Parade, and Vectorscope from RGBA32F pixel data.
     pub fn compute_from_rgba32f_dims(data: &[f32], width: usize, height: usize) -> Self {
         let mut r = [0u32; 256];
@@ -491,7 +486,8 @@ pub fn show_histogram_with_clipping(
                 let third_w = rect.width() / 3.0;
                 let cell_w = third_w / PAR_COLS as f32;
                 let cell_h = rect.height() / PAR_ROWS as f32;
-                let channels: [(&[u16], f32, (u8, u8, u8)); 3] = [
+                type ParadeChannel<'a> = (&'a [u16], f32, (u8, u8, u8));
+                let channels: [ParadeChannel<'_>; 3] = [
                     (&data.parade_r, 0.0, (245, 75, 75)),
                     (&data.parade_g, third_w, (75, 225, 95)),
                     (&data.parade_b, third_w * 2.0, (75, 145, 255)),

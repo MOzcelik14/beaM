@@ -52,9 +52,27 @@ jobs:
             fi
           fi
 
+  verify-tests:
+    name: Verify Workspace Tests
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace
+
   build-linux:
     name: Build Linux Packages
-    needs: check-version
+    needs: [check-version, verify-tests]
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-22.04
     steps:
@@ -91,7 +109,7 @@ jobs:
 
   build-windows:
     name: Build Windows Packages
-    needs: check-version
+    needs: [check-version, verify-tests]
     if: needs.check-version.outputs.should_release == 'true'
     runs-on: windows-latest
     steps:

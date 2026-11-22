@@ -186,9 +186,7 @@ impl LibraryDb {
 
         let conn = Connection::open_with_flags(
             path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_URI,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )
         .map_err(|e| BeamError::Database(e.to_string()))?;
 
@@ -208,6 +206,7 @@ impl LibraryDb {
                 r#"
             PRAGMA foreign_keys = ON;
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA busy_timeout = 5000;
 
             CREATE TABLE IF NOT EXISTS schema_version (
@@ -231,10 +230,11 @@ impl LibraryDb {
                 sidecar_path TEXT
             );
 
-            CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(file_path);
             CREATE INDEX IF NOT EXISTS idx_photos_rating ON photos(rating);
             CREATE INDEX IF NOT EXISTS idx_photos_color ON photos(color_label);
             CREATE INDEX IF NOT EXISTS idx_photos_created_at ON photos(created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_photos_file_size ON photos(file_size);
+            CREATE INDEX IF NOT EXISTS idx_photos_file_name ON photos(file_name);
 
             CREATE TABLE IF NOT EXISTS virtual_copies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -257,7 +257,6 @@ impl LibraryDb {
                 PRIMARY KEY (photo_id, tag_id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
             CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag_id);
 
             CREATE TABLE IF NOT EXISTS smart_collections (
@@ -572,11 +571,19 @@ impl LibraryDb {
             }
         }
 
+        let escape_like = |s: &str| -> String {
+            s.replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        };
+
         if let Some(query) = &filter.search_query {
             let q = query.trim();
             if !q.is_empty() {
-                sql.push_str(" AND (file_name LIKE ? OR camera_model LIKE ?)");
-                let pattern = format!("%{q}%");
+                sql.push_str(
+                    " AND (file_name LIKE ? ESCAPE '\\' OR camera_model LIKE ? ESCAPE '\\')",
+                );
+                let pattern = format!("%{}%", escape_like(q));
                 params_vec.push(pattern.clone().into());
                 params_vec.push(pattern.into());
             }
@@ -609,18 +616,27 @@ impl LibraryDb {
 
         if let Some(folder) = &filter.folder_path {
             let folder_str = folder.to_string_lossy().to_string();
+            let sep = if folder_str.contains('\\') && !folder_str.contains('/') {
+                '\\'
+            } else {
+                '/'
+            };
             let prefix = if folder_str.ends_with('/') || folder_str.ends_with('\\') {
                 folder_str
             } else {
-                format!("{folder_str}/")
+                format!("{folder_str}{sep}")
             };
+            let escaped_prefix = escape_like(&prefix);
             if filter.recursive {
-                sql.push_str(" AND file_path LIKE ?");
-                params_vec.push(format!("{prefix}%").into());
+                sql.push_str(" AND file_path LIKE ? ESCAPE '\\'");
+                params_vec.push(format!("{escaped_prefix}%").into());
             } else {
-                sql.push_str(" AND file_path LIKE ? AND file_path NOT LIKE ?");
-                params_vec.push(format!("{prefix}%").into());
-                params_vec.push(format!("{prefix}%/%").into());
+                sql.push_str(
+                    " AND file_path LIKE ? ESCAPE '\\' AND file_path NOT LIKE ? ESCAPE '\\' AND file_path NOT LIKE ? ESCAPE '\\'",
+                );
+                params_vec.push(format!("{escaped_prefix}%").into());
+                params_vec.push(format!("{escaped_prefix}%/%").into());
+                params_vec.push(format!("{escaped_prefix}%\\\\%").into());
             }
         }
 
@@ -817,26 +833,41 @@ impl LibraryDb {
         Ok(())
     }
 
-    /// Delete multiple photo records from the database.
+    /// Delete multiple photo records from the database inside a single transaction.
     pub fn delete_photos(&self, photo_ids: &[i64]) -> Result<usize> {
+        if photo_ids.is_empty() {
+            return Ok(0);
+        }
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| BeamError::Database(e.to_string()))?;
         let mut count = 0;
         for &id in photo_ids {
             if self.delete_photo(id).is_ok() {
                 count += 1;
             }
         }
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|e| BeamError::Database(e.to_string()))?;
         Ok(count)
     }
 
     /// Scan all photo records in the catalog and delete any whose file does not exist on disk.
     pub fn remove_missing_photos(&self) -> Result<usize> {
         let all_photos = self.query_photos(&LibraryFilter::default())?;
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| BeamError::Database(e.to_string()))?;
         let mut removed = 0;
         for photo in all_photos {
             if !Path::new(&photo.file_path).exists() && self.delete_photo(photo.id).is_ok() {
                 removed += 1;
             }
         }
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|e| BeamError::Database(e.to_string()))?;
         Ok(removed)
     }
 
@@ -1066,8 +1097,9 @@ impl LibraryDb {
             ));
         }
         let color_str = filter.color_label.map(|c| c.as_str().to_string());
-        self.conn
-            .execute(
+        let id: i64 = self
+            .conn
+            .query_row(
                 "INSERT INTO smart_collections (name, min_rating, color_label, file_type, search_query, tag)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(name) DO UPDATE SET
@@ -1075,7 +1107,8 @@ impl LibraryDb {
                     color_label = excluded.color_label,
                     file_type = excluded.file_type,
                     search_query = excluded.search_query,
-                    tag = excluded.tag",
+                    tag = excluded.tag
+                 RETURNING id",
                 params![
                     trimmed,
                     filter.min_rating as i64,
@@ -1084,9 +1117,10 @@ impl LibraryDb {
                     filter.search_query,
                     filter.tag
                 ],
+                |row| row.get(0),
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(id)
     }
 
     /// List all saved Smart Collections sorted alphabetically.
@@ -1187,87 +1221,100 @@ impl LibraryDb {
         Ok(())
     }
 
-    /// Detect exact duplicate files by grouping on file_size and verifying content fingerprint.
+    /// Detect exact duplicate files by grouping on file_size and verifying streaming 128-bit content fingerprint.
     pub fn find_duplicates(&self) -> Result<Vec<Vec<PhotoRecord>>> {
-        let mut size_stmt = self
+        let mut stmt = self
             .conn
             .prepare(
-                "SELECT file_size FROM photos WHERE file_size > 0 GROUP BY file_size HAVING COUNT(*) > 1",
+                "SELECT id, file_path, file_name, file_size, created_at, modified_at,
+                        camera_make, camera_model, width, height, rating, color_label,
+                        thumbnail_path, sidecar_path
+                 FROM photos
+                 WHERE file_size IN (
+                     SELECT file_size FROM photos WHERE file_size > 0
+                     GROUP BY file_size HAVING COUNT(*) > 1
+                 )
+                 ORDER BY file_size ASC, id ASC",
             )
             .map_err(|e| BeamError::Database(e.to_string()))?;
-        let sizes: Vec<i64> = size_stmt
-            .query_map([], |row| row.get(0))
+
+        let rows: Vec<PhotoRecord> = stmt
+            .query_map([], |row| {
+                let col_str: String = row.get(11)?;
+                Ok(PhotoRecord {
+                    id: row.get(0)?,
+                    file_path: row.get(1)?,
+                    file_name: row.get(2)?,
+                    file_size: row.get::<_, i64>(3)? as u64,
+                    created_at: row.get(4)?,
+                    modified_at: row.get(5)?,
+                    camera_make: row.get(6)?,
+                    camera_model: row.get(7)?,
+                    width: row.get::<_, i64>(8)? as u32,
+                    height: row.get::<_, i64>(9)? as u32,
+                    rating: row.get::<_, i64>(10)? as u8,
+                    color_label: ColorLabel::from_str_name(&col_str),
+                    thumbnail_path: row.get(12)?,
+                    sidecar_path: row.get(13)?,
+                })
+            })
             .map_err(|e| BeamError::Database(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();
 
-        let mut groups = Vec::new();
-        for sz in sizes {
-            let mut stmt = self
-                .conn
-                .prepare(
-                    "SELECT id, file_path, file_name, file_size, created_at, modified_at,
-                            camera_make, camera_model, width, height, rating, color_label,
-                            thumbnail_path, sidecar_path
-                     FROM photos WHERE file_size = ?1 ORDER BY id ASC",
-                )
-                .map_err(|e| BeamError::Database(e.to_string()))?;
-            let candidates: Vec<PhotoRecord> = stmt
-                .query_map(params![sz], |row| {
-                    let col_str: String = row.get(11)?;
-                    Ok(PhotoRecord {
-                        id: row.get(0)?,
-                        file_path: row.get(1)?,
-                        file_name: row.get(2)?,
-                        file_size: row.get::<_, i64>(3)? as u64,
-                        created_at: row.get(4)?,
-                        modified_at: row.get(5)?,
-                        camera_make: row.get(6)?,
-                        camera_model: row.get(7)?,
-                        width: row.get::<_, i64>(8)? as u32,
-                        height: row.get::<_, i64>(9)? as u32,
-                        rating: row.get::<_, i64>(10)? as u8,
-                        color_label: ColorLabel::from_str_name(&col_str),
-                        thumbnail_path: row.get(12)?,
-                        sidecar_path: row.get(13)?,
-                    })
-                })
-                .map_err(|e| BeamError::Database(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            let mut by_hash: std::collections::HashMap<u64, Vec<PhotoRecord>> =
-                std::collections::HashMap::new();
-            for rec in candidates {
-                if let Ok(bytes) = fs::read(&rec.file_path) {
-                    let mut h: u64 = 0xcbf29ce484222325;
-                    for &b in &bytes {
-                        h ^= b as u64;
-                        h = h.wrapping_mul(0x100000001b3);
-                    }
-                    by_hash.entry(h).or_default().push(rec);
-                }
-            }
-            for (_h, g) in by_hash {
-                if g.len() > 1 {
-                    groups.push(g);
-                }
+        let mut by_size_and_hash: std::collections::BTreeMap<(u64, u128), Vec<PhotoRecord>> =
+            std::collections::BTreeMap::new();
+        for rec in rows {
+            if let Ok(fingerprint) = stream_file_fingerprint_128(Path::new(&rec.file_path)) {
+                by_size_and_hash
+                    .entry((rec.file_size, fingerprint))
+                    .or_default()
+                    .push(rec);
             }
         }
+
+        let groups = by_size_and_hash
+            .into_values()
+            .filter(|g| g.len() > 1)
+            .collect();
         Ok(groups)
     }
 }
 
-/// List immediate subdirectories within a directory, ignoring hidden (dot) folders and sorting alphabetically.
+fn stream_file_fingerprint_128(path: &Path) -> std::io::Result<u128> {
+    use std::io::{BufReader, Read};
+    const FNV_OFFSET_128: u128 = 0x6c62272e07bb014262b821756295c58d;
+    const FNV_PRIME_128: u128 = 0x0000000001000000000000000000013b;
+
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut buf = [0u8; 64 * 1024];
+    let mut hash = FNV_OFFSET_128;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            hash ^= b as u128;
+            hash = hash.wrapping_mul(FNV_PRIME_128);
+        }
+    }
+    Ok(hash)
+}
+
+/// List immediate subdirectories within a directory, ignoring hidden (dot) folders and symlinks, sorted alphabetically.
 pub fn list_subdirectories(folder: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(entries) = fs::read_dir(folder) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if !name.starts_with('.') {
-                        dirs.push(path);
+            if let Ok(meta) = fs::symlink_metadata(&path) {
+                if !meta.file_type().is_symlink() && meta.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if !name.starts_with('.') {
+                            dirs.push(path);
+                        }
                     }
                 }
             }
@@ -1279,6 +1326,104 @@ pub fn list_subdirectories(folder: &Path) -> Vec<PathBuf> {
         name_a.to_lowercase().cmp(&name_b.to_lowercase())
     });
     dirs
+}
+
+/// Return the standard XMP sidecar path for a photo (`<stem>.xmp` next to the photo).
+pub fn xmp_path_for(photo_path: &Path) -> PathBuf {
+    photo_path.with_extension("xmp")
+}
+
+fn escape_xml(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Write an industry-standard XMP sidecar file (`xmp:Rating`, `xmp:Label`, `dc:title`,
+/// `dc:description`, `dc:creator`, `dc:rights`, `dc:subject`) atomically next to `photo_path`.
+pub fn write_xmp_sidecar(
+    photo_path: &Path,
+    meta: &PhotoMetadata,
+    rating: u8,
+    color_label: ColorLabel,
+    tags: &[String],
+) -> Result<PathBuf> {
+    let xmp_path = xmp_path_for(photo_path);
+    let label_str = match color_label {
+        ColorLabel::None => "",
+        ColorLabel::Red => "Red",
+        ColorLabel::Yellow => "Yellow",
+        ColorLabel::Green => "Green",
+        ColorLabel::Blue => "Blue",
+        ColorLabel::Purple => "Purple",
+    };
+
+    let mut xml = String::from(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
+         <x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n\
+         \x20<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
+         \x20\x20<rdf:Description rdf:about=\"\"\n\
+         \x20\x20\x20\x20xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n\
+         \x20\x20\x20\x20xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n",
+    );
+    xml.push_str(&format!("    xmp:Rating=\"{}\"\n", rating.min(5)));
+    if !label_str.is_empty() {
+        xml.push_str(&format!("    xmp:Label=\"{}\"\n", label_str));
+    }
+    xml.push_str("  >\n");
+
+    if !meta.title.trim().is_empty() {
+        xml.push_str(&format!(
+            "   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>\n",
+            escape_xml(&meta.title)
+        ));
+    }
+    if !meta.caption.trim().is_empty() {
+        xml.push_str(&format!(
+            "   <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:description>\n",
+            escape_xml(&meta.caption)
+        ));
+    }
+    if !meta.creator.trim().is_empty() {
+        xml.push_str(&format!(
+            "   <dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>\n",
+            escape_xml(&meta.creator)
+        ));
+    }
+    if !meta.copyright.trim().is_empty() {
+        xml.push_str(&format!(
+            "   <dc:rights><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:rights>\n",
+            escape_xml(&meta.copyright)
+        ));
+    }
+    if !tags.is_empty() {
+        xml.push_str("   <dc:subject><rdf:Bag>\n");
+        for tag in tags {
+            if !tag.trim().is_empty() {
+                xml.push_str(&format!("    <rdf:li>{}</rdf:li>\n", escape_xml(tag)));
+            }
+        }
+        xml.push_str("   </rdf:Bag></dc:subject>\n");
+    }
+
+    xml.push_str(
+        "  </rdf:Description>\n\
+         \x20</rdf:RDF>\n\
+         </x:xmpmeta>\n\
+         <?xpacket end=\"w\"?>\n",
+    );
+
+    beam_core::fs_util::atomic_write(&xmp_path, xml.as_bytes())?;
+    Ok(xmp_path)
 }
 
 #[cfg(test)]
@@ -1546,13 +1691,13 @@ mod tests {
             "Must treat search literally, not boolean OR"
         );
 
-        // 3. Metacharacter % (wildcard match)
+        // 3. Metacharacter % (must be escaped as literal, not wildcard)
         let wildcard_filter = LibraryFilter {
             search_query: Some("%".into()),
             ..Default::default()
         };
         let res_wc = db.query_photos(&wildcard_filter).unwrap();
-        assert_eq!(res_wc.len(), 1, "Wildcard search matches safely");
+        assert_eq!(res_wc.len(), 0, "Literal % must not act as SQL wildcard");
 
         // 4. Very long search query (10,000 characters)
         let long_query = "x".repeat(10_000);
@@ -1920,6 +2065,35 @@ mod tests {
         let dups = db.find_duplicates().unwrap();
         assert_eq!(dups.len(), 1);
         assert_eq!(dups[0].len(), 2);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_xmp_sidecar_export_escapes_xml() {
+        let temp_dir = std::env::temp_dir().join(format!("beam_xmp_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let photo = temp_dir.join("sample.dng");
+        let meta = PhotoMetadata {
+            title: "Dawn & <Ridge>".into(),
+            caption: "Line \"1\" '2'".into(),
+            copyright: "2026 beaM".into(),
+            creator: "M. Author".into(),
+            gps_lat: None,
+            gps_lon: None,
+        };
+        let tags = vec!["landscape".to_string(), "raw<test>".to_string()];
+        let xmp_path = write_xmp_sidecar(&photo, &meta, 5, ColorLabel::Green, &tags).unwrap();
+        assert_eq!(xmp_path, temp_dir.join("sample.xmp"));
+
+        let content = fs::read_to_string(&xmp_path).unwrap();
+        assert!(content.contains("xmp:Rating=\"5\""));
+        assert!(content.contains("xmp:Label=\"Green\""));
+        assert!(content.contains("Dawn &amp; &lt;Ridge&gt;"));
+        assert!(content.contains("Line &quot;1&quot; &apos;2&apos;"));
+        assert!(content.contains("<rdf:li>raw&lt;test&gt;</rdf:li>"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }

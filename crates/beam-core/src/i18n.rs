@@ -168,9 +168,16 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = Self::default_path();
         if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(cfg) = ron::from_str::<AppConfig>(&content) {
-                    return cfg;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() <= 256 * 1024 {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Ok(cfg) = ron::Options::default()
+                            .with_recursion_limit(32)
+                            .from_str::<AppConfig>(&content)
+                        {
+                            return cfg;
+                        }
+                    }
                 }
             }
         }

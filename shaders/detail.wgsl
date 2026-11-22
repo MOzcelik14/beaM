@@ -46,76 +46,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_coords = vec2<i32>(clamp(in.uv * vec2<f32>(dims), vec2<f32>(0.0), vec2<f32>(max_coords)));
     let center = textureLoad(t_input, tex_coords, 0);
 
-    if (u_params.enabled == 0u) {
+    if (u_params.enabled == 0u || (
+        abs(u_params.dehaze) <= 0.001 &&
+        abs(u_params.clarity) <= 0.001 &&
+        u_params.sharpening <= 0.001
+    )) {
         return center;
     }
 
     var rgb = max(center.rgb, vec3<f32>(0.0));
 
-    // 0. 5x5 Edge-Preserving Local AI/Bilateral Denoise
-    if (u_params.ai_denoise > 0.001) {
-        let strength = clamp(u_params.ai_denoise, 0.0, 1.0);
-        let sigma_r = mix(0.02, 0.16, strength);
-        let c_lum = rec2020_lum(rgb);
-        var acc_rgb = vec3<f32>(0.0);
-        var acc_w = 0.0;
-        for (var dy: i32 = -2; dy <= 2; dy = dy + 1) {
-            for (var dx: i32 = -2; dx <= 2; dx = dx + 1) {
-                let s = load_clamped(tex_coords + vec2<i32>(dx, dy), max_coords);
-                let s_lum = rec2020_lum(s);
-                let d_lum = abs(s_lum - c_lum);
-                let dist2 = f32(dx * dx + dy * dy);
-                let w_spatial = exp(-dist2 / 6.0);
-                let w_range = exp(-(d_lum * d_lum) / (2.0 * sigma_r * sigma_r + 1e-6));
-                let w = w_spatial * w_range;
-                acc_rgb = acc_rgb + s * w;
-                acc_w = acc_w + w;
-            }
-        }
-        let denoised = acc_rgb / max(acc_w, 1e-5);
-        rgb = mix(rgb, denoised, strength);
-    }
-
-    // 3x3 neighborhood for Sharpening and Noise Reduction
-    var blur3 = vec3<f32>(0.0);
-    var luma_bilateral_sum = 0.0;
-    var luma_bilateral_w = 0.0;
-    let center_lum = rec2020_lum(rgb);
-    let luma_sigma = mix(0.01, 0.12, clamp(u_params.noise_reduction_luma, 0.0, 1.0));
-
-    for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
-        for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
-            let s = load_clamped(tex_coords + vec2<i32>(dx, dy), max_coords);
-            let k = select(select(1.0, 2.0, dx == 0 || dy == 0), 4.0, dx == 0 && dy == 0);
-            blur3 = blur3 + s * k;
-
-            let s_lum = rec2020_lum(s);
-            let diff = abs(s_lum - center_lum);
-            let bw = exp(-(diff * diff) / (2.0 * luma_sigma * luma_sigma + 1e-6)) * k;
-            luma_bilateral_sum = luma_bilateral_sum + s_lum * bw;
-            luma_bilateral_w = luma_bilateral_w + bw;
-        }
-    }
-    blur3 = blur3 / 16.0;
-
-    // 1. Noise Reduction (Luma + Color)
-    if (u_params.noise_reduction_luma > 0.001) {
-        let nr_lum = luma_bilateral_sum / max(luma_bilateral_w, 1e-5);
-        let new_lum = mix(center_lum, nr_lum, clamp(u_params.noise_reduction_luma, 0.0, 1.0));
-        let scale = new_lum / max(center_lum, 1e-5);
-        rgb = select(rgb, rgb * scale, center_lum > 1e-5);
-    }
-
-    if (u_params.noise_reduction_color > 0.001) {
-        let cur_lum = rec2020_lum(rgb);
-        let blur_lum = rec2020_lum(blur3);
-        let chroma = rgb - vec3<f32>(cur_lum);
-        let blur_chroma = blur3 - vec3<f32>(blur_lum);
-        let smooth_chroma = mix(chroma, blur_chroma, clamp(u_params.noise_reduction_color * 0.9, 0.0, 0.95));
-        rgb = max(vec3<f32>(cur_lum) + smooth_chroma, vec3<f32>(0.0));
-    }
-
-    // 2. Dehaze (local dark-channel veil removal)
+    // 1. Dehaze (local dark-channel veil removal)
     if (abs(u_params.dehaze) > 0.001) {
         var dark_min = min(rgb.r, min(rgb.g, rgb.b));
         // Sample 4 diagonal taps at radius 3 for dark channel estimation
@@ -137,7 +78,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // 3. Clarity (midtone local contrast using wider radius taps)
+    // 3x3 neighborhood only when Clarity or Sharpening is active
+    var blur3 = rgb;
+    if (abs(u_params.clarity) > 0.001 || u_params.sharpening > 0.001) {
+        var acc = vec3<f32>(0.0);
+        for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
+            for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
+                let s = load_clamped(tex_coords + vec2<i32>(dx, dy), max_coords);
+                let k = select(select(1.0, 2.0, dx == 0 || dy == 0), 4.0, dx == 0 && dy == 0);
+                acc = acc + s * k;
+            }
+        }
+        blur3 = acc / 16.0;
+    }
+
+    // 2. Clarity (midtone local contrast using wider radius taps)
     if (abs(u_params.clarity) > 0.001) {
         let w1 = load_clamped(tex_coords + vec2<i32>(-4, 0), max_coords);
         let w2 = load_clamped(tex_coords + vec2<i32>(4, 0), max_coords);
@@ -152,7 +107,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         rgb = max(rgb + detail * u_params.clarity * (0.35 + 0.65 * mid_mask), vec3<f32>(0.0));
     }
 
-    // 4. Sharpening (luminance unsharp mask)
+    // 3. Sharpening (luminance unsharp mask)
     if (u_params.sharpening > 0.001) {
         let cur_lum = rec2020_lum(rgb);
         let blur_lum = rec2020_lum(blur3);

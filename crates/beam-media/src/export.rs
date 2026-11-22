@@ -338,11 +338,11 @@ pub fn extract_raw_exif(path: &Path) -> Option<Vec<u8>> {
             while i + 10 < bytes.len() {
                 if bytes[i] == 0xFF && bytes[i + 1] == 0xE1 {
                     let length = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-                    if length <= MAX_EXIF_SIZE
+                    if (6..=MAX_EXIF_SIZE).contains(&length)
                         && i + 4 + length <= bytes.len()
                         && &bytes[i + 4..i + 10] == b"Exif\0\0"
                     {
-                        return Some(bytes[i + 4..i + 2 + length].to_vec());
+                        return Some(bytes[i + 10..i + 2 + length].to_vec());
                     }
                 }
                 i += 1;
@@ -402,14 +402,20 @@ pub fn expand_filename_template(
     let counter_str = counter.to_string();
     let rating_str = rating.to_string();
 
-    let mut result = tpl
+    let result = tpl
         .replace("{name}", name)
         .replace("{date}", date_str)
         .replace("{counter}", &counter_str)
         .replace("{rating}", &rating_str);
 
+    sanitize_filename_stem(&result)
+}
+
+/// Strictly sanitizes a filename stem against path traversal, control characters,
+/// prohibited filesystem characters, Windows reserved device names, and excessive length.
+pub fn sanitize_filename_stem(raw: &str) -> String {
     // Filter control characters and prohibited filesystem characters: <>:"/\|?*
-    result = result
+    let mut result: String = raw
         .chars()
         .map(|c| {
             if c.is_control()
@@ -716,19 +722,30 @@ fn anchor_origin(
     (x, y)
 }
 
-/// Composite a PNG logo or bitmap text watermark onto `img` in-place.
-pub fn apply_watermark(img: &mut image::RgbaImage, wm: &WatermarkConfig) {
-    if !wm.enabled || wm.opacity <= 0.001 {
-        return;
+fn build_watermark_overlay(
+    img_w: u32,
+    img_h: u32,
+    wm: &WatermarkConfig,
+) -> Option<image::RgbaImage> {
+    if !wm.enabled || wm.opacity <= 0.001 || img_w < 16 || img_h < 16 {
+        return None;
     }
-    let (img_w, img_h) = img.dimensions();
-    if img_w < 16 || img_h < 16 {
-        return;
-    }
-    let opacity = wm.opacity.clamp(0.0, 1.0);
 
-    let overlay: Option<image::RgbaImage> = if let Some(ref logo_path) = wm.image_path {
-        if let Ok(dyn_img) = image::open(logo_path) {
+    if let Some(ref logo_path) = wm.image_path {
+        let Ok(file) = std::fs::File::open(logo_path) else {
+            return None;
+        };
+        let reader = image::ImageReader::new(std::io::BufReader::new(file));
+        let Ok(reader) = reader.with_guessed_format() else {
+            return None;
+        };
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(8192);
+        limits.max_image_height = Some(8192);
+        limits.max_alloc = Some(128 * 1024 * 1024);
+        let mut reader = reader;
+        reader.limits(limits);
+        if let Ok(dyn_img) = reader.decode() {
             let rgba = dyn_img.to_rgba8();
             let target_w = ((img_w as f32) * wm.scale.clamp(0.03, 0.8))
                 .round()
@@ -788,34 +805,199 @@ pub fn apply_watermark(img: &mut image::RgbaImage, wm: &WatermarkConfig) {
         Some(ov)
     } else {
         None
-    };
+    }
+}
 
-    if let Some(ov) = overlay {
-        let (ov_w, ov_h) = ov.dimensions();
-        let (ox, oy) = anchor_origin(img_w, img_h, ov_w, ov_h, wm.anchor, wm.margin);
-        for y in 0..ov_h {
-            let dst_y = oy + y as i32;
-            if dst_y < 0 || dst_y >= img_h as i32 {
+/// Composite a PNG logo or bitmap text watermark onto `img` in-place.
+pub fn apply_watermark(img: &mut image::RgbaImage, wm: &WatermarkConfig) {
+    let (img_w, img_h) = img.dimensions();
+    let Some(ov) = build_watermark_overlay(img_w, img_h, wm) else {
+        return;
+    };
+    let opacity = wm.opacity.clamp(0.0, 1.0);
+    let (ov_w, ov_h) = ov.dimensions();
+    let (ox, oy) = anchor_origin(img_w, img_h, ov_w, ov_h, wm.anchor, wm.margin);
+    for y in 0..ov_h {
+        let dst_y = oy + y as i32;
+        if dst_y < 0 || dst_y >= img_h as i32 {
+            continue;
+        }
+        for x in 0..ov_w {
+            let dst_x = ox + x as i32;
+            if dst_x < 0 || dst_x >= img_w as i32 {
                 continue;
             }
-            for x in 0..ov_w {
-                let dst_x = ox + x as i32;
-                if dst_x < 0 || dst_x >= img_w as i32 {
-                    continue;
-                }
-                let src_px = ov.get_pixel(x, y);
-                let a = (src_px[3] as f32 / 255.0) * opacity;
-                if a <= 0.001 {
-                    continue;
-                }
-                let dst_px = img.get_pixel_mut(dst_x as u32, dst_y as u32);
-                for c in 0..3 {
-                    let blended = (src_px[c] as f32) * a + (dst_px[c] as f32) * (1.0 - a);
-                    dst_px[c] = blended.round().clamp(0.0, 255.0) as u8;
-                }
+            let src_px = ov.get_pixel(x, y);
+            let a = (src_px[3] as f32 / 255.0) * opacity;
+            if a <= 0.001 {
+                continue;
+            }
+            let dst_px = img.get_pixel_mut(dst_x as u32, dst_y as u32);
+            for c in 0..3 {
+                let blended = (src_px[c] as f32) * a + (dst_px[c] as f32) * (1.0 - a);
+                dst_px[c] = blended.round().clamp(0.0, 255.0) as u8;
             }
         }
     }
+}
+
+fn apply_watermark_16(
+    img: &mut image::ImageBuffer<image::Rgba<u16>, Vec<u16>>,
+    wm: &WatermarkConfig,
+) {
+    let (img_w, img_h) = img.dimensions();
+    let Some(ov) = build_watermark_overlay(img_w, img_h, wm) else {
+        return;
+    };
+    let opacity = wm.opacity.clamp(0.0, 1.0);
+    let (ov_w, ov_h) = ov.dimensions();
+    let (ox, oy) = anchor_origin(img_w, img_h, ov_w, ov_h, wm.anchor, wm.margin);
+    for y in 0..ov_h {
+        let dst_y = oy + y as i32;
+        if dst_y < 0 || dst_y >= img_h as i32 {
+            continue;
+        }
+        for x in 0..ov_w {
+            let dst_x = ox + x as i32;
+            if dst_x < 0 || dst_x >= img_w as i32 {
+                continue;
+            }
+            let src_px = ov.get_pixel(x, y);
+            let a = (src_px[3] as f32 / 255.0) * opacity;
+            if a <= 0.001 {
+                continue;
+            }
+            let dst_px = img.get_pixel_mut(dst_x as u32, dst_y as u32);
+            for c in 0..3 {
+                let src16 = (src_px[c] as f32) * 257.0;
+                let blended = src16 * a + (dst_px[c] as f32) * (1.0 - a);
+                dst_px[c] = blended.round().clamp(0.0, 65535.0) as u16;
+            }
+        }
+    }
+}
+
+fn apply_unsharp_mask_16(
+    img: &image::ImageBuffer<image::Rgba<u16>, Vec<u16>>,
+    sharpening: OutputSharpening,
+) -> image::ImageBuffer<image::Rgba<u16>, Vec<u16>> {
+    if sharpening == OutputSharpening::None {
+        return img.clone();
+    }
+    let (radius, amount) = match sharpening {
+        OutputSharpening::None => (0.0f32, 0.0f32),
+        OutputSharpening::Screen => (0.8f32, 0.5f32),
+        OutputSharpening::Print => (1.2f32, 0.8f32),
+    };
+    let (w, h) = img.dimensions();
+    if w < 2 || h < 2 {
+        return img.clone();
+    }
+    let sigma = radius.max(0.5);
+    let kernel_radius = (sigma * 2.5).ceil() as i32;
+    let mut weights = Vec::new();
+    let mut weight_sum = 0.0f32;
+    for k in -kernel_radius..=kernel_radius {
+        let weight = (-((k * k) as f32) / (2.0 * sigma * sigma)).exp();
+        weights.push((k, weight));
+        weight_sum += weight;
+    }
+    for (_, w_val) in weights.iter_mut() {
+        *w_val /= weight_sum;
+    }
+
+    let mut h_blurred = vec![0.0f32; (w * h * 3) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let (mut r, mut g, mut b) = (0.0f32, 0.0f32, 0.0f32);
+            for &(k, weight) in &weights {
+                let sx = (x as i32 + k).clamp(0, w as i32 - 1) as u32;
+                let p = img.get_pixel(sx, y);
+                r += (p[0] as f32) * weight;
+                g += (p[1] as f32) * weight;
+                b += (p[2] as f32) * weight;
+            }
+            let idx = ((y * w + x) * 3) as usize;
+            h_blurred[idx] = r;
+            h_blurred[idx + 1] = g;
+            h_blurred[idx + 2] = b;
+        }
+    }
+
+    let mut output = image::ImageBuffer::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (mut br, mut bg, mut bb) = (0.0f32, 0.0f32, 0.0f32);
+            for &(k, weight) in &weights {
+                let sy = (y as i32 + k).clamp(0, h as i32 - 1) as u32;
+                let idx = ((sy * w + x) * 3) as usize;
+                br += h_blurred[idx] * weight;
+                bg += h_blurred[idx + 1] * weight;
+                bb += h_blurred[idx + 2] * weight;
+            }
+            let orig = img.get_pixel(x, y);
+            let sr = ((orig[0] as f32) + amount * ((orig[0] as f32) - br))
+                .clamp(0.0, 65535.0)
+                .round() as u16;
+            let sg = ((orig[1] as f32) + amount * ((orig[1] as f32) - bg))
+                .clamp(0.0, 65535.0)
+                .round() as u16;
+            let sb = ((orig[2] as f32) + amount * ((orig[2] as f32) - bb))
+                .clamp(0.0, 65535.0)
+                .round() as u16;
+            output.put_pixel(x, y, image::Rgba([sr, sg, sb, orig[3]]));
+        }
+    }
+    output
+}
+
+fn straighten_16(
+    img: &image::ImageBuffer<image::Rgba<u16>, Vec<u16>>,
+    straighten_deg: f32,
+) -> image::ImageBuffer<image::Rgba<u16>, Vec<u16>> {
+    let (w, h) = img.dimensions();
+    let mut out = image::ImageBuffer::new(w, h);
+    let rad = (-straighten_deg).to_radians();
+    let cos_a = rad.cos();
+    let sin_a = rad.sin();
+    let cx = (w as f32) * 0.5;
+    let cy = (h as f32) * 0.5;
+
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let src_x = cx + dx * cos_a - dy * sin_a;
+            let src_y = cy + dx * sin_a + dy * cos_a;
+
+            if src_x >= 0.0 && src_x <= (w - 1) as f32 && src_y >= 0.0 && src_y <= (h - 1) as f32 {
+                let x0 = src_x.floor() as u32;
+                let y0 = src_y.floor() as u32;
+                let x1 = (x0 + 1).min(w - 1);
+                let y1 = (y0 + 1).min(h - 1);
+                let fx = src_x - x0 as f32;
+                let fy = src_y - y0 as f32;
+
+                let p00 = img.get_pixel(x0, y0);
+                let p10 = img.get_pixel(x1, y0);
+                let p01 = img.get_pixel(x0, y1);
+                let p11 = img.get_pixel(x1, y1);
+
+                let mut interp = [0u16; 4];
+                for c in 0..4 {
+                    let top = (p00[c] as f32) * (1.0 - fx) + (p10[c] as f32) * fx;
+                    let bot = (p01[c] as f32) * (1.0 - fx) + (p11[c] as f32) * fx;
+                    interp[c] = (top * (1.0 - fy) + bot * fy).round().clamp(0.0, 65535.0) as u16;
+                }
+                out.put_pixel(x, y, image::Rgba(interp));
+            } else {
+                let cx_clamped = src_x.clamp(0.0, (w - 1) as f32).round() as u32;
+                let cy_clamped = src_y.clamp(0.0, (h - 1) as f32).round() as u32;
+                out.put_pixel(x, y, *img.get_pixel(cx_clamped, cy_clamped));
+            }
+        }
+    }
+    out
 }
 
 /// Comprehensive export configuration.
@@ -865,6 +1047,7 @@ fn export_tiff16_decoded_image(
     edit_stack: &EditStack,
     output_path: &Path,
     config: &ExportConfig,
+    raw_exif: Option<&[u8]>,
 ) -> Result<PathBuf> {
     let rgba_u16 = pipeline.render_tiled_to_rgba16(
         &gpu.device,
@@ -896,6 +1079,9 @@ fn export_tiff16_decoded_image(
         if crop.flip_v {
             img16 = image::imageops::flip_vertical(&img16);
         }
+        if crop.straighten.abs() > 0.001 {
+            img16 = straighten_16(&img16, crop.straighten);
+        }
         if crop.enabled {
             let (w, h) = img16.dimensions();
             let x =
@@ -923,6 +1109,14 @@ fn export_tiff16_decoded_image(
         );
     }
 
+    if config.sharpening != OutputSharpening::None {
+        img16 = apply_unsharp_mask_16(&img16, config.sharpening);
+    }
+
+    if config.watermark.enabled {
+        apply_watermark_16(&mut img16, &config.watermark);
+    }
+
     let final_w = img16.width();
     let final_h = img16.height();
     let mut rgb16_bytes = Vec::with_capacity((final_w as usize) * (final_h as usize) * 6);
@@ -930,6 +1124,11 @@ fn export_tiff16_decoded_image(
         for c in 0..3 {
             rgb16_bytes.extend_from_slice(&p[c].to_ne_bytes());
         }
+    }
+
+    let mut prepared_exif = raw_exif.map(|e| e.to_vec());
+    if let Some(ref mut exif) = prepared_exif {
+        sanitize_exif_orientation(exif);
     }
 
     let pid = std::process::id();
@@ -950,7 +1149,14 @@ fn export_tiff16_decoded_image(
         let mut writer = std::io::BufWriter::new(file);
         let mut encoder = image::codecs::tiff::TiffEncoder::new(&mut writer);
         if let Ok(icc) = get_icc_profile_bytes(config.color_space) {
-            let _ = encoder.set_icc_profile(icc);
+            if let Err(e) = encoder.set_icc_profile(icc) {
+                log::warn!("Failed to embed ICC profile in TIFF16: {e}");
+            }
+        }
+        if let Some(exif) = prepared_exif.take() {
+            if let Err(e) = encoder.set_exif_metadata(exif) {
+                log::warn!("Failed to embed EXIF metadata in TIFF16: {e}");
+            }
         }
         encoder
             .write_image(
@@ -1000,6 +1206,7 @@ pub fn export_decoded_image(
             edit_stack,
             output_path,
             config,
+            raw_exif.as_deref(),
         );
     }
 
@@ -1084,10 +1291,14 @@ pub fn export_decoded_image(
             let mut encoder = JpegEncoder::new_with_quality(&mut writer, quality);
 
             if let Some(icc) = icc_bytes {
-                let _ = encoder.set_icc_profile(icc);
+                if let Err(e) = encoder.set_icc_profile(icc) {
+                    log::warn!("Failed to embed ICC profile in JPEG: {e}");
+                }
             }
             if let Some(exif) = prepared_exif.take() {
-                let _ = encoder.set_exif_metadata(exif);
+                if let Err(e) = encoder.set_exif_metadata(exif) {
+                    log::warn!("Failed to embed EXIF metadata in JPEG: {e}");
+                }
             }
 
             encoder
@@ -1106,10 +1317,14 @@ pub fn export_decoded_image(
             let mut encoder = PngEncoder::new(&mut writer);
 
             if let Some(icc) = icc_bytes {
-                let _ = encoder.set_icc_profile(icc);
+                if let Err(e) = encoder.set_icc_profile(icc) {
+                    log::warn!("Failed to embed ICC profile in PNG: {e}");
+                }
             }
             if let Some(exif) = prepared_exif.take() {
-                let _ = encoder.set_exif_metadata(exif);
+                if let Err(e) = encoder.set_exif_metadata(exif) {
+                    log::warn!("Failed to embed EXIF metadata in PNG: {e}");
+                }
             }
 
             encoder
@@ -1122,36 +1337,20 @@ pub fn export_decoded_image(
                 .map_err(|e| BeamError::ImageProcessing(format!("PNG encode error: {e}")))?;
             Ok(())
         })(),
-        ExportFormat::Tiff16 => (|| -> Result<()> {
-            let file = std::fs::File::create(&tmp_path)?;
-            let mut writer = std::io::BufWriter::new(file);
-            let encoder = image::codecs::tiff::TiffEncoder::new(&mut writer);
-            let mut rgb16_bytes = Vec::with_capacity((final_w as usize) * (final_h as usize) * 6);
-            for p in rgba_image.pixels() {
-                for c in 0..3 {
-                    let v16 = (p[c] as u16) * 257;
-                    rgb16_bytes.extend_from_slice(&v16.to_ne_bytes());
-                }
-            }
-            encoder
-                .write_image(
-                    &rgb16_bytes,
-                    final_w,
-                    final_h,
-                    image::ExtendedColorType::Rgb16,
-                )
-                .map_err(|e| BeamError::ImageProcessing(format!("TIFF16 encode error: {e}")))?;
-            Ok(())
-        })(),
+        ExportFormat::Tiff16 => unreachable!("Handled by export_tiff16_decoded_image"),
         ExportFormat::WebP => (|| -> Result<()> {
             let file = std::fs::File::create(&tmp_path)?;
             let mut writer = std::io::BufWriter::new(file);
             let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut writer);
             if let Some(icc) = icc_bytes {
-                let _ = encoder.set_icc_profile(icc);
+                if let Err(e) = encoder.set_icc_profile(icc) {
+                    log::warn!("Failed to embed ICC profile in WebP: {e}");
+                }
             }
             if let Some(exif) = prepared_exif.take() {
-                let _ = encoder.set_exif_metadata(exif);
+                if let Err(e) = encoder.set_exif_metadata(exif) {
+                    log::warn!("Failed to embed EXIF metadata in WebP: {e}");
+                }
             }
             encoder
                 .write_image(
@@ -1216,16 +1415,17 @@ pub fn generate_output_path(
         .and_then(|s| s.to_str())
         .unwrap_or("export");
     let ext = format.extension();
-    let filename = if let Some(s) = suffix {
+    let raw_stem = if let Some(s) = suffix {
         if !s.is_empty() {
-            format!("{stem}{s}.{ext}")
+            format!("{stem}{s}")
         } else {
-            format!("{stem}.{ext}")
+            stem.to_string()
         }
     } else {
-        format!("{stem}.{ext}")
+        stem.to_string()
     };
-    output_dir.join(filename)
+    let safe_stem = sanitize_filename_stem(&raw_stem);
+    output_dir.join(format!("{safe_stem}.{ext}"))
 }
 
 /// Execute batch export of multiple files, reporting progress and honoring cancellation.
@@ -1259,7 +1459,7 @@ where
 
         // Expand template or custom suffix
         let filename_stem = if let Some(suffix) = &config.custom_suffix {
-            format!("{stem}{suffix}")
+            sanitize_filename_stem(&format!("{stem}{suffix}"))
         } else {
             expand_filename_template(
                 &config.filename_template,

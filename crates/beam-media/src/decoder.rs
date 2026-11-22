@@ -501,7 +501,7 @@ fn validate_ciff_ifd_inner(
     Ok(())
 }
 
-fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
+fn validate_bmff_container_with_size(bytes: &[u8], total_file_size: usize) -> Result<()> {
     if bytes.len() < 16 {
         return Err(BeamError::RawDecode(
             "Corrupted BMFF container: truncated".into(),
@@ -538,7 +538,7 @@ fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
                 bytes[offset + 14],
                 bytes[offset + 15],
             ]);
-            if size64 < 16 || size64 > bytes.len() as u64 {
+            if size64 < 16 || size64 > total_file_size as u64 {
                 return Err(BeamError::RawDecode(
                     "Corrupted BMFF box: 64-bit size out of range".into(),
                 ));
@@ -559,7 +559,7 @@ fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
             ));
         }
 
-        if offset.saturating_add(box_size) > bytes.len() {
+        if offset.saturating_add(box_size) > total_file_size {
             return Err(BeamError::RawDecode(
                 "Corrupted BMFF box: size exceeds file length".into(),
             ));
@@ -571,6 +571,11 @@ fn validate_bmff_container(bytes: &[u8]) -> Result<()> {
 
 /// Validate RAW container bounds (TIFF, X3F, BMFF, etc.) to prevent third-party parser panics and unbounded allocations.
 pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
+    validate_raw_container_with_size(bytes, bytes.len())
+}
+
+/// Validate RAW container bounds using a buffered header slice and the actual total file size.
+pub fn validate_raw_container_with_size(bytes: &[u8], total_file_size: usize) -> Result<()> {
     if bytes.len() < 8 {
         return Err(BeamError::RawDecode(
             "RAW container truncated (< 8 bytes)".into(),
@@ -595,10 +600,10 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         ));
     }
 
-    validate_tiff_raw_structure(bytes, bytes.len())?;
+    validate_tiff_raw_structure(bytes, total_file_size)?;
 
     if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        validate_bmff_container(bytes)?;
+        validate_bmff_container_with_size(bytes, total_file_size)?;
     }
 
     if bytes.starts_with(b"FOVb") {
@@ -690,17 +695,19 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         let tiff1_offset =
             u32::from_be_bytes([bytes[84], bytes[85], bytes[86], bytes[87]]) as usize;
         let tiff1_start = tiff1_offset.saturating_add(12);
-        if tiff1_start >= bytes.len() {
+        if tiff1_start >= total_file_size {
             return Err(BeamError::RawDecode(
                 "Corrupted RAF header: TIFF offset exceeds file".into(),
             ));
         }
-        validate_tiff_raw_structure(&bytes[tiff1_start..], bytes.len() - tiff1_start)?;
+        if tiff1_start < bytes.len() {
+            validate_tiff_raw_structure(&bytes[tiff1_start..], total_file_size - tiff1_start)?;
+        }
 
         let tiff2_offset =
             u32::from_be_bytes([bytes[100], bytes[101], bytes[102], bytes[103]]) as usize;
         if tiff2_offset < bytes.len() {
-            validate_tiff_raw_structure(&bytes[tiff2_offset..], bytes.len() - tiff2_offset)?;
+            validate_tiff_raw_structure(&bytes[tiff2_offset..], total_file_size - tiff2_offset)?;
         }
     }
 
@@ -712,7 +719,7 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         }
         let app1_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
         // APP1 must contain: 2 bytes len + 6 bytes "Exif\0\0" + 8 bytes TIFF header + 2 bytes IFD entry count = 18 bytes minimum
-        if app1_len < 18 || app1_len.saturating_add(4) > bytes.len() {
+        if app1_len < 18 || app1_len.saturating_add(4) > total_file_size {
             return Err(BeamError::RawDecode(
                 "Corrupted JPEG/EXIF container: APP1 length out of range".into(),
             ));
@@ -736,7 +743,8 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
                 "Corrupted JPEG/EXIF container: TIFF payload too short".into(),
             ));
         }
-        validate_tiff_raw_structure(&bytes[tiff_start..tiff_start + tiff_len], tiff_len)?;
+        let avail_len = bytes.len().saturating_sub(tiff_start).min(tiff_len);
+        validate_tiff_raw_structure(&bytes[tiff_start..tiff_start + avail_len], tiff_len)?;
     }
 
     if bytes.starts_with(b"\0MRM") {
@@ -747,14 +755,14 @@ pub fn validate_raw_container(bytes: &[u8]) -> Result<()> {
         }
         let data_offset = (u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize)
             .saturating_add(8);
-        if data_offset > bytes.len() {
+        if data_offset > total_file_size {
             return Err(BeamError::RawDecode(
                 "Corrupted MRW container: data offset exceeds file length".into(),
             ));
         }
         let mut currpos: usize = 8;
         let mut tiffpos: usize = 0;
-        while currpos.saturating_add(8) <= data_offset {
+        while currpos.saturating_add(8) <= data_offset.min(bytes.len()) {
             let tag = u32::from_be_bytes([
                 bytes[currpos],
                 bytes[currpos + 1],
@@ -874,7 +882,7 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
                     validate_raw_container(&whole)?;
                 }
             } else {
-                validate_raw_container(&head[..n])?;
+                validate_raw_container_with_size(&head[..n], file_size)?;
             }
         }
     }
@@ -900,6 +908,11 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             "RAW image has zero width or height".into(),
         ));
     }
+    if orig_w > MAX_IMAGE_DIMENSION || orig_h > MAX_IMAGE_DIMENSION {
+        return Err(BeamError::RawDecode(format!(
+            "RAW image dimensions ({orig_w}x{orig_h}) exceed maximum allowed ({MAX_IMAGE_DIMENSION} px)"
+        )));
+    }
     let total_pixels = (orig_w as u64) * (orig_h as u64);
     if total_pixels > MAX_IMAGE_PIXELS {
         return Err(BeamError::RawDecode(format!(
@@ -910,30 +923,50 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
     let camera_make = rawimage.camera.make.clone();
     let camera_model = rawimage.camera.model.clone();
 
-    // Use RawDevelop to rescale (black/white levels) and demosaic into linear RGB
+    // Use RawDevelop with WhiteBalance + Calibrate to produce D65 Linear sRGB,
+    // then transform into wide-gamut Linear Rec.2020 working space.
     let develop = RawDevelop {
         steps: vec![
             ProcessingStep::Rescale,
             ProcessingStep::Demosaic,
             ProcessingStep::FujiRotate,
             ProcessingStep::CropActiveArea,
+            ProcessingStep::WhiteBalance,
+            ProcessingStep::Calibrate,
         ],
     };
 
-    let intermediate = develop
-        .develop_intermediate(&rawimage)
-        .map_err(|e| BeamError::RawDecode(format!("RAW development/demosaicing failed: {e:?}")))?;
+    let develop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        develop.develop_intermediate(&rawimage)
+    }));
+    let intermediate = match develop_result {
+        Ok(Ok(inter)) => inter,
+        Ok(Err(e)) => {
+            return Err(BeamError::RawDecode(format!(
+                "RAW development/demosaicing failed: {e:?}"
+            )))
+        }
+        Err(_) => {
+            return Err(BeamError::RawDecode(
+                "RAW development panicked on corrupted input".into(),
+            ))
+        }
+    };
 
     let (width, height, mut rgba_floats) = match intermediate {
         Intermediate::ThreeColor(pixels) => {
             let dim = pixels.dim();
             let count = dim.w * dim.h;
             let mut rgba = Vec::with_capacity(count * 4);
-            let flat = pixels.flatten(); // &[f32] length 3 * count
+            let flat = pixels.flatten(); // &[f32] length 3 * count (Linear sRGB after Calibrate)
             for chunk in flat.as_chunks::<3>().0 {
-                rgba.push(chunk[0]);
-                rgba.push(chunk[1]);
-                rgba.push(chunk[2]);
+                let rec = beam_core::color::mat3_mul_vec3(
+                    &beam_core::color::SRGB_TO_REC2020,
+                    [chunk[0], chunk[1], chunk[2]],
+                );
+                rgba.push(rec[0].max(0.0));
+                rgba.push(rec[1].max(0.0));
+                rgba.push(rec[2].max(0.0));
                 rgba.push(1.0);
             }
             (dim.w as u32, dim.h as u32, rgba)
@@ -944,9 +977,13 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             let mut rgba = Vec::with_capacity(count * 4);
             let flat = pixels.flatten();
             for chunk in flat.as_chunks::<4>().0 {
-                rgba.push(chunk[0]);
-                rgba.push((chunk[1] + chunk[3]) * 0.5);
-                rgba.push(chunk[2]);
+                let rec = beam_core::color::mat3_mul_vec3(
+                    &beam_core::color::SRGB_TO_REC2020,
+                    [chunk[0], (chunk[1] + chunk[3]) * 0.5, chunk[2]],
+                );
+                rgba.push(rec[0].max(0.0));
+                rgba.push(rec[1].max(0.0));
+                rgba.push(rec[2].max(0.0));
                 rgba.push(1.0);
             }
             (dim.w as u32, dim.h as u32, rgba)
@@ -956,18 +993,19 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
             let count = dim.w * dim.h;
             let mut rgba = Vec::with_capacity(count * 4);
             for &gray in &pixels.data {
-                rgba.push(gray);
-                rgba.push(gray);
-                rgba.push(gray);
+                let g = gray.max(0.0);
+                rgba.push(g);
+                rgba.push(g);
+                rgba.push(g);
                 rgba.push(1.0);
             }
             (dim.w as u32, dim.h as u32, rgba)
         }
     };
 
-    // Ensure values are clamped to non-negative
+    // Ensure values are finite and non-negative
     for val in &mut rgba_floats {
-        if *val < 0.0 {
+        if !val.is_finite() || *val < 0.0 {
             *val = 0.0;
         }
     }
@@ -983,6 +1021,8 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
     let (proxy_w, proxy_h, proxy_data) =
         generate_proxy(oriented_w, oriented_h, &oriented_data, PROXY_MAX_DIMENSION);
 
+    let exif = extract_exif_metadata(path);
+
     Ok(DecodedImage {
         width: oriented_w,
         height: oriented_h,
@@ -993,19 +1033,19 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
         metadata: ImageMetadata {
             file_path: path.to_path_buf(),
             camera_make: if camera_make.is_empty() {
-                None
+                exif.make
             } else {
                 Some(camera_make)
             },
             camera_model: if camera_model.is_empty() {
-                None
+                exif.model
             } else {
                 Some(camera_model)
             },
-            iso: None,
-            shutter_speed: None,
-            aperture: None,
-            focal_length: None,
+            iso: exif.iso,
+            shutter_speed: exif.shutter,
+            aperture: exif.aperture,
+            focal_length: exif.focal_length,
             original_dimensions: (orig_w, orig_h),
             orientation: 1,
         },
@@ -1033,13 +1073,29 @@ pub struct ExifMetadata {
     pub focal_length: Option<f32>,
 }
 
-/// Extract fast image dimensions from header without full image decoding.
+/// Extract fast image dimensions from header without full pixel decoding.
 pub fn extract_image_dimensions(path: &Path) -> Option<(u32, u32)> {
     if is_raster_file(path) {
-        image::image_dimensions(path).ok()
-    } else {
-        None
+        return image::image_dimensions(path).ok();
     }
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_IMAGE_FILE_SIZE {
+        return None;
+    }
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source = rawler::rawsource::RawSource::new(path).ok()?;
+        let decoder = rawler::get_decoder(&source).ok()?;
+        let raw = decoder
+            .raw_image(&source, &rawler::decoders::RawDecodeParams::default(), true)
+            .ok()?;
+        let (w, h) = (raw.width as u32, raw.height as u32);
+        if w == 0 || h == 0 {
+            None
+        } else {
+            Some((w, h))
+        }
+    }));
+    res.ok().flatten()
 }
 
 /// Extract EXIF metadata (orientation, make, model, iso, shutter, aperture, focal_length) using kamadak-exif.
@@ -1145,7 +1201,12 @@ pub fn transform_icc_to_linear_rec2020(
     let src_profile = ColorProfile::new_from_slice(icc_bytes)
         .map_err(|e| format!("Invalid ICC profile: {e:?}"))?;
 
-    let dst_profile = ColorProfile::new_srgb();
+    let dst_profile = ColorProfile::new_from_cicp(moxcms::CicpProfile {
+        color_primaries: moxcms::CicpColorPrimaries::Bt2020,
+        transfer_characteristics: moxcms::TransferCharacteristics::Linear,
+        matrix_coefficients: moxcms::MatrixCoefficients::Identity,
+        full_range: true,
+    });
     let transform = src_profile
         .create_transform_f32(
             Layout::Rgba,
@@ -1155,19 +1216,33 @@ pub fn transform_icc_to_linear_rec2020(
         )
         .map_err(|e| format!("Failed to create ICC transform: {e:?}"))?;
 
-    let mut transformed = vec![0.0f32; pixels.len()];
-    transform
-        .transform(pixels, &mut transformed)
-        .map_err(|e| format!("ICC transform execution failed: {e:?}"))?;
-
-    // Now transformed is in non-linear sRGB; convert sRGB -> linear Rec.2020
-    for chunk in transformed.chunks_exact_mut(4) {
-        let lin = srgb_to_rec2020_linear(chunk[0], chunk[1], chunk[2]);
-        chunk[0] = lin[0].max(0.0);
-        chunk[1] = lin[1].max(0.0);
-        chunk[2] = lin[2].max(0.0);
+    // Transform in 64K-pixel chunks to avoid doubling peak RAM on 50-100 MP images
+    const CHUNK_FLOATS: usize = 65_536 * 4;
+    let mut scratch = vec![0.0f32; pixels.len().min(CHUNK_FLOATS)];
+    for chunk in pixels.chunks_mut(CHUNK_FLOATS) {
+        let len = chunk.len();
+        transform
+            .transform(chunk, &mut scratch[..len])
+            .map_err(|e| format!("ICC transform execution failed: {e:?}"))?;
+        for px in scratch[..len].chunks_exact_mut(4) {
+            px[0] = if px[0].is_finite() {
+                px[0].max(0.0)
+            } else {
+                0.0
+            };
+            px[1] = if px[1].is_finite() {
+                px[1].max(0.0)
+            } else {
+                0.0
+            };
+            px[2] = if px[2].is_finite() {
+                px[2].max(0.0)
+            } else {
+                0.0
+            };
+        }
+        chunk.copy_from_slice(&scratch[..len]);
     }
-    pixels.copy_from_slice(&transformed);
     Ok(())
 }
 
@@ -1580,6 +1655,27 @@ pub fn generate_thumbnail_with_edits(
                 let oriented = apply_orientation(thumb, exif.orientation);
                 return Ok(oriented);
             }
+        }
+    } else if !has_edits {
+        let embedded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let meta = std::fs::metadata(path).ok()?;
+            if meta.len() > MAX_IMAGE_FILE_SIZE {
+                return None;
+            }
+            let source = rawler::rawsource::RawSource::new(path).ok()?;
+            let decoder = rawler::get_decoder(&source).ok()?;
+            let params = rawler::decoders::RawDecodeParams::default();
+            decoder
+                .thumbnail_image(&source, &params)
+                .ok()
+                .flatten()
+                .or_else(|| decoder.preview_image(&source, &params).ok().flatten())
+        }));
+        if let Ok(Some(img)) = embedded {
+            let thumb = img.thumbnail(max_dim, max_dim).to_rgba8();
+            let exif = extract_exif_metadata(path);
+            let oriented = apply_orientation(thumb, exif.orientation);
+            return Ok(oriented);
         }
     }
 
@@ -2589,5 +2685,51 @@ mod tests {
         assert!(res_27.is_err());
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_validate_large_raw_container_headers_with_64k_buffer() {
+        // 1. Canon CR3 BMFF header with mdat box > 64KB inside a 10MB file
+        let mut cr3_head = Vec::new();
+        cr3_head.extend_from_slice(&24u32.to_be_bytes());
+        cr3_head.extend_from_slice(b"ftypcrx ");
+        cr3_head.extend_from_slice(&0u32.to_be_bytes());
+        cr3_head.extend_from_slice(b"crx isom");
+        cr3_head.extend_from_slice(&5_000_000u32.to_be_bytes());
+        cr3_head.extend_from_slice(b"mdat");
+        cr3_head.resize(64, 0);
+        assert!(
+            validate_raw_container_with_size(&cr3_head, 10_000_000).is_ok(),
+            "Valid CR3 head should pass when total_file_size is 10MB"
+        );
+
+        // 2. TIFF/ARW header with SubIFD offset at 500_000 in a 10MB file
+        let mut tiff_head = vec![0u8; 64];
+        tiff_head[0..4].copy_from_slice(b"II*\0");
+        tiff_head[4..8].copy_from_slice(&8u32.to_le_bytes());
+        tiff_head[8..10].copy_from_slice(&1u16.to_le_bytes()); // 1 IFD entry
+        tiff_head[10..12].copy_from_slice(&0x014Au16.to_le_bytes()); // SubIFD tag
+        tiff_head[12..14].copy_from_slice(&4u16.to_le_bytes()); // LONG
+        tiff_head[14..18].copy_from_slice(&1u32.to_le_bytes()); // count = 1
+        tiff_head[18..22].copy_from_slice(&500_000u32.to_le_bytes()); // offset > 64KB
+        assert!(
+            validate_raw_container_with_size(&tiff_head, 10_000_000).is_ok(),
+            "Valid TIFF head with >64KB SubIFD offset should pass when total_file_size is 10MB"
+        );
+    }
+
+    #[test]
+    fn test_icc_transform_preserves_display_p3_wide_gamut() {
+        let p3_icc = moxcms::ColorProfile::new_display_p3()
+            .encode()
+            .expect("encode Display P3 ICC");
+        // Pure Display P3 green (well outside sRGB gamut)
+        let mut px = [0.0f32, 1.0, 0.0, 1.0];
+        transform_icc_to_linear_rec2020(&p3_icc, &mut px).expect("ICC transform");
+        assert!(
+            px[1] > 0.93,
+            "Expected Display P3 green in Linear Rec.2020 to exceed sRGB-clipped G (~0.919), got {:?}",
+            px
+        );
     }
 }

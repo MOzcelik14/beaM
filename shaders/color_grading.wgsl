@@ -49,8 +49,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let pivot = clamp(0.5 - balance * 0.25, 0.15, 0.85);
     let feather = mix(0.08, 0.40, blending);
 
-    let w_shadows = 1.0 - smoothstep(max(0.0, pivot - feather), min(1.0, pivot + feather * 0.5), p_lum);
-    let w_highlights = smoothstep(max(0.0, pivot - feather * 0.5), min(1.0, pivot + feather), p_lum);
+    var w_shadows = 1.0 - smoothstep(max(0.0, pivot - feather), min(1.0, pivot + feather * 0.5), p_lum);
+    var w_highlights = smoothstep(max(0.0, pivot - feather * 0.5), min(1.0, pivot + feather), p_lum);
+    let sh_sum = w_shadows + w_highlights;
+    if (sh_sum > 1.0) {
+        w_shadows = w_shadows / sh_sum;
+        w_highlights = w_highlights / sh_sum;
+    }
     let w_midtones = max(0.0, 1.0 - w_shadows - w_highlights);
 
     // Apply tint offsets (scaled subtly for natural grading) and per-zone luminance
