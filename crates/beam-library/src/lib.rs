@@ -615,7 +615,8 @@ impl LibraryDb {
         }
 
         if let Some(folder) = &filter.folder_path {
-            let folder_str = folder.to_string_lossy().to_string();
+            let resolved = folder.canonicalize().unwrap_or_else(|_| folder.clone());
+            let folder_str = resolved.to_string_lossy().to_string();
             let sep = if folder_str.contains('\\') && !folder_str.contains('/') {
                 '\\'
             } else {
@@ -876,11 +877,17 @@ impl LibraryDb {
     /// Returns the number of successfully remapped photos.
     pub fn relink_folder(&self, old_dir: &Path, new_dir: &Path) -> Result<usize> {
         let all_photos = self.query_photos(&LibraryFilter::default())?;
+        let old_canonical = old_dir
+            .canonicalize()
+            .unwrap_or_else(|_| old_dir.to_path_buf());
         let mut remapped = 0;
 
         for photo in all_photos {
             let current_p = Path::new(&photo.file_path);
-            if let Ok(rel) = current_p.strip_prefix(old_dir) {
+            if let Ok(rel) = current_p
+                .strip_prefix(&old_canonical)
+                .or_else(|_| current_p.strip_prefix(old_dir))
+            {
                 let candidate = new_dir.join(rel);
                 if candidate.is_file() && self.update_photo_path(photo.id, &candidate).is_ok() {
                     remapped += 1;
