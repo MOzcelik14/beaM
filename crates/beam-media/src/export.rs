@@ -1438,6 +1438,10 @@ pub fn export_batch<F>(
 where
     F: Fn(BatchProgress),
 {
+    if items.is_empty() || cancel_flag.load(Ordering::Relaxed) {
+        return Ok(Vec::new());
+    }
+
     let gpu = HeadlessGpu::new().ok_or_else(|| {
         BeamError::GpuPipeline("Failed to initialize headless GPU for batch export".into())
     })?;
