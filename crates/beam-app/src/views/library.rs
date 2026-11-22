@@ -978,7 +978,9 @@ pub fn show_library_view(
                 let mut search_text = state.filter.search_query.clone().unwrap_or_default();
                 let resp = ui.add_sized(
                     [ui.available_width(), 24.0],
-                    egui::TextEdit::singleline(&mut search_text).hint_text(t!("library_search")),
+                    egui::TextEdit::singleline(&mut search_text)
+                        .desired_width(0.0)
+                        .hint_text(t!("library_search")),
                 );
                 if resp.changed() {
                     state.filter.search_query = if search_text.trim().is_empty() {
@@ -1101,15 +1103,16 @@ pub fn show_library_view(
                         ui.add_space(4.0);
                     }
 
-                    ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let add_clicked = ui.small_button(t!("library_tag_add")).clicked();
                         let input_resp = ui.add_sized(
-                            [(ui.available_width() - 48.0).max(60.0), 22.0],
+                            [ui.available_width().max(40.0), 22.0],
                             egui::TextEdit::singleline(&mut state.tag_input)
+                                .desired_width(0.0)
                                 .hint_text(t!("library_tag_add_hint")),
                         );
                         let enter_pressed = input_resp.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let add_clicked = ui.small_button(t!("library_tag_add")).clicked();
                         if (enter_pressed || add_clicked) && !state.tag_input.trim().is_empty() {
                             let new_tag = state.tag_input.trim().to_string();
                             if state.selected_photo_ids.is_empty() {
@@ -1139,8 +1142,18 @@ pub fn show_library_view(
                 ui.add_space(2.0);
                 let collections_snapshot = state.smart_collections.clone();
                 for col in collections_snapshot {
-                    ui.horizontal(|ui| {
-                        if ui.small_button(&col.name).clicked() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("×").clicked() {
+                            let _ = db.delete_smart_collection(col.id);
+                            state.needs_refresh = true;
+                        }
+                        if ui
+                            .add_sized(
+                                [ui.available_width().max(40.0), 22.0],
+                                egui::Button::new(&col.name),
+                            )
+                            .clicked()
+                        {
                             state.filter.min_rating = col.min_rating;
                             state.filter.color_label = col.color_label;
                             state.filter.file_type = col.file_type;
@@ -1148,18 +1161,9 @@ pub fn show_library_view(
                             state.filter.tag = col.tag.clone();
                             state.needs_refresh = true;
                         }
-                        if ui.small_button("x").clicked() {
-                            let _ = db.delete_smart_collection(col.id);
-                            state.needs_refresh = true;
-                        }
                     });
                 }
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [(ui.available_width() - 68.0).max(60.0), 22.0],
-                        egui::TextEdit::singleline(&mut state.smart_collection_name)
-                            .hint_text(t!("library_smart_name_hint")),
-                    );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button(t!("library_smart_save")).clicked()
                         && !state.smart_collection_name.trim().is_empty()
                     {
@@ -1168,10 +1172,25 @@ pub fn show_library_view(
                         state.smart_collection_name.clear();
                         state.needs_refresh = true;
                     }
+                    ui.add_sized(
+                        [ui.available_width().max(40.0), 22.0],
+                        egui::TextEdit::singleline(&mut state.smart_collection_name)
+                            .desired_width(0.0)
+                            .hint_text(t!("library_smart_name_hint")),
+                    );
                 });
 
                 ui.add_space(6.0);
-                if ui.button(t!("library_duplicates")).clicked() {
+                let dup_btn = egui::Button::new(
+                    RichText::new(t!("library_duplicates"))
+                        .size(11.5)
+                        .color(Color32::from_rgb(200, 206, 220)),
+                )
+                .fill(Color32::from_rgb(28, 32, 42))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(45, 52, 68)))
+                .corner_radius(6.0)
+                .min_size(Vec2::new(ui.available_width(), 26.0));
+                if ui.add(dup_btn).clicked() {
                     match db.find_duplicates() {
                         Ok(groups) if !groups.is_empty() => {
                             state.duplicate_status = Some(
@@ -1190,6 +1209,7 @@ pub fn show_library_view(
                     }
                 }
                 if let Some(status) = &state.duplicate_status {
+                    ui.add_space(2.0);
                     ui.label(
                         RichText::new(status)
                             .size(10.5)
@@ -1197,7 +1217,7 @@ pub fn show_library_view(
                     );
                 }
 
-                ui.add_space(4.0);
+                ui.add_space(6.0);
                 ui.checkbox(&mut state.tethered_watch, t!("library_tether_watch"));
                 if state.tethered_watch {
                     ui.label(
@@ -1216,53 +1236,90 @@ pub fn show_library_view(
                             .size(11.0)
                             .color(Color32::from_rgb(140, 145, 160)),
                     );
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
+                    let field_w = ui.available_width();
                     ui.add_sized(
-                        [ui.available_width(), 22.0],
+                        [field_w, 22.0],
                         egui::TextEdit::singleline(&mut state.metadata_draft.title)
+                            .desired_width(0.0)
                             .hint_text(t!("library_meta_title")),
                     );
+                    ui.add_space(4.0);
                     ui.add_sized(
-                        [ui.available_width(), 22.0],
+                        [field_w, 22.0],
                         egui::TextEdit::singleline(&mut state.metadata_draft.caption)
+                            .desired_width(0.0)
                             .hint_text(t!("library_meta_caption")),
                     );
+                    ui.add_space(4.0);
                     ui.add_sized(
-                        [ui.available_width(), 22.0],
+                        [field_w, 22.0],
                         egui::TextEdit::singleline(&mut state.metadata_draft.creator)
+                            .desired_width(0.0)
                             .hint_text(t!("library_meta_creator")),
                     );
+                    ui.add_space(4.0);
                     ui.add_sized(
-                        [ui.available_width(), 22.0],
+                        [field_w, 22.0],
                         egui::TextEdit::singleline(&mut state.metadata_draft.copyright)
+                            .desired_width(0.0)
                             .hint_text(t!("library_meta_copyright")),
                     );
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        let half = (ui.available_width() - 6.0) * 0.5;
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let half = ((field_w - 4.0) * 0.5).floor().max(40.0);
                         ui.add_sized(
                             [half, 22.0],
                             egui::TextEdit::singleline(&mut state.gps_lat_input)
+                                .desired_width(0.0)
                                 .hint_text(t!("library_meta_gps_lat")),
                         );
                         ui.add_sized(
                             [half, 22.0],
                             egui::TextEdit::singleline(&mut state.gps_lon_input)
+                                .desired_width(0.0)
                                 .hint_text(t!("library_meta_gps_lon")),
                         );
                     });
+                    ui.add_space(6.0);
+                    let valid_gps = (
+                        state.gps_lat_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-90.0..=90.0).contains(v)),
+                        state.gps_lon_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-180.0..=180.0).contains(v)),
+                    );
                     ui.horizontal(|ui| {
-                        if ui.small_button(t!("library_meta_save")).clicked() {
-                            state.metadata_draft.gps_lat =
-                                state.gps_lat_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-90.0..=90.0).contains(v));
-                            state.metadata_draft.gps_lon =
-                                state.gps_lon_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-180.0..=180.0).contains(v));
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let has_map = matches!(valid_gps, (Some(_), Some(_)));
+                        let btn_w = if has_map {
+                            ((field_w - 4.0) * 0.5).floor().max(50.0)
+                        } else {
+                            field_w
+                        };
+                        let save_btn = egui::Button::new(
+                            RichText::new(t!("library_meta_save"))
+                                .size(11.5)
+                                .color(Color32::from_rgb(225, 232, 245)),
+                        )
+                        .fill(Color32::from_rgb(32, 45, 68))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(52, 85, 138)))
+                        .corner_radius(5.0)
+                        .min_size(Vec2::new(btn_w, 24.0));
+                        if ui.add(save_btn).clicked() {
+                            state.metadata_draft.gps_lat = valid_gps.0;
+                            state.metadata_draft.gps_lon = valid_gps.1;
                             let _ = db.set_photo_metadata(selected_id, &state.metadata_draft);
                         }
-                        if let (Some(lat), Some(lon)) = (
-                            state.gps_lat_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-90.0..=90.0).contains(v)),
-                            state.gps_lon_input.trim().parse::<f64>().ok().filter(|v| v.is_finite() && (-180.0..=180.0).contains(v)),
-                        ) {
-                            if ui.small_button(t!("library_open_map")).clicked() {
+                        if let (Some(lat), Some(lon)) = valid_gps {
+                            let map_btn = egui::Button::new(
+                                RichText::new(t!("library_open_map"))
+                                    .size(11.5)
+                                    .color(Color32::from_rgb(200, 206, 220)),
+                            )
+                            .fill(Color32::from_rgb(28, 32, 42))
+                            .stroke(Stroke::new(1.0, Color32::from_rgb(45, 52, 68)))
+                            .corner_radius(5.0)
+                            .min_size(Vec2::new(btn_w, 24.0));
+                            if ui.add(map_btn).clicked() {
                                 ctx.open_url(egui::OpenUrl::new_tab(format!(
                                     "https://www.openstreetmap.org/?mlat={lat:.6}&mlon={lon:.6}#map=15/{lat:.6}/{lon:.6}"
                                 )));
