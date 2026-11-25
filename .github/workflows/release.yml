@@ -103,7 +103,7 @@ jobs:
           ./packaging/linux/build-linux.sh "${{ needs.check-version.outputs.version }}"
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-dist
           path: dist/*
@@ -134,7 +134,7 @@ jobs:
           .\packaging\windows\build-windows.ps1 -Version "${{ needs.check-version.outputs.version }}"
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-dist
           path: dist/*
@@ -215,7 +215,7 @@ jobs:
           rm -rf "${DMG_STAGE}"
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-dist
           path: |
