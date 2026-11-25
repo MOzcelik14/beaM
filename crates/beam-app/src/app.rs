@@ -138,6 +138,7 @@ pub struct BeamApp {
     histogram_mode: HistogramMode,
     hsl_selected_band: usize,
     error_message: Option<String>,
+    gpu_error: Arc<Mutex<Option<String>>>,
     show_about: bool,
     show_settings: bool,
     show_develop_panel: bool,
@@ -287,10 +288,38 @@ impl BeamApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = channel();
 
-        let edit_pipeline = cc
-            .wgpu_render_state
-            .as_ref()
-            .map(|rs| EditPipeline::new(&rs.device, wgpu::TextureFormat::Rgba8Unorm));
+        let gpu_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let mut initial_error_message: Option<String> = None;
+        let edit_pipeline = cc.wgpu_render_state.as_ref().and_then(|rs| {
+            let err_slot = gpu_error.clone();
+            rs.device.on_uncaptured_error(Arc::new(move |err| {
+                log::error!("GPU uncaptured error: {err}");
+                if let Ok(mut guard) = err_slot.lock() {
+                    *guard = Some(err.to_string());
+                }
+            }));
+            let lost_slot = gpu_error.clone();
+            rs.device.set_device_lost_callback(move |reason, msg| {
+                log::error!("GPU device lost ({reason:?}): {msg}");
+                if let Ok(mut guard) = lost_slot.lock() {
+                    *guard = Some(format!("Device lost ({reason:?}): {msg}"));
+                }
+            });
+
+            match EditPipeline::new_for_adapter(
+                &rs.device,
+                &rs.adapter,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    log::error!("Failed to initialize GPU EditPipeline: {e}");
+                    initial_error_message =
+                        Some(t!("gpu_init_error", "error" => e.to_string()).to_string());
+                    None
+                }
+            }
+        });
 
         let catalog_path = default_catalog_path();
         let library_db = LibraryDb::open(&catalog_path)
@@ -507,7 +536,8 @@ impl BeamApp {
             histogram_data: None,
             histogram_mode: HistogramMode::Rgb,
             hsl_selected_band: 0,
-            error_message: None,
+            error_message: initial_error_message,
+            gpu_error,
             show_about: false,
             show_settings: false,
             show_develop_panel: app_config.show_develop_panel,
@@ -1055,6 +1085,11 @@ impl BeamApp {
 
     /// Process messages from the background decoding and import threads
     fn check_background_messages(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Ok(mut guard) = self.gpu_error.lock() {
+            if let Some(msg) = guard.take() {
+                self.error_message = Some(t!("gpu_runtime_error", "error" => msg).to_string());
+            }
+        }
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 BackgroundMsg::Started(gen_id, path) => {
@@ -1212,7 +1247,19 @@ impl BeamApp {
         let queue = &render_state.queue;
 
         if self.edit_pipeline.is_none() {
-            self.edit_pipeline = Some(EditPipeline::new(device, wgpu::TextureFormat::Rgba8Unorm));
+            match EditPipeline::new_for_adapter(
+                device,
+                &render_state.adapter,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ) {
+                Ok(p) => self.edit_pipeline = Some(p),
+                Err(e) => {
+                    log::error!("Failed to initialize GPU EditPipeline: {e}");
+                    self.error_message =
+                        Some(t!("gpu_init_error", "error" => e.to_string()).to_string());
+                    return;
+                }
+            }
         }
         let Some(pipeline) = self.edit_pipeline.as_mut() else {
             return;
@@ -6853,6 +6900,7 @@ mod tests {
             histogram_mode: HistogramMode::Rgb,
             hsl_selected_band: 0,
             error_message: None,
+            gpu_error: Arc::new(Mutex::new(None)),
             show_about: false,
             show_settings: false,
             show_develop_panel: true,

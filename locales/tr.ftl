@@ -613,6 +613,8 @@ history_crop_rotate = 90 Derece Döndür
 history_crop_flip_h = Yatay Çevir
 history_crop_flip_v = Dikey Çevir
 history_crop_straighten = Hizala
+gpu_init_error = GPU başlatılamadı: { $error }
+gpu_runtime_error = GPU hatası: { $error }
 
 
 

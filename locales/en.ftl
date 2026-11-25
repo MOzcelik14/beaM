@@ -613,6 +613,8 @@ history_crop_rotate = Rotate 90 deg
 history_crop_flip_h = Flip Horizontal
 history_crop_flip_v = Flip Vertical
 history_crop_straighten = Straighten
+gpu_init_error = GPU initialization failed: { $error }
+gpu_runtime_error = GPU error: { $error }
 
 
 
