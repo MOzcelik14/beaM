@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/MOzcelik14/beaM?style=flat-square&color=2f3542" alt="License" /></a>
   <a href="https://github.com/MOzcelik14/beaM/releases"><img src="https://img.shields.io/github/v/release/MOzcelik14/beaM?style=flat-square&color=2f3542" alt="Release" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Built%20with-Rust-2f3542?style=flat-square" alt="Built with Rust" /></a>
-  <a href="#system-requirements"><img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-2f3542?style=flat-square" alt="Platform: Linux | Windows" /></a>
+  <a href="#system-requirements"><img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-2f3542?style=flat-square" alt="Platform: Linux | Windows | macOS" /></a>
   <a href="https://github.com/MOzcelik14/beaM/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/MOzcelik14/beaM/release.yml?style=flat-square&color=2f3542&label=Release%20CI" alt="Release CI" /></a>
   <a href="https://github.com/MOzcelik14/beaM/commits/master"><img src="https://img.shields.io/github/last-commit/MOzcelik14/beaM?style=flat-square&color=2f3542" alt="Last Commit" /></a>
   <a href="https://github.com/MOzcelik14/prism-suite"><img src="https://img.shields.io/badge/Part%20of-prisM.%20Suite-2f3542?style=flat-square" alt="Part of prisM. Suite" /></a>
@@ -156,12 +156,17 @@ tar -xzf beam-v1.2.6-linux-x86_64.tar.gz
 - **Installer**: Download and run `beaM-v1.2.8-windows-x86_64-setup.exe`. Optional tasks include Start Menu shortcuts, desktop icon, `.beam` project association, and camera RAW file association.
 - **Portable**: Extract `beaM-v1.2.8-windows-x86_64.zip` and launch `beam.exe`.
 
+#### macOS (Apple Silicon / arm64)
+
+- **Disk Image (`.dmg`)**: Download `beaM-v1.2.8-macos-arm64.dmg`, open it, and drag `beaM..app` to `/Applications`.
+- **Portable Archive (`.tar.gz`)**: Extract `beaM-v1.2.8-macos-arm64.tar.gz` and run `./beaM-v1.2.8-macos-arm64/beam`.
+
 ### Building from Source
 
 #### Prerequisites
 
-- Rust toolchain (stable, Rust 2021 edition; install via [rustup](https://rustup.rs/)).
-- A GPU driver supporting Vulkan (Linux/Windows) or DirectX 12 (Windows).
+- Rust toolchain (MSRV 1.95+, Rust 2021 edition; install via [rustup](https://rustup.rs/)).
+- A GPU driver supporting Vulkan (Linux/Windows), DirectX 12 (Windows), or Metal (macOS).
 - Standard C/system build tools (`gcc` or `clang`, `pkg-config`, and Wayland/X11 development headers on Linux). SQLite is bundled via `rusqlite`, and RAW decoding is pure Rust, so no external `libsqlite3` or `libraw` headers are required.
 
 #### Compile and Run
@@ -258,8 +263,8 @@ beaM. follows XDG Base Directory conventions on Linux and standard AppData direc
 
 | Component | Minimum | Recommended |
 | :--- | :--- | :--- |
-| Operating System | 64-bit Linux (`glibc` 2.31+, Wayland or X11) or Windows 10 (64-bit) | Modern Linux distribution or Windows 11 (64-bit) |
-| Graphics API | GPU with Vulkan or DirectX 12 support (`wgpu`) | Dedicated GPU with 2 GB+ VRAM for high-resolution RAW editing |
+| Operating System | 64-bit Linux (`glibc` 2.31+, Wayland or X11), Windows 10 (64-bit), or macOS 13+ (Apple Silicon) | Modern Linux distribution, Windows 11 (64-bit), or macOS 14+ (Apple Silicon) |
+| Graphics API | GPU with Vulkan, DirectX 12, or Metal support (`wgpu`) | Dedicated GPU with 2 GB+ VRAM (or Apple Silicon unified memory) for high-resolution RAW editing |
 | Display | 800 x 600 minimum window resolution | 1920 x 1080 or higher, color-calibrated display |
 | Memory | 4 GB RAM | 8 GB RAM or higher (recommended for 50 MP - 100 MP RAW files) |
 | Storage | Local SSD or HDD for catalog and thumbnail cache | SSD / NVMe for fast RAW decoding and batch exports |

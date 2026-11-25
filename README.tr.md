@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/MOzcelik14/beaM?style=flat-square&color=2f3542" alt="License" /></a>
   <a href="https://github.com/MOzcelik14/beaM/releases"><img src="https://img.shields.io/github/v/release/MOzcelik14/beaM?style=flat-square&color=2f3542" alt="Release" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Built%20with-Rust-2f3542?style=flat-square" alt="Built with Rust" /></a>
-  <a href="#sistem-gereksinimleri"><img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-2f3542?style=flat-square" alt="Platform: Linux | Windows" /></a>
+  <a href="#sistem-gereksinimleri"><img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-2f3542?style=flat-square" alt="Platform: Linux | Windows | macOS" /></a>
   <a href="https://github.com/MOzcelik14/beaM/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/MOzcelik14/beaM/release.yml?style=flat-square&color=2f3542&label=Release%20CI" alt="Release CI" /></a>
   <a href="https://github.com/MOzcelik14/beaM/commits/master"><img src="https://img.shields.io/github/last-commit/MOzcelik14/beaM?style=flat-square&color=2f3542" alt="Last Commit" /></a>
   <a href="https://github.com/MOzcelik14/prism-suite"><img src="https://img.shields.io/badge/Part%20of-prisM.%20Suite-2f3542?style=flat-square" alt="Part of prisM. Suite" /></a>
@@ -156,12 +156,17 @@ tar -xzf beam-v1.2.6-linux-x86_64.tar.gz
 - **Kurucu (Installer)**: `beaM-v1.2.8-windows-x86_64-setup.exe` dosyasını indirip çalıştırın. Başlat Menüsü kısayolu, masaüstü simgesi, `.beam` proje ilişkilendirmesi ve kamera RAW dosya ilişkilendirmesi seçenekleri içerir.
 - **Taşınabilir (Portable)**: `beaM-v1.2.8-windows-x86_64.zip` arşivini açıp `beam.exe` dosyasını doğrudan çalıştırın.
 
+#### macOS (Apple Silicon / arm64)
+
+- **Disk İmajı (`.dmg`)**: `beaM-v1.2.8-macos-arm64.dmg` dosyasını indirip açın ve `beaM..app` paketini `/Applications` klasörüne sürükleyin.
+- **Taşınabilir Arşiv (`.tar.gz`)**: `beaM-v1.2.8-macos-arm64.tar.gz` arşivini açıp `./beaM-v1.2.8-macos-arm64/beam` komutunu çalıştırın.
+
 ### Kaynaktan Derleme
 
 #### Ön Koşullar
 
-- Rust araç zinciri (stable, Rust 2021 edition; [rustup](https://rustup.rs/) ile kurulabilir).
-- Vulkan (Linux/Windows) veya DirectX 12 (Windows) destekli GPU sürücüsü.
+- Rust araç zinciri (MSRV 1.95+, Rust 2021 edition; [rustup](https://rustup.rs/) ile kurulabilir).
+- Vulkan (Linux/Windows), DirectX 12 (Windows) veya Metal (macOS) destekli GPU sürücüsü.
 - Standart C/sistem derleme araçları (Linux'ta `gcc` veya `clang`, `pkg-config` ve Wayland/X11 geliştirme başlıkları). SQLite `rusqlite` ile gömülü geldiğinden ve RAW çözümleme saf Rust olduğundan harici `libsqlite3` veya `libraw` başlıklarına gerek yoktur.
 
 #### Derleme ve Çalıştırma
@@ -258,8 +263,8 @@ beaM., Linux'ta XDG Base Directory standartlarını, Windows'ta standart AppData
 
 | Bileşen | Asgari | Önerilen |
 | :--- | :--- | :--- |
-| İşletim Sistemi | 64-bit Linux (`glibc` 2.31+, Wayland veya X11) veya Windows 10 (64-bit) | Güncel Linux dağıtımı veya Windows 11 (64-bit) |
-| Grafik API | Vulkan veya DirectX 12 destekli GPU (`wgpu`) | Yüksek çözünürlüklü RAW işleme için 2 GB+ VRAM'li harici GPU |
+| İşletim Sistemi | 64-bit Linux (`glibc` 2.31+, Wayland veya X11), Windows 10 (64-bit) veya macOS 13+ (Apple Silicon) | Güncel Linux dağıtımı, Windows 11 (64-bit) veya macOS 14+ (Apple Silicon) |
+| Grafik API | Vulkan, DirectX 12 veya Metal destekli GPU (`wgpu`) | Yüksek çözünürlüklü RAW işleme için 2 GB+ VRAM'li harici GPU (veya Apple Silicon birleşik bellek) |
 | Ekran | En az 800 x 600 pencere çözünürlüğü | 1920 x 1080 veya üzeri, renk kalibreli ekran |
 | Bellek | 4 GB RAM | 8 GB RAM veya üzeri (50 MP - 100 MP RAW dosyaları için önerilir) |
 | Depolama | Katalog ve küçük resim önbelleği için yerel SSD veya HDD | Hızlı RAW çözümleme ve toplu dışa aktarma için SSD / NVMe |
@@ -294,7 +299,7 @@ flowchart LR
 - **v0.1.0 - v0.2.0**: Uygulama iskeleti, tahribatsız `.beam` yan dosya biçimi, ilk RAW çözümleme ve GPU düzenleme hattı.
 - **v0.8.0 - v1.0.0**: Tam ton/renk ayar seti (Ton Eğrisi, 8 bantlı HSL, 3 Yollu Renk Derecelendirme, Detay, 3D LUT, Kırpma/Düzeltme), SQLite Kütüphane kataloğu, küçük resimler, ön ayarlar ve toplu dışa aktarma.
 - **v1.1.0**: İşleme hattı doğruluğu, bellek güvenliği sertleştirmesi ve güvenlik denetimi düzeltmeleri.
-- **v1.2.0**: ICC profilli gerçek 16-bit GPU TIFF dışa aktarma, manuel lens ve perspektif düzeltme, Gam Dışı uyarılı Yumuşak Prova ve Odak Vurgulama, Waveform/RGB Parade/Vectorscope, Fırça/Parlaklık/Renk Aralığı maskeleri, Kamera Profilleri, Anlık Görüntüler, Etiketler, Akıllı Koleksiyonlar, IPTC/XMP meta verileri, GPS bağlantıları, Kopya Tespiti ve Kablolu İzleme.
+- **v1.2.0**: ICC profilli gerçek 16-bit GPU TIFF dışa aktarma, manuel lens ve perspektif düzeltme, Gam Dışı uyarılı Yumuşak Prova ve Odak Vurgulama, Waveform/RGB Parade/Vectorscope, Fırça/Parlaklık/Renk Aralığı maskeleri, Kamera Profilleri, Anlık Görüntüler, Etiketler, Akıllı Koleksiyonlar, IPTC/XMP meta verileri, GPS bağlantıları, Kopya Tespiti ve Klasör İzleme (Otomatik İçe Aktar).
 - **v1.2.5 - v1.2.6**: Yerel 5x5 kenar koruyucu Akıllı Gürültü Azaltma, Otomatik Gökyüzü ve Otomatik Konu sezgisel maskeleri, CLI Eklenti Mimarisi ve Kütüphane yerleşim düzeltmeleri.
 
 ### Planlanan Yönelim
