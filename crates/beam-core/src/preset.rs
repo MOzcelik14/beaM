@@ -774,8 +774,33 @@ pub fn save_user_preset(preset: &Preset, dir: &Path) -> Result<PathBuf, std::io:
             }
         })
         .collect();
-    let filename = format!("{clean_id}.beam.preset.ron");
-    let path = dir.join(filename);
+    let base = if clean_id.is_empty() {
+        "preset".to_string()
+    } else {
+        clean_id
+    };
+    let ron_opts = ron::Options::default().with_recursion_limit(32);
+    let mut suffix = 1usize;
+    let path = loop {
+        let filename = if suffix == 1 {
+            format!("{base}.beam.preset.ron")
+        } else {
+            format!("{base}-{suffix}.beam.preset.ron")
+        };
+        let candidate = dir.join(filename);
+        if !candidate.exists() {
+            break candidate;
+        }
+        // Overwrite if it belongs to the same preset ID; otherwise pick a unique suffix.
+        let same_id = fs::read_to_string(&candidate)
+            .ok()
+            .and_then(|c| ron_opts.from_str::<Preset>(&c).ok())
+            .is_some_and(|existing| existing.id == preset.id);
+        if same_id {
+            break candidate;
+        }
+        suffix += 1;
+    };
     let s = preset
         .to_ron_string()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -799,8 +824,29 @@ pub fn delete_user_preset(id: &str, dir: &Path) -> Result<bool, std::io::Error> 
             }
         })
         .collect();
-    let filename = format!("{clean_id}.beam.preset.ron");
-    let path = dir.join(filename);
+    let base = if clean_id.is_empty() {
+        "preset".to_string()
+    } else {
+        clean_id
+    };
+    let ron_opts = ron::Options::default().with_recursion_limit(32);
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("ron") {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&p) {
+                if let Ok(existing) = ron_opts.from_str::<Preset>(&content) {
+                    if existing.id == id {
+                        fs::remove_file(p)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    let path = dir.join(format!("{base}.beam.preset.ron"));
     if path.exists() {
         fs::remove_file(path)?;
         Ok(true)
@@ -928,6 +974,37 @@ mod tests {
         assert!(deleted);
         let loaded_after = load_user_presets(&temp_dir);
         assert_eq!(loaded_after.len(), 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_save_user_preset_collision_prevention() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("beam_preset_collision_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let p1 = Preset {
+            id: "foo/bar".into(),
+            name: "Preset One".into(),
+            ..Default::default()
+        };
+        let p2 = Preset {
+            id: "foo:bar".into(),
+            name: "Preset Two".into(),
+            ..Default::default()
+        };
+
+        let path1 = save_user_preset(&p1, &temp_dir).unwrap();
+        let path2 = save_user_preset(&p2, &temp_dir).unwrap();
+        assert_ne!(
+            path1, path2,
+            "Different preset IDs must not overwrite each other"
+        );
+
+        let loaded = load_user_presets(&temp_dir);
+        assert_eq!(loaded.len(), 2);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
