@@ -153,13 +153,13 @@ tar -xzf beam-v1.2.6-linux-x86_64.tar.gz
 
 #### Windows (64-bit)
 
-- **Kurucu (Installer)**: `beaM-v1.2.8-windows-x86_64-setup.exe` dosyasını indirip çalıştırın. Başlat Menüsü kısayolu, masaüstü simgesi, `.beam` proje ilişkilendirmesi ve kamera RAW dosya ilişkilendirmesi seçenekleri içerir.
-- **Taşınabilir (Portable)**: `beaM-v1.2.8-windows-x86_64.zip` arşivini açıp `beam.exe` dosyasını doğrudan çalıştırın.
+- **Kurucu (Installer)**: `beaM-v1.2.9-windows-x86_64-setup.exe` dosyasını indirip çalıştırın. Başlat Menüsü kısayolu, masaüstü simgesi, `.beam` proje ilişkilendirmesi ve kamera RAW dosya ilişkilendirmesi seçenekleri içerir.
+- **Taşınabilir (Portable)**: `beaM-v1.2.9-windows-x86_64.zip` arşivini açıp `beam.exe` dosyasını doğrudan çalıştırın.
 
 #### macOS (Apple Silicon / arm64)
 
-- **Disk İmajı (`.dmg`)**: `beaM-v1.2.8-macos-arm64.dmg` dosyasını indirip açın ve `beaM..app` paketini `/Applications` klasörüne sürükleyin.
-- **Taşınabilir Arşiv (`.tar.gz`)**: `beaM-v1.2.8-macos-arm64.tar.gz` arşivini açıp `./beaM-v1.2.8-macos-arm64/beam` komutunu çalıştırın.
+- **Disk İmajı (`.dmg`)**: `beaM-v1.2.9-macos-arm64.dmg` dosyasını indirip açın ve `beaM..app` paketini `/Applications` klasörüne sürükleyin.
+- **Taşınabilir Arşiv (`.tar.gz`)**: `beaM-v1.2.9-macos-arm64.tar.gz` arşivini açıp `./beaM-v1.2.9-macos-arm64/beam` komutunu çalıştırın.
 
 ### Kaynaktan Derleme
 

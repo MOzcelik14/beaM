@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           beam
-Version:        1.2.8
+Version:        1.2.9
 Release:        1%{?dist}
 Summary:        Professional, non-destructive RAW photo editor and library manager
 License:        GPL-3.0-only
