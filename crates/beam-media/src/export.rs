@@ -398,7 +398,9 @@ pub fn expand_filename_template(
         template
     };
 
-    let date_str = date.unwrap_or("2026-01-01");
+    let date_str = date
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or("unknown-date");
     let counter_str = counter.to_string();
     let rating_str = rating.to_string();
 
@@ -409,6 +411,29 @@ pub fn expand_filename_template(
         .replace("{rating}", &rating_str);
 
     sanitize_filename_stem(&result)
+}
+
+/// Format a file's modification timestamp as UTC `YYYY-MM-DD` for `{date}` fallback
+/// when EXIF capture date is unavailable.
+pub fn file_modified_date_str(path: &Path) -> Option<String> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let days = (secs / 86_400) as i64;
+    // Howard Hinnant civil-from-days algorithm (UTC)
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    Some(format!("{year:04}-{m:02}-{d:02}"))
 }
 
 /// Strictly sanitizes a filename stem against path traversal, control characters,
@@ -1465,10 +1490,11 @@ where
         let filename_stem = if let Some(suffix) = &config.custom_suffix {
             sanitize_filename_stem(&format!("{stem}{suffix}"))
         } else {
+            let fallback_date = file_modified_date_str(input_path);
             expand_filename_template(
                 &config.filename_template,
                 stem,
-                None,
+                fallback_date.as_deref(),
                 idx + 1,
                 0, // Default rating 0 when batching without library photo record
             )
@@ -2011,5 +2037,26 @@ mod tests {
                 proptest::prop_assert_ne!(&upper, reserved, "Matches reserved Windows name: {}", upper);
             }
         }
+    }
+
+    #[test]
+    fn test_filename_template_date_fallback_and_mtime() {
+        assert_eq!(
+            expand_filename_template("{date}_{name}", "shot", None, 1, 0),
+            "unknown-date_shot"
+        );
+        assert_eq!(
+            expand_filename_template("{date}_{name}", "shot", Some("   "), 1, 0),
+            "unknown-date_shot"
+        );
+
+        let temp_file =
+            std::env::temp_dir().join(format!("beam_mtime_date_{}.tmp", std::process::id()));
+        std::fs::write(&temp_file, b"ok").unwrap();
+        let mtime_date = file_modified_date_str(&temp_file).expect("mtime date");
+        assert_eq!(mtime_date.len(), 10);
+        assert_eq!(&mtime_date[4..5], "-");
+        assert_eq!(&mtime_date[7..8], "-");
+        let _ = std::fs::remove_file(&temp_file);
     }
 }
