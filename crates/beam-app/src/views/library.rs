@@ -2040,3 +2040,28 @@ pub fn show_library_view(
 
     action
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_folder_watch_fingerprint_detects_changes() {
+        let dir = std::env::temp_dir().join(format!("beam_watch_fp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let fp1 = folder_watch_fingerprint(&dir).expect("fingerprint 1");
+        let fp2 = folder_watch_fingerprint(&dir).expect("fingerprint 2");
+        assert_eq!(
+            fp1, fp2,
+            "Unchanged folder must yield identical fingerprint"
+        );
+
+        std::fs::write(dir.join("new_shot.dng"), b"raw").unwrap();
+        let fp3 = folder_watch_fingerprint(&dir).expect("fingerprint 3");
+        assert_ne!(fp1, fp3, "Adding a file must change folder fingerprint");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
