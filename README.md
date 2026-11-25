@@ -153,13 +153,13 @@ tar -xzf beam-v1.2.6-linux-x86_64.tar.gz
 
 #### Windows (64-bit)
 
-- **Installer**: Download and run `beaM-v1.2.9-windows-x86_64-setup.exe`. Optional tasks include Start Menu shortcuts, desktop icon, `.beam` project association, and camera RAW file association.
-- **Portable**: Extract `beaM-v1.2.9-windows-x86_64.zip` and launch `beam.exe`.
+- **Installer**: Download and run `beaM-v2026.11.0-windows-x86_64-setup.exe`. Optional tasks include Start Menu shortcuts, desktop icon, `.beam` project association, and camera RAW file association.
+- **Portable**: Extract `beaM-v2026.11.0-windows-x86_64.zip` and launch `beam.exe`.
 
 #### macOS (Apple Silicon / arm64)
 
-- **Disk Image (`.dmg`)**: Download `beaM-v1.2.9-macos-arm64.dmg`, open it, and drag `beaM..app` to `/Applications`.
-- **Portable Archive (`.tar.gz`)**: Extract `beaM-v1.2.9-macos-arm64.tar.gz` and run `./beaM-v1.2.9-macos-arm64/beam`.
+- **Disk Image (`.dmg`)**: Download `beaM-v2026.11.0-macos-arm64.dmg`, open it, and drag `beaM..app` to `/Applications`.
+- **Portable Archive (`.tar.gz`)**: Extract `beaM-v2026.11.0-macos-arm64.tar.gz` and run `./beaM-v2026.11.0-macos-arm64/beam`.
 
 ### Building from Source
 
