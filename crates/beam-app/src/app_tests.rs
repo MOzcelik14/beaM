@@ -58,6 +58,7 @@ fn create_test_app() -> BeamApp {
         zoom_level: 1.0,
         is_one_to_one: false,
         pan_offset: Vec2::ZERO,
+        last_fit_width: 0.0,
         gpu_full_image: None,
         gpu_full_texture: None,
         egui_full_texture_id: None,
@@ -239,4 +240,25 @@ fn test_localization_unsaved_strings() {
     assert_eq!(t!("unsaved_discard_and_exit"), "Exit Without Saving");
     assert_eq!(t!("unsaved_cancel"), "Cancel");
     assert!(t!("unsaved_dialog_message").contains("unsaved changes"));
+}
+
+#[test]
+fn test_wheel_zoom_step_is_bounded_and_proportional() {
+    let z1 = compute_wheel_zoom(1.0, 40.0, 10.0);
+    assert!(
+        (z1 - 1.12).abs() < 1e-4,
+        "One tick up should zoom ~12%, got {z1}"
+    );
+
+    let z_out = compute_wheel_zoom(1.12, -40.0, 10.0);
+    assert!(
+        (z_out - 1.0).abs() < 1e-4,
+        "One tick down should return to 1.0, got {z_out}"
+    );
+
+    let z_fast = compute_wheel_zoom(1.0, 1000.0, 10.0);
+    assert!(
+        (z_fast - 1.35).abs() < 1e-4,
+        "Fast scroll capped at 1.35x, got {z_fast}"
+    );
 }

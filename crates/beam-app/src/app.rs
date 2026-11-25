@@ -155,6 +155,7 @@ pub struct BeamApp {
     zoom_level: f32,
     is_one_to_one: bool,
     pan_offset: Vec2,
+    last_fit_width: f32,
     gpu_full_image: Option<GpuImage>,
     gpu_full_texture: Option<wgpu::Texture>,
     egui_full_texture_id: Option<egui::TextureId>,
@@ -243,6 +244,11 @@ pub enum PendingAction {
     OpenFileDialog,
     OpenProjectDialog,
     ImportFolderDialog,
+}
+
+fn compute_wheel_zoom(current_zoom: f32, raw_scroll_y: f32, max_zoom: f32) -> f32 {
+    let zoom_mult = 1.12_f32.powf(raw_scroll_y / 40.0).clamp(0.75, 1.35);
+    (current_zoom * zoom_mult).clamp(0.2, max_zoom)
 }
 
 fn default_export_dir() -> PathBuf {
@@ -556,6 +562,7 @@ impl BeamApp {
             zoom_level: 1.0,
             is_one_to_one: false,
             pan_offset: Vec2::ZERO,
+            last_fit_width: 0.0,
             gpu_full_image: None,
             gpu_full_texture: None,
             egui_full_texture_id: None,
@@ -2250,6 +2257,11 @@ impl eframe::App for BeamApp {
         {
             self.is_one_to_one = !self.is_one_to_one;
             if self.is_one_to_one {
+                if let Some(img) = &self.current_image {
+                    if self.last_fit_width > 1.0 {
+                        self.zoom_level = (img.width as f32 / self.last_fit_width).max(1.0);
+                    }
+                }
                 self.ensure_full_res_rendered(frame);
             } else {
                 self.zoom_level = 1.0;
@@ -3248,6 +3260,12 @@ impl eframe::App for BeamApp {
 
                                     if ui.add(one_btn).clicked() {
                                         self.is_one_to_one = true;
+                                        if let Some(img) = &self.current_image {
+                                            if self.last_fit_width > 1.0 {
+                                                self.zoom_level =
+                                                    (img.width as f32 / self.last_fit_width).max(1.0);
+                                            }
+                                        }
                                         self.ensure_full_res_rendered(frame);
                                     }
 
@@ -3283,18 +3301,17 @@ impl eframe::App for BeamApp {
                                     )
                                 };
 
-                                let (display_size, active_tex_id) = if self.is_one_to_one {
-                                    let (w, h) = if let Some(img) = &self.current_image {
-                                        (img.width as f32, img.height as f32)
-                                    } else {
-                                        (fit_size.x, fit_size.y)
-                                    };
-                                    (
-                                        Vec2::new(w, h) * self.zoom_level,
-                                        self.egui_full_texture_id.unwrap_or(texture_id),
-                                    )
+                                self.last_fit_width = fit_size.x;
+                                let native_zoom = self
+                                    .current_image
+                                    .as_ref()
+                                    .map(|img| (img.width as f32 / fit_size.x.max(1.0)).max(1.0))
+                                    .unwrap_or(1.0);
+                                let display_size = fit_size * self.zoom_level;
+                                let active_tex_id = if self.is_one_to_one {
+                                    self.egui_full_texture_id.unwrap_or(texture_id)
                                 } else {
-                                    (fit_size * self.zoom_level, texture_id)
+                                    texture_id
                                 };
 
                                 let (viewport_rect, viewport_resp) = ui.allocate_exact_size(
@@ -3302,22 +3319,47 @@ impl eframe::App for BeamApp {
                                     egui::Sense::click_and_drag(),
                                 );
 
-                                // Mouse-wheel zoom
+                                // Mouse-wheel zoom (read raw Event::MouseWheel so smooth_scroll_delta never compounds across frames)
                                 if viewport_resp.hovered() {
-                                    let scroll_y = ctx.input(|i| i.smooth_scroll_delta.y);
+                                    let scroll_y: f32 = ctx.input(|i| {
+                                        i.events
+                                            .iter()
+                                            .filter_map(|e| match e {
+                                                egui::Event::MouseWheel { delta, unit, .. } => {
+                                                    let px = match unit {
+                                                        egui::MouseWheelUnit::Point => delta.y,
+                                                        egui::MouseWheelUnit::Line => delta.y * 40.0,
+                                                        egui::MouseWheelUnit::Page => {
+                                                            delta.y * 200.0
+                                                        }
+                                                    };
+                                                    Some(px)
+                                                }
+                                                _ => None,
+                                            })
+                                            .sum()
+                                    });
                                     if scroll_y.abs() > 0.01 {
-                                        let zoom_mult =
-                                            if scroll_y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+                                        let max_zoom = (native_zoom * 4.0).max(10.0);
                                         let new_zoom =
-                                            (self.zoom_level * zoom_mult).clamp(0.2, 10.0);
-                                        self.zoom_level = new_zoom;
-                                        if self.zoom_level >= 1.0 && !self.is_one_to_one {
-                                            self.is_one_to_one = true;
-                                            self.ensure_full_res_rendered(frame);
-                                        } else if self.zoom_level < 0.95 && self.is_one_to_one {
-                                            self.is_one_to_one = false;
+                                            compute_wheel_zoom(self.zoom_level, scroll_y, max_zoom);
+                                        if (new_zoom - self.zoom_level).abs() > 1e-5 {
+                                            if let Some(pointer) = viewport_resp.hover_pos() {
+                                                let actual_mult = new_zoom / self.zoom_level;
+                                                let rel = pointer
+                                                    - (viewport_rect.center() + self.pan_offset);
+                                                self.pan_offset -= rel * (actual_mult - 1.0);
+                                            }
+                                            self.zoom_level = new_zoom;
+                                            let projected_w = fit_size.x * self.zoom_level;
+                                            if projected_w > 1600.0 && !self.is_one_to_one {
+                                                self.is_one_to_one = true;
+                                                self.ensure_full_res_rendered(frame);
+                                            } else if self.zoom_level <= 1.05 && self.is_one_to_one {
+                                                self.is_one_to_one = false;
+                                            }
+                                            ctx.request_repaint();
                                         }
-                                        ctx.request_repaint();
                                     }
                                 }
 
@@ -3331,6 +3373,7 @@ impl eframe::App for BeamApp {
                                 if viewport_resp.double_clicked() && !self.crop_mode_active {
                                     self.is_one_to_one = !self.is_one_to_one;
                                     if self.is_one_to_one {
+                                        self.zoom_level = native_zoom;
                                         self.ensure_full_res_rendered(frame);
                                     } else {
                                         self.zoom_level = 1.0;
