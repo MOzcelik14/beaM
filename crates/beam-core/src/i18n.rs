@@ -211,23 +211,39 @@ pub struct I18n {
 
 impl I18n {
     pub fn new(initial_lang: Language) -> Self {
-        let res_en =
-            FluentResource::try_new(EN_FTL.to_string()).expect("Failed to parse locales/en.ftl");
-        let lang_en: LanguageIdentifier = "en-US".parse().expect("Valid language identifier");
+        let lang_en: LanguageIdentifier = "en-US"
+            .parse()
+            .unwrap_or_else(|_| LanguageIdentifier::default());
         let mut bundle_en = FluentBundle::new_concurrent(vec![lang_en]);
         bundle_en.set_use_isolating(false);
-        bundle_en
-            .add_resource(res_en)
-            .expect("Failed to add en resource");
+        match FluentResource::try_new(EN_FTL.to_string()) {
+            Ok(res_en) => {
+                if let Err(errs) = bundle_en.add_resource(res_en) {
+                    eprintln!("Failed to add locales/en.ftl resource: {errs:?}");
+                }
+            }
+            Err((res_en, errs)) => {
+                eprintln!("Failed to parse locales/en.ftl cleanly: {errs:?}");
+                let _ = bundle_en.add_resource(res_en);
+            }
+        }
 
-        let res_tr =
-            FluentResource::try_new(TR_FTL.to_string()).expect("Failed to parse locales/tr.ftl");
-        let lang_tr: LanguageIdentifier = "tr-TR".parse().expect("Valid language identifier");
+        let lang_tr: LanguageIdentifier = "tr-TR"
+            .parse()
+            .unwrap_or_else(|_| LanguageIdentifier::default());
         let mut bundle_tr = FluentBundle::new_concurrent(vec![lang_tr]);
         bundle_tr.set_use_isolating(false);
-        bundle_tr
-            .add_resource(res_tr)
-            .expect("Failed to add tr resource");
+        match FluentResource::try_new(TR_FTL.to_string()) {
+            Ok(res_tr) => {
+                if let Err(errs) = bundle_tr.add_resource(res_tr) {
+                    eprintln!("Failed to add locales/tr.ftl resource: {errs:?}");
+                }
+            }
+            Err((res_tr, errs)) => {
+                eprintln!("Failed to parse locales/tr.ftl cleanly: {errs:?}");
+                let _ = bundle_tr.add_resource(res_tr);
+            }
+        }
 
         Self {
             current_lang: initial_lang,

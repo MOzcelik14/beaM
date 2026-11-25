@@ -12,6 +12,7 @@ exclude = ["fuzz"]
 [workspace.package]
 version = "1.2.8"
 edition = "2021"
+rust-version = "1.95"
 license = "GPL-3.0-only"
 authors = ["beaM. contributors"]
 repository = "https://github.com/MOzcelik14/beaM"

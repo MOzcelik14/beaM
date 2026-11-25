@@ -323,6 +323,7 @@ impl BeamApp {
         });
 
         let catalog_path = default_catalog_path();
+        #[allow(clippy::expect_used)] // Unrecoverable if even in-memory SQLite fails at startup
         let library_db = LibraryDb::open(&catalog_path)
             .or_else(|e| {
                 log::warn!(
@@ -465,11 +466,18 @@ impl BeamApp {
         }
 
         let logo_texture = {
-            let img = image::load_from_memory(include_bytes!("../../../assets/logo.png"))
-                .expect("Valid embedded logo asset")
-                .to_rgba8();
-            let size = [img.width() as usize, img.height() as usize];
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            let color_image =
+                match image::load_from_memory(include_bytes!("../../../assets/logo.png")) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let size = [rgba.width() as usize, rgba.height() as usize];
+                        egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode embedded logo asset: {e}");
+                        egui::ColorImage::filled([1, 1], Color32::TRANSPARENT)
+                    }
+                };
             cc.egui_ctx
                 .load_texture("beam_app_logo", color_image, egui::TextureOptions::LINEAR)
         };

@@ -1275,7 +1275,6 @@ pub fn extract_icc_profile(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Transform non-linear pixel buffer from embedded ICC profile to linear Rec.2020 working space using moxcms.
-#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn transform_icc_to_linear_rec2020(
     icc_bytes: &[u8],
     pixels: &mut [f32],
@@ -1312,7 +1311,7 @@ pub fn transform_icc_to_linear_rec2020(
         transform
             .transform(chunk, &mut scratch[..len])
             .map_err(|e| format!("ICC transform execution failed: {e:?}"))?;
-        for px in scratch[..len].chunks_exact_mut(4) {
+        for px in scratch[..len].as_chunks_mut::<4>().0 {
             px[0] = if px[0].is_finite() {
                 px[0].max(0.0)
             } else {
@@ -1437,7 +1436,6 @@ pub fn apply_orientation_f32(
 /// Decode regular raster image formats (JPEG, PNG, TIFF 8/16-bit, WebP).
 /// Preserves 16-bit precision, applies embedded ICC color management,
 /// and converts into linear Rec.2020 working space.
-#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn decode_raster_image(path: &Path) -> Result<DecodedImage> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -1559,7 +1557,7 @@ pub fn decode_raster_image(path: &Path) -> Result<DecodedImage> {
     }
 
     if !icc_applied {
-        for chunk in rgba_floats.chunks_exact_mut(4) {
+        for chunk in rgba_floats.as_chunks_mut::<4>().0 {
             let lin = srgb_to_rec2020_linear(chunk[0], chunk[1], chunk[2]);
             chunk[0] = lin[0].max(0.0);
             chunk[1] = lin[1].max(0.0);
