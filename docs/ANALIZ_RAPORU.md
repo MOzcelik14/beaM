@@ -262,3 +262,16 @@ Bu raporu tek bir dev değişiklik yerine **6 bağımsız, test edilebilir faz**
    - `beam-library/src/lib.rs` yeni şema migrasyonu (indeksler, FTS5, `file_ext`, `content_hash`), sayfalama, streaming duplicate hash, EXIF `DateTimeOriginal`, `.xmp` senkronizasyonu.
 6. **Faz 6 — `app.rs` Modülerleştirme, Erişilebilirlik ve Yerelleştirme (F-28, F-32, F-33):**
    - `app.rs`'in alt modüllere bölünmesi, üretim `unwrap`/`expect` temizliği, `accesskit` etkinleştirme, `CARGO_PKG_VERSION` ve eksik `.ftl` anahtarlarının tamamlanması.
+
+---
+
+## Ek Not — RAW Ön-Doğrulama ve Bellek Sınırı (G-2, `fix/audit-findings`)
+
+`crates/beam-media/src/decoder.rs` içinde RAW boyut/piksel sınırları (`MAX_IMAGE_DIMENSION = 32768`, `MAX_IMAGE_PIXELS = 250_000_000`) artık tam `rawler::decode_file` çağrısından **önce** iki katmanda uygulanmaktadır:
+1. **Katman 1 (`validate_tiff_raw_structure`)**: İlk 64 KB başlık içindeki TIFF IFD'lerinde `ImageWidth` (`0x0100`) ve `ImageLength` (`0x0101`) etiketlerini okur; sınırı aşan başlıkları `rawler` hiç çalıştırılmadan reddeder.
+2. **Katman 2 (`rawler` `dummy = true` ön kontrolü)**: `rawler::get_decoder` + `decoder.raw_image(..., true)` ile piksel açma olmadan boyutları doğrular.
+
+**Kapsam ve Kısıtlamalar:**
+- `rawler 0.8.0` içinde `ARW`, `CR2`, `NEF`, `RAF`, `ORF`, `RW2`, `PEF` gibi kod çözücüler `dummy = true` modunda piksel tamponu ayırmayı atlar; ancak `DngDecoder::raw_image` ham şerit/karo okumayı `dummy` kontrolünden önce yapar (bu nedenle DNG'ler için Katman 1 TIFF başlık koruması kritiktir).
+- 64 KB ötesindeki TIFF SubIFD'leri Katman 1 tarafından okunmaz; bunlar Katman 2 ve `MAX_IMAGE_FILE_SIZE` (`500 MB`) üst sınırı ile korunur.
+

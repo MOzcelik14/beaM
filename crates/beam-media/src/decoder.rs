@@ -277,6 +277,9 @@ pub fn validate_tiff_raw_structure(head: &[u8], total_file_size: usize) -> Resul
             )));
         }
 
+        let mut ifd_width: Option<u32> = None;
+        let mut ifd_height: Option<u32> = None;
+
         for i in 0..entry_count {
             let entry_offset = current_ifd
                 .saturating_add(2)
@@ -333,6 +336,50 @@ pub fn validate_tiff_raw_structure(head: &[u8], total_file_size: usize) -> Resul
                 return Err(BeamError::RawDecode(format!(
                     "Corrupted TIFF IFD entry: data size {data_size} exceeds file length {total_file_size}"
                 )));
+            }
+
+            // Pre-decode dimension & pixel-budget guard for TIFF/DNG/NEF/ARW/CR2 headers:
+            // Reject oversized ImageWidth (0x0100) / ImageLength (0x0101) before rawler allocates.
+            if matches!(tag, 0x0100 | 0x0101) && count == 1 && matches!(type_code, 3 | 4) {
+                let dim_val = if type_code == 3 {
+                    if is_le {
+                        u16::from_le_bytes([head[entry_offset + 8], head[entry_offset + 9]]) as u32
+                    } else {
+                        u16::from_be_bytes([head[entry_offset + 8], head[entry_offset + 9]]) as u32
+                    }
+                } else if is_le {
+                    u32::from_le_bytes([
+                        head[entry_offset + 8],
+                        head[entry_offset + 9],
+                        head[entry_offset + 10],
+                        head[entry_offset + 11],
+                    ])
+                } else {
+                    u32::from_be_bytes([
+                        head[entry_offset + 8],
+                        head[entry_offset + 9],
+                        head[entry_offset + 10],
+                        head[entry_offset + 11],
+                    ])
+                };
+                if dim_val > MAX_IMAGE_DIMENSION {
+                    return Err(BeamError::RawDecode(format!(
+                        "RAW header dimension ({dim_val} px) exceeds maximum allowed ({MAX_IMAGE_DIMENSION} px)"
+                    )));
+                }
+                if tag == 0x0100 {
+                    ifd_width = Some(dim_val);
+                } else {
+                    ifd_height = Some(dim_val);
+                }
+                if let (Some(w), Some(h)) = (ifd_width, ifd_height) {
+                    let pixels = (w as u64) * (h as u64);
+                    if pixels > MAX_IMAGE_PIXELS {
+                        return Err(BeamError::RawDecode(format!(
+                            "RAW header resolution ({w}x{h} = {pixels} px) exceeds maximum allowed ({MAX_IMAGE_PIXELS} px)"
+                        )));
+                    }
+                }
             }
 
             if matches!(tag, 0x014A | 0x8769 | 0x8825) && data_size <= 4 {
@@ -805,6 +852,7 @@ pub fn validate_raw_container_with_size(bytes: &[u8], total_file_size: usize) ->
                 "Corrupted MRW container: IFD entries exceed file length".into(),
             ));
         }
+
         for i in 0..entry_count {
             let entry_offset = ifd_target + 2 + i * 12;
             let type_code = u16::from_be_bytes([bytes[entry_offset + 2], bytes[entry_offset + 3]]);
@@ -885,6 +933,46 @@ fn decode_raw_with_rawler(path: &Path) -> Result<DecodedImage> {
                 validate_raw_container_with_size(&head[..n], file_size)?;
             }
         }
+    }
+
+    // Tier 2 pre-decode dimension guard: ask rawler for dummy metadata/dimensions before full
+    // pixel decompression. Note: in rawler 0.8.0, most decoders (ARW, CR2, NEF, RAF, ORF, RW2, PEF)
+    // skip pixel allocation when dummy=true, whereas DngDecoder::raw_image reads strip buffers before
+    // checking dummy; Tier 1 (validate_tiff_raw_structure) guards TIFF/DNG IFD dimensions first.
+    let preflight = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let source = rawler::rawsource::RawSource::new(path).ok()?;
+        let decoder = rawler::get_decoder(&source).ok()?;
+        decoder
+            .raw_image(&source, &rawler::decoders::RawDecodeParams::default(), true)
+            .ok()
+    }));
+    match preflight {
+        Err(_) => {
+            return Err(BeamError::RawDecode(
+                "RAW parser panicked during pre-decode header inspection".into(),
+            ));
+        }
+        Ok(Some(meta_img)) => {
+            let w = meta_img.width as u32;
+            let h = meta_img.height as u32;
+            if w == 0 || h == 0 {
+                return Err(BeamError::RawDecode(
+                    "RAW image has zero width or height".into(),
+                ));
+            }
+            if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
+                return Err(BeamError::RawDecode(format!(
+                    "RAW image dimensions ({w}x{h}) exceed maximum allowed ({MAX_IMAGE_DIMENSION} px)"
+                )));
+            }
+            let total_px = (w as u64) * (h as u64);
+            if total_px > MAX_IMAGE_PIXELS {
+                return Err(BeamError::RawDecode(format!(
+                    "RAW image exceeds maximum resolution limit ({total_px} pixels > {MAX_IMAGE_PIXELS} pixels)"
+                )));
+            }
+        }
+        Ok(None) => {}
     }
 
     let decode_result =
@@ -2731,5 +2819,43 @@ mod tests {
             "Expected Display P3 green in Linear Rec.2020 to exceed sRGB-clipped G (~0.919), got {:?}",
             px
         );
+    }
+
+    #[test]
+    fn test_oversized_tiff_raw_header_rejected_before_decode() {
+        // Construct a tiny (<128 B) synthetic TIFF/DNG header claiming 50000x50000 resolution.
+        // This must be rejected by validate_tiff_raw_structure before rawler allocates anything.
+        let mut head = vec![0u8; 64];
+        head[0..4].copy_from_slice(b"II*\0");
+        head[4..8].copy_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
+        head[8..10].copy_from_slice(&2u16.to_le_bytes()); // 2 entries
+                                                          // Entry 0: ImageWidth (0x0100), LONG (4), count=1, value=50_000
+        head[10..12].copy_from_slice(&0x0100u16.to_le_bytes());
+        head[12..14].copy_from_slice(&4u16.to_le_bytes());
+        head[14..18].copy_from_slice(&1u32.to_le_bytes());
+        head[18..22].copy_from_slice(&50_000u32.to_le_bytes());
+        // Entry 1: ImageLength (0x0101), LONG (4), count=1, value=50_000
+        head[22..24].copy_from_slice(&0x0101u16.to_le_bytes());
+        head[24..26].copy_from_slice(&4u16.to_le_bytes());
+        head[26..30].copy_from_slice(&1u32.to_le_bytes());
+        head[30..34].copy_from_slice(&50_000u32.to_le_bytes());
+
+        let err = validate_tiff_raw_structure(&head, head.len())
+            .expect_err("Oversized TIFF/DNG dimensions must be rejected at header validation");
+        assert!(
+            err.to_string().contains("exceeds maximum allowed"),
+            "Unexpected error message: {err}"
+        );
+
+        let temp_path =
+            std::env::temp_dir().join(format!("beam_oversized_dng_{}.dng", std::process::id()));
+        std::fs::write(&temp_path, &head).unwrap();
+        let decode_err = decode_raw_with_rawler(&temp_path)
+            .expect_err("decode_raw_with_rawler must reject oversized header early");
+        assert!(
+            decode_err.to_string().contains("exceeds maximum allowed"),
+            "Unexpected decode error: {decode_err}"
+        );
+        let _ = std::fs::remove_file(temp_path);
     }
 }
