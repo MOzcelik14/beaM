@@ -1149,10 +1149,92 @@ impl Lut3DPass {
 }
 
 // ----------------------------------------------------------------------------
+// GPU Format Capability Selection & Precision Fallback
+// ----------------------------------------------------------------------------
+
+/// Required usages for intermediate ping-pong working textures in `EditPipeline`.
+pub const WORKING_TEXTURE_USAGES: wgpu::TextureUsages =
+    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
+
+/// Required usages for floating-point 16-bit export render targets.
+pub const EXPORT_FLOAT_TARGET_USAGES: wgpu::TextureUsages =
+    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::COPY_SRC);
+
+/// Choose the highest-precision renderable float texture format supported by the adapter.
+///
+/// Prefers `Rgba32Float` (full 32-bit linear precision). When `Rgba32Float` lacks
+/// `required_usages` (e.g. `RENDER_ATTACHMENT` on software/GL adapters), falls back to
+/// `Rgba16Float` (10-bit mantissa; introduces minor quantization on extreme HDR edits).
+pub fn choose_renderable_float_format(
+    rgba32f_allowed: wgpu::TextureUsages,
+    rgba16f_allowed: wgpu::TextureUsages,
+    required_usages: wgpu::TextureUsages,
+) -> Option<wgpu::TextureFormat> {
+    if rgba32f_allowed.contains(required_usages) {
+        Some(wgpu::TextureFormat::Rgba32Float)
+    } else if rgba16f_allowed.contains(required_usages) {
+        Some(wgpu::TextureFormat::Rgba16Float)
+    } else {
+        None
+    }
+}
+
+/// Select the intermediate working texture format supported by `adapter`.
+pub fn select_working_format_for_adapter(adapter: &wgpu::Adapter) -> Option<wgpu::TextureFormat> {
+    let f32_feats = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float);
+    let f16_feats = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba16Float);
+    choose_renderable_float_format(
+        f32_feats.allowed_usages,
+        f16_feats.allowed_usages,
+        WORKING_TEXTURE_USAGES,
+    )
+}
+
+/// Select the floating-point export target format supported by `adapter`.
+pub fn select_export_float_format_for_adapter(
+    adapter: &wgpu::Adapter,
+) -> Option<wgpu::TextureFormat> {
+    let f32_feats = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba32Float);
+    let f16_feats = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba16Float);
+    choose_renderable_float_format(
+        f32_feats.allowed_usages,
+        f16_feats.allowed_usages,
+        EXPORT_FLOAT_TARGET_USAGES,
+    )
+}
+
+fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = ((bits & 0x8000) as u32) << 16;
+    let exp = ((bits >> 10) & 0x1F) as u32;
+    let frac = (bits & 0x03FF) as u32;
+    if exp == 0 {
+        if frac == 0 {
+            return f32::from_bits(sign);
+        }
+        // Subnormal half-float
+        let mut f = frac;
+        let mut e = 127 - 14;
+        while (f & 0x0400) == 0 {
+            f <<= 1;
+            e -= 1;
+        }
+        let norm_frac = (f & 0x03FF) << 13;
+        f32::from_bits(sign | (e << 23) | norm_frac)
+    } else if exp == 31 {
+        let f32_frac = frac << 13;
+        f32::from_bits(sign | (0xFF << 23) | f32_frac)
+    } else {
+        f32::from_bits(sign | ((exp + (127 - 15)) << 23) | (frac << 13))
+    }
+}
+
+// ----------------------------------------------------------------------------
 // Full Edit Pipeline (Ping-Pong Intermediate Passes)
 // ----------------------------------------------------------------------------
 
 pub struct EditPipeline {
+    working_format: wgpu::TextureFormat,
+    export_float_format: wgpu::TextureFormat,
     lens_stage: StagePass<LensUniforms>,
     white_balance_stage: StagePass<WhiteBalanceUniforms>,
     exposure_stage: StagePass<ExposureUniforms>,
@@ -1181,8 +1263,52 @@ pub struct EditPipeline {
 
 impl EditPipeline {
     pub fn new(device: &wgpu::Device, display_format: wgpu::TextureFormat) -> Self {
-        let working_format = wgpu::TextureFormat::Rgba32Float;
+        Self::new_with_formats(
+            device,
+            display_format,
+            wgpu::TextureFormat::Rgba32Float,
+            wgpu::TextureFormat::Rgba32Float,
+        )
+    }
 
+    pub fn new_for_adapter(
+        device: &wgpu::Device,
+        adapter: &wgpu::Adapter,
+        display_format: wgpu::TextureFormat,
+    ) -> Result<Self> {
+        let working_format = select_working_format_for_adapter(adapter).ok_or_else(|| {
+            BeamError::GpuPipeline(
+                "GPU adapter does not support renderable Rgba32Float or Rgba16Float working textures"
+                    .into(),
+            )
+        })?;
+        let export_float_format =
+            select_export_float_format_for_adapter(adapter).ok_or_else(|| {
+                BeamError::GpuPipeline(
+                "GPU adapter does not support renderable Rgba32Float or Rgba16Float export targets"
+                    .into(),
+            )
+            })?;
+        if working_format != wgpu::TextureFormat::Rgba32Float {
+            log::warn!(
+                "Adapter lacks renderable Rgba32Float; falling back to {:?} working format",
+                working_format
+            );
+        }
+        Ok(Self::new_with_formats(
+            device,
+            display_format,
+            working_format,
+            export_float_format,
+        ))
+    }
+
+    pub fn new_with_formats(
+        device: &wgpu::Device,
+        display_format: wgpu::TextureFormat,
+        working_format: wgpu::TextureFormat,
+        export_float_format: wgpu::TextureFormat,
+    ) -> Self {
         let lens_stage = StagePass::new(
             device,
             "lens_stage",
@@ -1404,6 +1530,8 @@ impl EditPipeline {
         let display_pipeline = DisplayPipeline::new(device, display_format);
 
         Self {
+            working_format,
+            export_float_format,
             lens_stage,
             white_balance_stage,
             exposure_stage,
@@ -1445,8 +1573,8 @@ impl EditPipeline {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            format: self.working_format,
+            usage: WORKING_TEXTURE_USAGES,
             view_formats: &[],
         };
 
@@ -2332,6 +2460,7 @@ impl EditPipeline {
             )));
         }
 
+        let export_fmt = self.export_float_format;
         let target_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("beam_export_target_texture_32f"),
             size: wgpu::Extent3d {
@@ -2342,17 +2471,14 @@ impl EditPipeline {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format: export_fmt,
+            usage: EXPORT_FLOAT_TARGET_USAGES,
             view_formats: &[],
         });
         let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         if self.export_display_pipeline_16f.is_none() {
-            self.export_display_pipeline_16f = Some(ExportDisplayPipeline::new(
-                device,
-                wgpu::TextureFormat::Rgba32Float,
-            ));
+            self.export_display_pipeline_16f = Some(ExportDisplayPipeline::new(device, export_fmt));
         }
 
         self.ensure_intermediate_textures(device, width, height);
@@ -2380,7 +2506,8 @@ impl EditPipeline {
             .ok_or_else(|| BeamError::GpuPipeline("16-bit export display pipeline missing".into()))?
             .render_to_target(device, queue, intermediate_view, &target_view, cs_val);
 
-        let bytes_per_pixel = 16u32;
+        let is_f16 = export_fmt == wgpu::TextureFormat::Rgba16Float;
+        let bytes_per_pixel = if is_f16 { 8u32 } else { 16u32 };
         let unaligned_bytes_per_row = width
             .checked_mul(bytes_per_pixel)
             .ok_or_else(|| BeamError::GpuPipeline("16-bit staging row stride overflowed".into()))?;
@@ -2447,14 +2574,26 @@ impl EditPipeline {
             let row_start = (row * bytes_per_row) as usize;
             let row_end = row_start + (unaligned_bytes_per_row as usize);
             let row_bytes = &mapped_data[row_start..row_end];
-            for quad in row_bytes.as_chunks::<4>().0 {
-                let f = f32::from_le_bytes(*quad);
-                let v = if f.is_finite() {
-                    (f.clamp(0.0, 1.0) * 65535.0).round() as u16
-                } else {
-                    0
-                };
-                out_u16.push(v);
+            if is_f16 {
+                for pair in row_bytes.as_chunks::<2>().0 {
+                    let f = f16_bits_to_f32(u16::from_le_bytes(*pair));
+                    let v = if f.is_finite() {
+                        (f.clamp(0.0, 1.0) * 65535.0).round() as u16
+                    } else {
+                        0
+                    };
+                    out_u16.push(v);
+                }
+            } else {
+                for quad in row_bytes.as_chunks::<4>().0 {
+                    let f = f32::from_le_bytes(*quad);
+                    let v = if f.is_finite() {
+                        (f.clamp(0.0, 1.0) * 65535.0).round() as u16
+                    } else {
+                        0
+                    };
+                    out_u16.push(v);
+                }
             }
         }
         drop(mapped_data);
@@ -2634,6 +2773,8 @@ pub struct HeadlessGpu {
     pub adapter: wgpu::Adapter,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
+    pub working_format: wgpu::TextureFormat,
+    pub export_float_format: wgpu::TextureFormat,
 }
 
 impl HeadlessGpu {
@@ -2655,18 +2796,56 @@ impl HeadlessGpu {
         })
         .ok()?;
 
+        let Some(working_format) = select_working_format_for_adapter(&adapter) else {
+            log::warn!(
+                "Headless GPU adapter lacks renderable Rgba32Float/Rgba16Float working texture support; skipping"
+            );
+            return None;
+        };
+        let Some(export_float_format) = select_export_float_format_for_adapter(&adapter) else {
+            log::warn!(
+                "Headless GPU adapter lacks renderable Rgba32Float/Rgba16Float export target support; skipping"
+            );
+            return None;
+        };
+        let rgba8_feats = adapter.get_texture_format_features(wgpu::TextureFormat::Rgba8Unorm);
+        if !rgba8_feats
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        {
+            log::warn!("Headless GPU adapter lacks renderable Rgba8Unorm support; skipping");
+            return None;
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("beam_headless_device"),
             ..Default::default()
         }))
         .ok()?;
 
+        device.on_uncaptured_error(Arc::new(|err| {
+            log::error!("Headless GPU uncaptured error: {err}");
+        }));
+        device.set_device_lost_callback(|reason, msg| {
+            log::error!("Headless GPU device lost ({reason:?}): {msg}");
+        });
+
         Some(Self {
             instance,
             adapter,
             device: Arc::new(device),
             queue: Arc::new(queue),
+            working_format,
+            export_float_format,
         })
+    }
+
+    /// Create an `EditPipeline` configured with this adapter's supported float formats.
+    pub fn create_edit_pipeline(
+        &self,
+        display_format: wgpu::TextureFormat,
+    ) -> Result<EditPipeline> {
+        EditPipeline::new_for_adapter(&self.device, &self.adapter, display_format)
     }
 }
 
@@ -2675,9 +2854,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_choose_renderable_float_format() {
+        let req = WORKING_TEXTURE_USAGES;
+        let full = wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC;
+        let sample_only = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+
+        assert_eq!(
+            choose_renderable_float_format(full, full, req),
+            Some(wgpu::TextureFormat::Rgba32Float)
+        );
+        assert_eq!(
+            choose_renderable_float_format(sample_only, full, req),
+            Some(wgpu::TextureFormat::Rgba16Float)
+        );
+        assert_eq!(
+            choose_renderable_float_format(sample_only, sample_only, req),
+            None
+        );
+    }
+
+    #[test]
+    fn test_f16_bits_to_f32_standard_values() {
+        assert_eq!(f16_bits_to_f32(0x0000), 0.0);
+        assert_eq!(f16_bits_to_f32(0x3C00), 1.0);
+        assert_eq!(f16_bits_to_f32(0xBC00), -1.0);
+        assert!((f16_bits_to_f32(0x3800) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_all_shaders_wgsl_syntax_valid() {
         if let Some(gpu) = HeadlessGpu::new() {
-            let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+            let mut pipeline = gpu
+                .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+                .expect("Failed to create EditPipeline");
             let input_data = vec![0.25f32; 16 * 4];
             let gpu_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, 4, 4, &input_data)
                 .expect("Failed to create input image");
@@ -2865,7 +3076,9 @@ mod tests {
         });
         let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut edit_stack = EditStack::default();
         edit_stack.exposure.ev = 0.5;
         edit_stack.highlights_shadows.highlights = -30.0;
@@ -2964,7 +3177,9 @@ mod tests {
         let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut edit_stack = EditStack::default();
         edit_stack.exposure.ev = 0.5;
 
@@ -3007,7 +3222,9 @@ mod tests {
         let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut edit_stack = EditStack::default();
         edit_stack.exposure.ev = 0.5;
         edit_stack.contrast.contrast = 20.0;
@@ -3072,7 +3289,9 @@ mod tests {
         let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut edit_stack = EditStack::default();
         edit_stack.exposure.ev = 0.75;
         edit_stack.contrast.contrast = 25.0;
@@ -3134,7 +3353,9 @@ mod tests {
         let width = 128u32;
         let height = 128u32;
         let dummy_data = vec![0.5f32; (width * height * 4) as usize];
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let edit_stack = EditStack::default();
 
         // Simulate user rapidly switching between 30 different photos in editor
@@ -3168,7 +3389,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let baseline = pipeline
             .render_to_rgba8(&gpu.device, &gpu.queue, &img, &EditStack::default())
             .expect("baseline render failed");
@@ -3211,7 +3434,9 @@ mod tests {
         let input_img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut edit_stack = EditStack::default();
         edit_stack.detail.sharpening = 0.6;
         edit_stack.detail.clarity = 0.4;
@@ -3288,7 +3513,9 @@ mod tests {
             }
         }
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let out16 = pipeline
             .render_tiled_to_rgba16(
                 &gpu.device,
@@ -3325,7 +3552,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut stack = EditStack::default();
         stack.lens.vignette = 60.0;
 
@@ -3356,7 +3585,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let stack = EditStack::default();
 
         let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -3458,7 +3689,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut stack = EditStack::default();
         stack.lens.perspective_v = 80.0;
 
@@ -3498,7 +3731,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut stack_unmasked = EditStack::default();
         let baseline = pipeline
             .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack_unmasked)
@@ -3554,7 +3789,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let stack = EditStack::default();
 
         let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -3673,7 +3910,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut stack = EditStack::default();
         let baseline = pipeline
             .render_to_rgba8(&gpu.device, &gpu.queue, &img, &stack)
@@ -3726,7 +3965,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let stack = EditStack {
             camera_profile: beam_core::sidecar::CameraProfile::Monochrome,
             ..Default::default()
@@ -3765,7 +4006,9 @@ mod tests {
         let img = GpuImage::from_rgba32f(&gpu.device, &gpu.queue, width, height, &input_data)
             .expect("Failed to create input image");
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let baseline = pipeline
             .render_to_rgba8(&gpu.device, &gpu.queue, &img, &EditStack::default())
             .expect("baseline render failed");
@@ -3791,7 +4034,9 @@ mod tests {
         let Some(gpu) = HeadlessGpu::new() else {
             return;
         };
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
 
         let w = 320u32;
         let h = 320u32;

@@ -1446,7 +1446,7 @@ where
         BeamError::GpuPipeline("Failed to initialize headless GPU for batch export".into())
     })?;
 
-    let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+    let mut pipeline = gpu.create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)?;
     let mut exported_files = Vec::new();
     let total = items.len();
 
@@ -1681,7 +1681,9 @@ mod tests {
         let height = 2048u32;
         let input_data = vec![0.5f32; (width * height * 4) as usize];
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let edit_stack = EditStack::default();
 
         let result = pipeline.render_tiled_to_rgba8(
@@ -1734,7 +1736,9 @@ mod tests {
             },
         };
 
-        let mut pipeline = EditPipeline::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut pipeline = gpu
+            .create_edit_pipeline(wgpu::TextureFormat::Rgba8Unorm)
+            .expect("Failed to create EditPipeline");
         let mut edit_stack = EditStack::default();
         edit_stack.exposure.ev = 1.0;
 
