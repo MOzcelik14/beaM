@@ -5,7 +5,6 @@ all-features = false
 no-default-features = false
 
 [advisories]
-git-fetch-with-cli = true
 # Transitive unmaintained advisories with no upstream fix available yet in rawler 0.8 / zbus 5.19:
 ignore = [
     { id = "RUSTSEC-2026-0543", reason = "chrono is transitive via rawler 0.8.0; no safe upgrade available" },
