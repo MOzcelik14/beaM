@@ -42,10 +42,10 @@
 | 29 | Düşük | Thumbnail hızlı yolunda `image::Limits` | **Düzeltildi** | `image::Limits` ve `MAX_IMAGE_DIMENSION` uygulandı. |
 | 30 | Düşük | Kullanılmayan bağımlılıklar / çoklu sürümler | **Kısmi** | `deny.toml` sadeleştirildi; `multiple-versions` izleniyor. |
 | 31 | Düşük | `.cube` `DOMAIN_MIN >= DOMAIN_MAX` kontrolü | **Düzeltildi** | `lut.rs` içinde doğrulama ve test eklendi. |
-| 32 | Düşük | `save_user_preset` dosya adı çakışması | **Açık** | Düşük öncelikli. |
+| 32 | Düşük | `save_user_preset` dosya adı çakışması | **Düzeltildi** | `preset.rs` farklı ID çakışmalarında `-2`, `-3` eki üretiyor. |
 | 33 | Düşük | `beam_core::i18n::t` doc-test `ignored` | **Açık** | Bilinçli `ignored`. |
 | 34 | Düşük | `beam-gpu` testlerinin sessiz atlanması | **Düzeltildi** | `HeadlessGpu::new()` artık format yeteneklerini de kontrol edip logluyor. |
-| 35 | Düşük | Flatpak manifesti eksikliği | **Açık** | Dağıtım yol haritasında. |
+| 35 | Düşük | Flatpak manifesti eksikliği | **Düzeltildi** | `packaging/linux/com.github.mozcelik14.beam.yml` eklendi. |
 
 ---
 

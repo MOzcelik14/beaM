@@ -1,0 +1,32 @@
+app-id: com.github.mozcelik14.beam
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: beam
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+
+modules:
+  - name: beam
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/beam/cargo
+    build-commands:
+      - cargo build --release --locked --offline -p beam-app
+      - install -Dm755 target/release/beam /app/bin/beam
+      - install -Dm644 packaging/linux/com.github.mozcelik14.beam.desktop /app/share/applications/com.github.mozcelik14.beam.desktop
+      - install -Dm644 packaging/com.github.mozcelik14.beam.metainfo.xml /app/share/metainfo/com.github.mozcelik14.beam.metainfo.xml
+      - install -Dm644 assets/icon.png /app/share/icons/hicolor/256x256/apps/com.github.mozcelik14.beam.png
+      - install -Dm644 LICENSE /app/share/licenses/com.github.mozcelik14.beam/LICENSE
+    sources:
+      - type: dir
+        path: ../..
