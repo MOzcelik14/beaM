@@ -11,30 +11,58 @@ env:
 
 jobs:
   check-and-test:
-    name: ${{ matrix.os }} (fmt, clippy, test)
+    name: ${{ matrix.os }} / Rust ${{ matrix.rust }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-latest]
+        include:
+          - os: ubuntu-22.04
+            rust: "1.95.0"
+          - os: ubuntu-22.04
+            rust: stable
+          - os: windows-latest
+            rust: stable
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+
+      - name: Install software Vulkan driver (Mesa lavapipe) for GPU tests
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
 
       - name: Check formatting
-        if: matrix.os == 'ubuntu-22.04'
+        if: matrix.os == 'ubuntu-22.04' && matrix.rust == 'stable'
         run: cargo fmt --all -- --check
 
-      - name: Run Clippy
-        run: cargo clippy --locked --all-targets -- -W clippy::all
+      - name: Run Clippy (all targets, strict warnings)
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run Clippy panic-free production gate (lib and bins)
+        run: cargo clippy --workspace --lib --bins --locked -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D warnings
 
       - name: Run workspace tests
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --no-fail-fast
+
+  deny:
+    name: Supply-chain & License Check (cargo-deny)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@11dff63170bf3644e31564079dcf480e70a2d8d0 # v2
+        with:
+          command: check --hide-inclusion-graph
