@@ -699,37 +699,27 @@ impl BeamApp {
                                                             let sc = beam_core::Sidecar::path_for(
                                                                 img_path,
                                                             );
-                                                            let plugin_clone = p.clone();
-                                                            let img_clone = img_path.clone();
                                                             let sc_opt = sc.exists().then_some(sc);
-                                                            let tx = self.tx.clone();
-                                                            let ctx_clone = ctx.clone();
-                                                            self.plugin_status = Some(format!(
-                                                                "[{}] running...",
-                                                                p.id
-                                                            ));
-                                                            std::thread::spawn(move || {
-                                                                let msg =
-                                                                    match beam_core::run_plugin(
-                                                                        &plugin_clone,
-                                                                        &img_clone,
-                                                                        sc_opt.as_deref(),
-                                                                    ) {
-                                                                        Ok(out) => format!(
-                                                                            "[{}] exit {}: {}",
-                                                                            plugin_clone.id,
-                                                                            out.exit_code,
-                                                                            out.stdout
-                                                                        ),
-                                                                        Err(e) => e.to_string(),
-                                                                    };
-                                                                let _ = tx.send(
-                                                                    BackgroundMsg::PluginFinished(
-                                                                        msg,
-                                                                    ),
+                                                            if beam_core::is_manifest_trusted(
+                                                                &p,
+                                                                &self
+                                                                    .app_config
+                                                                    .approved_plugin_hashes,
+                                                            ) {
+                                                                self.launch_trusted_plugin(
+                                                                    ctx,
+                                                                    p.clone(),
+                                                                    img_path.clone(),
+                                                                    sc_opt,
                                                                 );
-                                                                ctx_clone.request_repaint();
-                                                            });
+                                                            } else {
+                                                                self.pending_plugin_approval =
+                                                                    Some((
+                                                                        p.clone(),
+                                                                        img_path.clone(),
+                                                                        sc_opt,
+                                                                    ));
+                                                            }
                                                         }
                                                     }
                                                 },
@@ -1172,6 +1162,129 @@ impl BeamApp {
         } else if action_cancel {
             self.show_unsaved_changes_dialog = false;
             self.pending_action = None;
+        }
+    }
+
+    fn launch_trusted_plugin(
+        &mut self,
+        ctx: &egui::Context,
+        plugin: beam_core::PluginManifest,
+        img_path: PathBuf,
+        sc_opt: Option<PathBuf>,
+    ) {
+        let approved_snapshot = self.app_config.approved_plugin_hashes.clone();
+        let tx = self.tx.clone();
+        let ctx_clone = ctx.clone();
+        self.plugin_status = Some(format!("[{}] running...", plugin.id));
+        std::thread::spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                beam_core::run_plugin_trusted(
+                    &plugin,
+                    &approved_snapshot,
+                    &img_path,
+                    sc_opt.as_deref(),
+                )
+            }));
+            let msg = match res {
+                Ok(Ok(out)) => {
+                    if out.stderr.is_empty() {
+                        format!("[{}] exit {}: {}", plugin.id, out.exit_code, out.stdout)
+                    } else {
+                        format!(
+                            "[{}] exit {}: {} ({})",
+                            plugin.id, out.exit_code, out.stdout, out.stderr
+                        )
+                    }
+                }
+                Ok(Err(e)) => format!("[{}] error: {e}", plugin.id),
+                Err(_) => format!("[{}] error: plugin runner panicked", plugin.id),
+            };
+            let _ = tx.send(BackgroundMsg::PluginFinished(msg));
+            ctx_clone.request_repaint();
+        });
+    }
+
+    pub(super) fn show_plugin_approval_dialog_window(&mut self, ctx: &egui::Context) {
+        let Some((plugin, img_path, sc_opt)) = self.pending_plugin_approval.clone() else {
+            return;
+        };
+
+        let mut approve = false;
+        let mut cancel = false;
+        let resolved_path = beam_core::resolve_command_path(&plugin.command)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<not found in PATH>".to_string());
+        let work_dir = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        let digest = beam_core::manifest_sha256(&plugin);
+
+        egui::Window::new(t!("plugin_approval_title"))
+            .collapsible(false)
+            .resizable(false)
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.label(t!("plugin_approval_warning"));
+                ui.add_space(8.0);
+                egui::Grid::new("plugin_approval_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.strong(&plugin.name);
+                        ui.monospace(&plugin.id);
+                        ui.end_row();
+
+                        ui.strong(t!("plugin_approval_command"));
+                        ui.monospace(&plugin.command);
+                        ui.end_row();
+
+                        ui.strong(t!("plugin_approval_resolved"));
+                        ui.monospace(&resolved_path);
+                        ui.end_row();
+
+                        ui.strong(t!("plugin_approval_args"));
+                        ui.monospace(if plugin.args.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            plugin.args.join(" ")
+                        });
+                        ui.end_row();
+
+                        ui.strong(t!("plugin_approval_workdir"));
+                        ui.monospace(&work_dir);
+                        ui.end_row();
+
+                        ui.strong(t!("plugin_approval_sha256"));
+                        ui.monospace(&digest);
+                        ui.end_row();
+                    });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t!("plugin_approval_approve")).clicked() {
+                        approve = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(t!("plugin_approval_cancel")).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
+            });
+
+        if approve {
+            self.app_config
+                .approved_plugin_hashes
+                .insert(plugin.id.trim().to_string(), digest);
+            let _ = self.app_config.save();
+            self.pending_plugin_approval = None;
+            self.launch_trusted_plugin(ctx, plugin, img_path, sc_opt);
+        } else if cancel {
+            self.pending_plugin_approval = None;
         }
     }
 }

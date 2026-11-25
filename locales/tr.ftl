@@ -615,6 +615,15 @@ history_crop_flip_v = Dikey Çevir
 history_crop_straighten = Hizala
 gpu_init_error = GPU başlatılamadı: { $error }
 gpu_runtime_error = GPU hatası: { $error }
+plugin_approval_title = Harici Eklenti Onayı
+plugin_approval_warning = Bu eklenti yeni veya manifesti son onaydan sonra değişmiş. Çalıştırmadan önce komut ayrıntılarını inceleyin:
+plugin_approval_command = Komut
+plugin_approval_resolved = Çözümlenen yol
+plugin_approval_args = Argümanlar
+plugin_approval_workdir = Çalışma dizini
+plugin_approval_sha256 = Manifest SHA-256
+plugin_approval_approve = Onayla ve Çalıştır
+plugin_approval_cancel = İptal
 
 
 

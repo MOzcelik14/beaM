@@ -173,6 +173,7 @@ pub struct BeamApp {
     settings_tab: SettingsTab,
     plugins: Vec<beam_core::PluginManifest>,
     plugin_status: Option<String>,
+    pending_plugin_approval: Option<(beam_core::PluginManifest, PathBuf, Option<PathBuf>)>,
 
     // Presets & Settings Sync
     left_panel_tab: LeftPanelTab,
@@ -559,6 +560,7 @@ impl BeamApp {
             settings_tab: SettingsTab::General,
             plugins: beam_core::discover_plugins(&beam_core::default_plugins_dir()),
             plugin_status: None,
+            pending_plugin_approval: None,
             left_panel_tab: LeftPanelTab::Presets,
             user_presets,
             preset_dir,
@@ -6478,6 +6480,7 @@ impl eframe::App for BeamApp {
 
         // Settings dialog
         self.show_settings_dialog_window(&ctx);
+        self.show_plugin_approval_dialog_window(&ctx);
 
         // Presets & Sync dialogs
         self.show_new_preset_dialog_window(&ctx);
@@ -6922,6 +6925,7 @@ mod tests {
             settings_tab: SettingsTab::General,
             plugins: Vec::new(),
             plugin_status: None,
+            pending_plugin_approval: None,
             left_panel_tab: LeftPanelTab::Presets,
             user_presets: Vec::new(),
             preset_dir: std::env::temp_dir(),

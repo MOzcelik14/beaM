@@ -615,6 +615,15 @@ history_crop_flip_v = Flip Vertical
 history_crop_straighten = Straighten
 gpu_init_error = GPU initialization failed: { $error }
 gpu_runtime_error = GPU error: { $error }
+plugin_approval_title = Approve External Plugin
+plugin_approval_warning = This plugin is new or its manifest has changed since last approval. Review the command details before running:
+plugin_approval_command = Command
+plugin_approval_resolved = Resolved path
+plugin_approval_args = Arguments
+plugin_approval_workdir = Working directory
+plugin_approval_sha256 = Manifest SHA-256
+plugin_approval_approve = Approve & Run
+plugin_approval_cancel = Cancel
 
 
 
