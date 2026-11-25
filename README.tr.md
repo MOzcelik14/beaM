@@ -50,7 +50,7 @@ Görüntü işleme hattı tamamen Rust ile yazılmıştır. RAW dosyaları haric
 - **Saf Rust RAW Çözümleme**: Harici `libraw` bağımlılığı olmadan `rawler` ile doğrudan kamera RAW dosyalarını okur; dosya boyutu, çözünürlük ve bellek sınırları ile güvenli çözümleme sunar. JPEG, PNG, TIFF ve WebP için tam hassasiyetli raster desteği içerir.
 - **Geniş Gamlı GPU İşleme Hattı**: Düzenlemeleri `wgpu` üzerinde 32-bit kayan noktalı Linear Rec.2020 uzayında modüler WGSL aşamalarıyla işler; büyük görüntülerde otomatik karolama uygular.
 - **Tahribatsız Yan Dosyalar**: Tüm düzenleme yığınını, geri alma geçmişini, anlık görüntüleri, yıldızları ve renk etiketlerini atomik yazımla okunabilir `.beam` RON dosyalarında tutar.
-- **Eksiksiz Yerel Katalog**: SQLite dizinleme, sanal kopyalar, yıldız ve renk etiketleri, çoklu etiketleme, akıllı koleksiyonlar, IPTC/XMP meta veri düzenleme, kopya tespiti ve klasör izleme (Tethered Watch) sunar.
+- **Eksiksiz Yerel Katalog**: SQLite dizinleme, sanal kopyalar, yıldız ve renk etiketleri, çoklu etiketleme, akıllı koleksiyonlar, IPTC/XMP meta veri düzenleme, kopya tespiti ve klasör izleme (otomatik içe aktarma) sunar.
 - **Renk Yönetimli Çıktı**: Gam dışı uyarılı yumuşak prova (Soft Proofing), canlı skoplar (Histogram, Waveform, RGB Parade, Vectorscope) ve gömülü ICC profilli JPEG, PNG, 16-bit TIFF ve WebP dışa aktarma sağlar.
 
 ## Özellikler
@@ -101,7 +101,7 @@ Görüntü işleme hattı tamamen Rust ile yazılmıştır. RAW dosyaları haric
 | Etiketler ve Akıllı Koleksiyonlar | Çoklu fotoğraf etiketleme, etikete göre filtreleme ve tekrar kullanılabilir filtre birleşimlerini saklayan Akıllı Koleksiyonlar. |
 | Sanal Kopyalar | Kaynak dosyayı çoğaltmadan aynı fotoğrafa bağlı birden fazla bağımsız `.beam` düzenleme yığını. |
 | Meta Veri ve GPS | EXIF okuma (kamera, lens, ISO, enstantane, diyafram, odak uzaklığı), düzenlenebilir IPTC/XMP alanları (başlık, açıklama, oluşturan, telif) ve harita bağlantılı GPS koordinat kaydı. |
-| Kopya Tespiti ve Kablolu İzleme | Kütüphane içi yinelenen fotoğraf tespiti ve yeni gelen çekimleri otomatik içe aktaran klasör izleme (Tethered Watch). |
+| Kopya Tespiti ve Klasör İzleme | Kütüphane içi yinelenen fotoğraf tespiti ve yeni gelen dosyaları otomatik içe aktaran klasör izleme (otomatik içe aktarma). |
 
 ### Dışa Aktarma Hattı
 

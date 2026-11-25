@@ -50,7 +50,7 @@ The imaging pipeline is written entirely in Rust. RAW files are decoded directly
 - **Pure-Rust RAW Decoding**: Reads camera RAW formats directly through `rawler` with bounded file size, dimension, and memory safeguards, plus full-precision raster decoding for JPEG, PNG, TIFF, and WebP.
 - **Wide-Gamut GPU Pipeline**: Processes edits in 32-bit floating-point Linear Rec.2020 space across modular WGSL shader stages using `wgpu`, with automatic tiled rendering for large images.
 - **Non-Destructive Sidecars**: Stores complete edit stacks, undo history, named snapshots, ratings, and color labels in atomic, human-readable `.beam` RON files without touching original media.
-- **Complete Local Catalog**: Organizes folders with SQLite indexing, virtual copies, star ratings, color labels, tags, smart collections, IPTC/XMP metadata editing, duplicate detection, and tethered folder watching.
+- **Complete Local Catalog**: Organizes folders with SQLite indexing, virtual copies, star ratings, color labels, tags, smart collections, IPTC/XMP metadata editing, duplicate detection, and folder watching (auto-import).
 - **Color-Managed Output**: Supports soft proofing with out-of-gamut overlays, real-time scopes (Histogram, Waveform, RGB Parade, Vectorscope), and full-resolution single or batch export in JPEG, PNG, 16-bit TIFF, and WebP with embedded ICC profiles.
 
 ## Features
@@ -101,7 +101,7 @@ The imaging pipeline is written entirely in Rust. RAW files are decoded directly
 | Tags and Smart Collections | Multi-photo tagging, tag filtering, and saved Smart Collections that store reusable filter combinations. |
 | Virtual Copies | Multiple independent `.beam` edit stacks linked to the same source photo without duplicating media files. |
 | Metadata and GPS | EXIF readout (camera, lens, ISO, shutter speed, aperture, focal length), editable IPTC/XMP fields (title, caption, creator, copyright), and GPS coordinate storage with external map links. |
-| Duplicates and Tethered Watch | Duplicate photo detection within the library and folder watching (Tethered Watch) to ingest incoming captures automatically. |
+| Duplicates and Folder Watch | Duplicate photo detection within the library and folder watching (auto-import) to ingest new files automatically. |
 
 ### Export Pipeline
 
@@ -294,7 +294,7 @@ flowchart LR
 - **v0.1.0 - v0.2.0**: Application skeleton, non-destructive `.beam` sidecar format, initial RAW decoding, and GPU edit pipeline.
 - **v0.8.0 - v1.0.0**: Full tonal/color adjustment suite (Tone Curve, 8-band HSL, 3-Way Color Grading, Detail, 3D LUTs, Crop/Straighten), SQLite Library catalog, thumbnails, presets, and batch export.
 - **v1.1.0**: Pipeline accuracy, memory safety hardening, and security audit fixes.
-- **v1.2.0**: True 16-bit GPU TIFF export with ICC profiles, manual lens and perspective correction, Soft Proofing with Out-of-Gamut and Focus Peaking overlays, Waveform/RGB Parade/Vectorscope, Brush/Luminance/Color Range masks, Camera Profiles, Named Snapshots, Tags, Smart Collections, IPTC/XMP metadata, GPS links, Duplicate Detection, and Tethered Watch.
+- **v1.2.0**: True 16-bit GPU TIFF export with ICC profiles, manual lens and perspective correction, Soft Proofing with Out-of-Gamut and Focus Peaking overlays, Waveform/RGB Parade/Vectorscope, Brush/Luminance/Color Range masks, Camera Profiles, Named Snapshots, Tags, Smart Collections, IPTC/XMP metadata, GPS links, Duplicate Detection, and Folder Watch (Auto-Import).
 - **v1.2.5 - v1.2.6**: Local 5x5 edge-preserving Smart Denoise, Auto Sky and Auto Subject heuristic masks, CLI Plugin Architecture, and Library layout fixes.
 
 ### Planned Direction

@@ -152,6 +152,8 @@ pub struct LibraryViewState {
     pub gps_lon_input: String,
     pub tethered_watch: bool,
     pub last_tether_scan: Option<std::time::Instant>,
+    pub last_watch_fingerprint: Option<(Option<std::time::SystemTime>, usize)>,
+    pub pending_map_url: Option<String>,
 }
 
 impl Default for LibraryViewState {
@@ -185,6 +187,8 @@ impl Default for LibraryViewState {
             gps_lon_input: String::new(),
             tethered_watch: false,
             last_tether_scan: None,
+            last_watch_fingerprint: None,
+            pending_map_url: None,
         }
     }
 }
@@ -238,6 +242,15 @@ impl LibraryViewState {
             self.needs_refresh = false;
         }
     }
+}
+
+/// Fast metadata-only fingerprint of a watched folder (`modified_time`, `entry_count`)
+/// so periodic watch ticks skip full DB/UI reloads when nothing changed.
+pub fn folder_watch_fingerprint(folder: &Path) -> Option<(Option<std::time::SystemTime>, usize)> {
+    let meta = std::fs::metadata(folder).ok()?;
+    let modified = meta.modified().ok();
+    let count = std::fs::read_dir(folder).ok()?.count();
+    Some((modified, count))
 }
 
 /// Helper to load an egui TextureHandle from an existing disk thumbnail.
@@ -339,11 +352,17 @@ pub fn show_library_view(
                 .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2));
             if should_scan {
                 state.last_tether_scan = Some(std::time::Instant::now());
-                action = LibraryAction::ChangeFolder(folder);
+                let fp = folder_watch_fingerprint(&folder);
+                if fp != state.last_watch_fingerprint {
+                    state.last_watch_fingerprint = fp;
+                    action = LibraryAction::ChangeFolder(folder);
+                }
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(500));
             }
         }
+    } else if !state.tethered_watch {
+        state.last_watch_fingerprint = None;
     }
 
     // Keyboard shortcuts for selected photo rating: keys 0-5
@@ -1319,13 +1338,34 @@ pub fn show_library_view(
                             .stroke(Stroke::new(1.0, Color32::from_rgb(45, 52, 68)))
                             .corner_radius(5.0)
                             .min_size(Vec2::new(btn_w, 24.0));
-                            if ui.add(map_btn).clicked() {
-                                ctx.open_url(egui::OpenUrl::new_tab(format!(
+                            if ui
+                                .add(map_btn)
+                                .on_hover_text(t!("library_open_map_privacy"))
+                                .clicked()
+                            {
+                                state.pending_map_url = Some(format!(
                                     "https://www.openstreetmap.org/?mlat={lat:.6}&mlon={lon:.6}#map=15/{lat:.6}/{lon:.6}"
-                                )));
+                                ));
                             }
                         }
                     });
+                    if let Some(url) = state.pending_map_url.clone() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(t!("library_open_map_privacy"))
+                                .size(10.5)
+                                .color(Color32::from_rgb(230, 185, 100)),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.small_button(t!("library_open_map_confirm")).clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab(url));
+                                state.pending_map_url = None;
+                            }
+                            if ui.small_button(t!("library_open_map_cancel")).clicked() {
+                                state.pending_map_url = None;
+                            }
+                        });
+                    }
                 }
 
                 ui.add_space(16.0);

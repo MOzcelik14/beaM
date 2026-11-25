@@ -91,8 +91,8 @@ library_meta_save = Metadatayı Kaydet
 library_meta_gps_lat = Enlem
 library_meta_gps_lon = Boylam
 library_open_map = Haritada Aç
-library_tether_watch = Kablolu İzleme
-library_tether_active = Yeni çekimler için klasör izleniyor...
+library_tether_watch = Klasör İzleme (Otomatik İçe Aktar)
+library_tether_active = Yeni dosyalar için klasör izleniyor...
 library_selection = Seçim
 library_no_selection = Fotoğraf seçilmedi
 library_open_in_develop = Geliştir Modunda Aç
@@ -624,6 +624,9 @@ plugin_approval_workdir = Çalışma dizini
 plugin_approval_sha256 = Manifest SHA-256
 plugin_approval_approve = Onayla ve Çalıştır
 plugin_approval_cancel = İptal
+library_open_map_privacy = Gizlilik uyarısı: Konum koordinatları tarayıcınız üzerinden OpenStreetMap'e gönderilecektir.
+library_open_map_confirm = Haritayı Aç
+library_open_map_cancel = İptal
 
 
 

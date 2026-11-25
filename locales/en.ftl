@@ -91,8 +91,8 @@ library_meta_save = Save Metadata
 library_meta_gps_lat = Latitude
 library_meta_gps_lon = Longitude
 library_open_map = Open in Map
-library_tether_watch = Tethered Watch
-library_tether_active = Watching folder for new shots...
+library_tether_watch = Folder Watch (Auto-Import)
+library_tether_active = Watching folder for new images...
 library_selection = Selection
 library_no_selection = No photo selected
 library_open_in_develop = Open in Develop
@@ -624,6 +624,9 @@ plugin_approval_workdir = Working directory
 plugin_approval_sha256 = Manifest SHA-256
 plugin_approval_approve = Approve & Run
 plugin_approval_cancel = Cancel
+library_open_map_privacy = Privacy notice: GPS coordinates will be sent to OpenStreetMap in your browser.
+library_open_map_confirm = Open Map
+library_open_map_cancel = Cancel
 
 
 
