@@ -27,7 +27,8 @@ pub use i18n::{
     ShortcutProfile,
 };
 pub use plugin::{
-    default_plugins_dir, discover_plugins, install_sample_plugin, run_plugin, PluginCategory,
+    default_plugins_dir, discover_plugins, install_sample_plugin, is_manifest_trusted,
+    manifest_sha256, resolve_command_path, run_plugin, run_plugin_trusted, PluginCategory,
     PluginManifest, PluginOutput,
 };
 pub use preset::{

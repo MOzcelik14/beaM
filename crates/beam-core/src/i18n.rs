@@ -130,6 +130,9 @@ pub struct AppConfig {
     pub recursive_browse: bool,
     #[serde(default)]
     pub shortcuts: ShortcutConfig,
+    /// Map of `plugin_id -> SHA-256 hex` of user-approved plugin manifests.
+    #[serde(default)]
+    pub approved_plugin_hashes: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for AppConfig {
@@ -146,6 +149,7 @@ impl Default for AppConfig {
             bookmarked_folders: Vec::new(),
             recursive_browse: false,
             shortcuts: ShortcutConfig::default(),
+            approved_plugin_hashes: std::collections::BTreeMap::new(),
         }
     }
 }
