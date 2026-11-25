@@ -1,5 +1,7 @@
 # beaM. Security and Robustness Audit Report
 
+> **Tarihsel Kayıt / Historical Record (v0.1.1):** Bu belge v0.1.1 sürümünün denetim kaydıdır ("74 test geçti" ifadesi o döneme aittir). Güncel v1.2.8 durumu, yeni bulgular ve 124+ test kapsamı için [docs/ANALIZ_RAPORU.md](docs/ANALIZ_RAPORU.md) ve [docs/AUDIT.md](docs/AUDIT.md) belgelerine bakın.
+
 **Date:** 2026-11-01  
 **Target:** beaM. v0.1.1  
 **Repository:** https://github.com/MOzcelik14/beaM.git  

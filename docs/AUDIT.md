@@ -3,7 +3,49 @@
 **Tarih:** 2026-11-16  
 **İncelenen Sürüm:** `1.0.0` (Workspace)  
 **Kapsam:** `beam-core`, `beam-gpu`, `beam-media`, `beam-library`, `beam-app`, `shaders/`, `packaging/`, `.github/workflows/`  
-**Durum:** Salt okunur denetim (kod değişikliği yapılmamıştır).
+**Durum:** Tarihsel v1.0.0 denetimi — aşağıda v1.2.8 (`fix/audit-findings`) itibarıyla 35 bulgunun güncel durum tablosu eklenmiştir.
+
+---
+
+## Güncel Durum Tablosu (v1.2.8 / `fix/audit-findings`)
+
+| ID | Şiddet | Başlık | Durum (v1.2.8) | Not / Kanıt |
+| :-: | :--- | :--- | :---: | :--- |
+| 1 | Kritik | 3D LUT `.cube` kanal kayması | **Düzeltildi** | `pipeline.rs` içinde `as_chunks::<4>()` kullanılıyor. |
+| 2 | Kritik | Tone Curve & HSL HDR kırpılması | **Düzeltildi** | `tone_curve.wgsl` 2.2 shaper + `soft_highlight_rolloff`; `hsl.wgsl` normlu. |
+| 3 | Kritik | Tiled export halo, UV tekrarı, vinyet sırası | **Düzeltildi** | `compute_tile_ext_bounds` + `uv_rect` + `test_render_tiled_matches_monolithic_with_spatial_stages`. |
+| 4 | Kritik | Asenkron dosya açma & export yarışları | **Düzeltildi** | `decode_generation` koruması ve `export_is_running` kilidi mevcut. |
+| 5 | Yüksek | Color Grading ölçek uyumsuzluğu | **Düzeltildi** | `color_grading.wgsl` normalize ağırlıklar, `pipeline.rs` Rec.2020 luma. |
+| 6 | Yüksek | 3D LUT 8-bit nicemleme & Rec.2020 kırpılması | **Açık / Kısmi** | `Rgba8Unorm` 3D LUT sürüyor; geniş gamut sRGB eşlemesi korundu. |
+| 7 | Yüksek | `Tiff16` export'un 8-bit olması & ICC eksikliği | **Düzeltildi** | `render_to_rgba16_with_colorspace_and_uv_rect` + ICC tag `34675` (`export.rs`). |
+| 8 | Yüksek | Undo/Redo sonrası sidecar kopukluğu | **Düzeltildi** | `undo`/`redo`/`jump_to_history_step` sonrası kayıt senkronize. |
+| 9 | Yüksek | `update_rating`/`color_label` sidecar ezme | **Düzeltildi** | Parse hatasında ezme önlendi, `RETURNING id` eklendi. |
+| 10 | Yüksek | `libsqlite3-sys 0.31.0` (`RUSTSEC-2026-0459`) | **Düzeltildi** | `rusqlite = "0.43"` sürümüne yükseltildi. |
+| 11 | Yüksek | Straighten döndürmesinde aspect çarpılması | **Düzeltildi** | `map_output_uv_to_source_with_aspect` ve shader aspect düzeltmesi. |
+| 12 | Yüksek | Global kısayolların `TextEdit` odaklıyken tetiklenmesi | **Düzeltildi** | `!ctx.wants_keyboard_input()` koruması eklendi. |
+| 13 | Yüksek | UI thread bloklayan `rfd` & senkron I/O | **Düzeltildi** | `rfd` ve thumbnail/plugin işleri arka plana taşındı. |
+| 14 | Yüksek | Her slider hareketinde gereksiz GPU çalışması | **Açık** | BindGroup önbellekleme/stage bypass iyileştirmesi bekliyor. |
+| 15 | Yüksek | SQLite ölçekleme (transaction, indeks, `busy_timeout`) | **Düzeltildi** | `BEGIN IMMEDIATE`, indeksler ve `PRAGMA busy_timeout` eklendi. |
+| 16 | Yüksek | WGSL golden testleri & `build-linux.sh` `\|\| true` | **Düzeltildi** | Uzamsal/lens tiled testleri eklendi; `\|\| true` kaldırıldı. |
+| 17 | Orta | RAW `WhiteBalance`/matris & EXIF alanları | **Düzeltildi** | `ProcessingStep::WhiteBalance` + `Calibrate` + RAW EXIF alanları dolu. |
+| 18 | Orta | Düzenleme sırasında histogram güncellemesi | **Düzeltildi** | `histogram_data` düzenlenmiş görüntüden hesaplanıyor. |
+| 19 | Orta | `PresetGroupMask` yeni ayar desteği | **Açık** | Kısmi; preset maske genişletmesi bekliyor. |
+| 20 | Orta | Mask overlay başlangıç tutamacında `drag_stopped` | **Doğrulanmadı** | Etkileşimli GUI testi gerektiriyor. |
+| 21 | Orta | Kütüphane görünümünde hata mesajı | **Doğrulanmadı** | Etkileşimli GUI testi gerektiriyor. |
+| 22 | Orta | Üretim kodunda `unwrap()`/`expect()` | **Düzeltildi** | `i18n.rs`, `pipeline.rs`, `app.rs` temizlendi; CI kapısı eklendi. |
+| 23 | Orta | CPU `rayon` paralelleştirme & kopyalar | **Açık** | Bellek/hız iyileştirmesi Aşama 5+ kapsamında. |
+| 24 | Orta | Thumbnail önbellek anahtarı & temizliği | **Düzeltildi** | `VecDeque` deterministic LRU tahliyesi eklendi. |
+| 25 | Orta | `BeamApp` monolitik yapısı | **Kısmi** | `dialogs.rs` ayrıldı; `app.rs` bölünmesi Aşama 5'te sürüyor. |
+| 26 | Orta | Windows `.iss` & RPM `.spec` sürüm uyumsuzluğu | **Düzeltildi** | `/DMyAppVersion` ve dinamik `.spec` sürümü eklendi. |
+| 27 | Orta | Sabit İngilizce metinler (i18n) | **Düzeltildi** | Eksik anahtarlar `en.ftl`/`tr.ftl`'ye eklendi. |
+| 28 | Orta | `README.md` / `README.tr.md` güncelliği | **Düzeltildi** | Koddan doğrulanmış kapsamlı README'ler yazıldı. |
+| 29 | Düşük | Thumbnail hızlı yolunda `image::Limits` | **Düzeltildi** | `image::Limits` ve `MAX_IMAGE_DIMENSION` uygulandı. |
+| 30 | Düşük | Kullanılmayan bağımlılıklar / çoklu sürümler | **Kısmi** | `deny.toml` sadeleştirildi; `multiple-versions` izleniyor. |
+| 31 | Düşük | `.cube` `DOMAIN_MIN >= DOMAIN_MAX` kontrolü | **Düzeltildi** | `lut.rs` içinde doğrulama ve test eklendi. |
+| 32 | Düşük | `save_user_preset` dosya adı çakışması | **Açık** | Düşük öncelikli. |
+| 33 | Düşük | `beam_core::i18n::t` doc-test `ignored` | **Açık** | Bilinçli `ignored`. |
+| 34 | Düşük | `beam-gpu` testlerinin sessiz atlanması | **Düzeltildi** | `HeadlessGpu::new()` artık format yeteneklerini de kontrol edip logluyor. |
+| 35 | Düşük | Flatpak manifesti eksikliği | **Açık** | Dağıtım yol haritasında. |
 
 ---
 
